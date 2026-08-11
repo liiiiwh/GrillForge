@@ -4,6 +4,24 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-08-11
+
+### Fixed
+
+- Client discovery now checks every matching executable until one successfully
+  returns a version, instead of stopping when an earlier stale installation
+  fails.
+- Interactive login-shell discovery now finds dynamic fnm and similar
+  version-manager sessions without hard-coding a Node.js version or session
+  directory.
+- Repeated paths returned by PATH, standard locations, and the login shell are
+  inspected only once.
+
+### Changed
+
+- Applied the same multi-install discovery behavior to Claude Code, Codex, Pi,
+  Kimi Code, Gemini CLI, Grok Build, OpenCode, OpenClaw, and Hermes.
+
 ## [0.1.2] - 2026-08-11
 
 ### Fixed
@@ -82,6 +100,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Claude Code and Claude Client Code now resolve the installed selector binary
   even when the GUI application is not on the login-shell PATH.
 
+[0.1.3]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.3
 [0.1.2]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.2
 [0.1.1]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.1
 [0.1.0]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.0

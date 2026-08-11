@@ -276,21 +276,20 @@ pub fn detect_claude_cli() -> Result<Option<ClaudeCliDetection>, ClaudeCodeAdapt
         candidates.push(home.join(".local/bin").join(executable));
         candidates.push(home.join(".claude/local").join(executable));
     }
-    if let Some(detection) =
-        crate::cli_discovery::first_valid_candidate(candidates, |path| inspect_claude_cli(path))?
-    {
-        return Ok(Some(detection));
-    }
-    let shell_candidates =
-        crate::cli_discovery::login_shell_candidates(executable).map_err(|source| {
-            ClaudeCodeAdapterError::InspectCli {
-                path: env::var_os("SHELL")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("/bin/sh")),
-                source,
-            }
-        })?;
-    crate::cli_discovery::first_valid_candidate(shell_candidates, |path| inspect_claude_cli(path))
+    crate::cli_discovery::first_valid_candidate_across_sources(
+        candidates,
+        || {
+            crate::cli_discovery::login_shell_candidates(executable).map_err(|source| {
+                ClaudeCodeAdapterError::InspectCli {
+                    path: env::var_os("SHELL")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("/bin/sh")),
+                    source,
+                }
+            })
+        },
+        |path| inspect_claude_cli(path),
+    )
 }
 
 pub fn inspect_claude_cli(

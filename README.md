@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.2-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.3-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -68,7 +68,7 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 | OpenClaw | Primary 与有序 Fallback 模型池 | 已实现 |
 | Hermes | 默认模型与模型池 | 已实现 |
 
-客户端检测会依次检查应用 PATH、标准安装目录、NVM/Volta/asdf/mise/pnpm/Bun/npm 等动态目录，以及用户登录 Shell。候选文件必须真实执行 `--version` 成功后才会显示为已安装。每次进入“客户端”页面都会重新检测，无需重启 GrillForge。
+客户端检测会依次检查应用 PATH、标准安装目录、NVM/fnm/Volta/asdf/mise/pnpm/Bun/npm 等动态目录，以及用户的交互式登录 Shell。存在多个同名 CLI 时会逐个执行 `--version`，忽略失效候选并使用第一个有效版本。每次进入“客户端”页面都会重新检测，无需重启 GrillForge。
 
 ### Provider 与协议
 
@@ -102,7 +102,7 @@ flowchart LR
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.2-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.3-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
 
 解压后将 `GrillForge.app` 移入“应用程序”即可。首次运行不需要绕过 Gatekeeper。
 

@@ -59,16 +59,17 @@ pub fn detect_hermes_cli() -> Result<Option<HermesCliDetection>, HermesAdapterEr
     }
     #[cfg(target_os = "macos")]
     candidates.push(PathBuf::from("/usr/local/bin").join(executable));
-    if let Some(detection) = detect_hermes_cli_in(candidates)? {
-        return Ok(Some(detection));
-    }
-    let shell_candidates =
-        crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
-            HermesAdapterError::Invalid(format!(
-                "discover Hermes CLI through the login shell: {error}"
-            ))
-        })?;
-    detect_hermes_cli_in(shell_candidates)
+    crate::cli_discovery::first_valid_candidate_across_sources(
+        candidates,
+        || {
+            crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
+                HermesAdapterError::Invalid(format!(
+                    "discover Hermes CLI through the login shell: {error}"
+                ))
+            })
+        },
+        |path| inspect_hermes_cli(path),
+    )
 }
 
 pub fn detect_hermes_cli_in(

@@ -77,16 +77,17 @@ pub fn detect_codex_cli() -> Result<Option<CodexCliDetection>, CodexAdapterError
         }
     }
 
-    if let Some(detection) = detect_codex_cli_in(candidates)? {
-        return Ok(Some(detection));
-    }
-    let shell_candidates =
-        crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
-            CodexAdapterError::Invalid(format!(
-                "discover Codex CLI through the login shell: {error}"
-            ))
-        })?;
-    detect_codex_cli_in(shell_candidates)
+    crate::cli_discovery::first_valid_candidate_across_sources(
+        candidates,
+        || {
+            crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
+                CodexAdapterError::Invalid(format!(
+                    "discover Codex CLI through the login shell: {error}"
+                ))
+            })
+        },
+        |path| inspect_codex_cli(path),
+    )
 }
 
 pub fn detect_codex_cli_in(

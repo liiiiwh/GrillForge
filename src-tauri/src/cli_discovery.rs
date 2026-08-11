@@ -29,6 +29,40 @@ pub fn first_valid_candidate<T, E>(
     }
 }
 
+pub fn first_valid_candidate_across_sources<T, E>(
+    primary_candidates: impl IntoIterator<Item = PathBuf>,
+    secondary_candidates: impl FnOnce() -> Result<Vec<PathBuf>, E>,
+    mut inspect: impl FnMut(&Path) -> Result<T, E>,
+) -> Result<Option<T>, E> {
+    let mut seen = HashSet::new();
+    let primary_candidates = primary_candidates
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .collect::<Vec<_>>();
+    let primary_result = first_valid_candidate(primary_candidates, &mut inspect);
+    if matches!(primary_result, Ok(Some(_))) {
+        return primary_result;
+    }
+
+    let secondary_candidates = match secondary_candidates() {
+        Ok(candidates) => candidates
+            .into_iter()
+            .filter(|path| seen.insert(path.clone()))
+            .collect::<Vec<_>>(),
+        Err(secondary_error) => {
+            return match primary_result {
+                Err(primary_error) => Err(primary_error),
+                Ok(None) => Err(secondary_error),
+                Ok(Some(_)) => unreachable!("a valid primary candidate already returned"),
+            };
+        }
+    };
+    match first_valid_candidate(secondary_candidates, inspect) {
+        Ok(None) => primary_result,
+        result => result,
+    }
+}
+
 pub fn version_command(path: &Path) -> io::Result<Command> {
     let mut command = Command::new(path);
     if let Some(parent) = path.parent() {
@@ -102,7 +136,7 @@ pub fn login_shell_candidates_with(
     }
     let command = format!("which -a {executable}");
     let mut child = Command::new(shell.as_ref())
-        .args(["-lc", &command])
+        .args(["-lic", &command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

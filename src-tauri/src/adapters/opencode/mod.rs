@@ -74,16 +74,17 @@ pub fn detect_opencode_cli() -> Result<Option<OpenCodeCliDetection>, OpenCodeAda
         PathBuf::from("/opt/homebrew/bin").join(executable),
         PathBuf::from("/usr/local/bin").join(executable),
     ]);
-    if let Some(detection) = detect_opencode_cli_in(candidates)? {
-        return Ok(Some(detection));
-    }
-    let shell_candidates =
-        crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
-            OpenCodeAdapterError::Invalid(format!(
-                "discover OpenCode CLI through the login shell: {error}"
-            ))
-        })?;
-    detect_opencode_cli_in(shell_candidates)
+    crate::cli_discovery::first_valid_candidate_across_sources(
+        candidates,
+        || {
+            crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
+                OpenCodeAdapterError::Invalid(format!(
+                    "discover OpenCode CLI through the login shell: {error}"
+                ))
+            })
+        },
+        |path| inspect_opencode_cli(path),
+    )
 }
 
 pub fn detect_opencode_cli_in(

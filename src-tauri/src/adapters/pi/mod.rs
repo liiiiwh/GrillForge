@@ -70,15 +70,15 @@ pub fn detect_pi_cli() -> Result<Option<PiCliDetection>, PiAdapterError> {
         PathBuf::from("/usr/local/bin").join(executable),
     ]);
 
-    if let Some(detection) = detect_pi_cli_in(candidates)? {
-        return Ok(Some(detection));
-    }
-    let shell_candidates =
-        crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
-            PiAdapterError::Invalid(format!("discover Pi CLI through the login shell: {error}"))
-        })?;
-
-    detect_pi_cli_in(shell_candidates)
+    crate::cli_discovery::first_valid_candidate_across_sources(
+        candidates,
+        || {
+            crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
+                PiAdapterError::Invalid(format!("discover Pi CLI through the login shell: {error}"))
+            })
+        },
+        |path| inspect_pi_cli(path),
+    )
 }
 
 pub fn pi_cli_candidates_from_home(home: impl AsRef<Path>, executable: &str) -> Vec<PathBuf> {

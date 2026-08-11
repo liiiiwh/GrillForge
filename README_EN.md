@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.2-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.3-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -68,7 +68,7 @@ GrillForge is a local-first, client-centric model configuration center for codin
 | OpenClaw | Primary model and ordered fallback pool | Implemented |
 | Hermes | Default model and model pool | Implemented |
 
-Client discovery checks the application PATH, standard installation locations, dynamic NVM/Volta/asdf/mise/pnpm/Bun/npm paths, and the user's login shell. A candidate is shown as installed only after its real `--version` command succeeds. Opening the Clients page always refreshes discovery, so GrillForge does not need to be restarted after installing a CLI.
+Client discovery checks the application PATH, standard installation locations, dynamic NVM/fnm/Volta/asdf/mise/pnpm/Bun/npm paths, and the user's interactive login shell. When several executables have the same name, GrillForge runs `--version` on each candidate, skips stale installations, and uses the first valid version. Opening the Clients page always refreshes discovery, so GrillForge does not need to be restarted after installing a CLI.
 
 ### Providers and Protocols
 
@@ -102,7 +102,7 @@ flowchart LR
 
 ## Download
 
-Download `GrillForge-v0.1.2-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
+Download `GrillForge-v0.1.3-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
 
 Unzip it and move `GrillForge.app` to Applications. No Gatekeeper bypass is required.
 
