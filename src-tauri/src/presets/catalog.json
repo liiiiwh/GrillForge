@@ -1,0 +1,7257 @@
+{
+  "schema_version": 2,
+  "source": {
+    "repository": "https://github.com/farion1231/cc-switch",
+    "commit": "413c09e0790c304506888ae24b9be72820aca126",
+    "provider_count": 161,
+    "files": [
+      {
+        "file": "src/config/claudeProviderPresets.ts",
+        "fnv1a64": "9ad11d9e97993c84",
+        "provider_count": 72
+      },
+      {
+        "file": "src/config/codexProviderPresets.ts",
+        "fnv1a64": "efc4ae7add747ef5",
+        "provider_count": 67
+      },
+      {
+        "file": "src/config/geminiProviderPresets.ts",
+        "fnv1a64": "306c8783d24feef9",
+        "provider_count": 22
+      }
+    ]
+  },
+  "exclusions": [
+    {
+      "client": "claude_code",
+      "name": "AWS Bedrock (AKSK)",
+      "reason": "bedrock_requires_agent_specific_auth"
+    },
+    {
+      "client": "claude_code",
+      "name": "AWS Bedrock (API Key)",
+      "reason": "bedrock_requires_agent_specific_auth"
+    },
+    {
+      "client": "claude_code",
+      "name": "Claude Official",
+      "reason": "native_default"
+    },
+    {
+      "client": "claude_code",
+      "name": "Codex",
+      "reason": "managed_oauth"
+    },
+    {
+      "client": "claude_code",
+      "name": "GitHub Copilot",
+      "reason": "managed_oauth"
+    },
+    {
+      "client": "claude_code",
+      "name": "xAI (Grok)",
+      "reason": "managed_oauth"
+    },
+    {
+      "client": "codex",
+      "name": "OpenAI Official",
+      "reason": "native_default"
+    },
+    {
+      "client": "codex",
+      "name": "xAI (Grok) OAuth",
+      "reason": "managed_oauth"
+    },
+    {
+      "client": "gemini",
+      "name": "Google Official",
+      "reason": "native_default"
+    },
+    {
+      "client": "gemini",
+      "name": "自定义",
+      "reason": "custom_template"
+    }
+  ],
+  "presets": [
+    {
+      "id": "a6api",
+      "name": "A6API",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.a6api.com/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.a6api.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.a6api.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "a6api-anthropic",
+      "name": "A6API · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.a6api.com"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.a6api.com"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.a6api.com"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "a6api-gemini",
+      "name": "A6API · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.a6api.com"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.a6api.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.a6api.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "aicodemirror",
+      "name": "AICodeMirror",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aicodemirror.ai/api/codex/backend-api/codex"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicodemirror.ai/api/codex/backend-api/codex"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicodemirror.ai/api/codex/backend-api/codex"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "aicodemirror-anthropic",
+      "name": "AICodeMirror · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aicodemirror.ai/api/claudecode"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicodemirror.ai/api/claudecode"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicodemirror.ai/api/claudecode"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "aicodemirror-gemini",
+      "name": "AICodeMirror · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aicodemirror.ai/api/gemini"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicodemirror.ai/api/gemini"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicodemirror.ai/api/gemini"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "aicoding",
+      "name": "AICoding",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aicoding.inc"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicoding.inc"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicoding.inc"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "aicoding-anthropic",
+      "name": "AICoding · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aicoding.inc"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicoding.inc"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicoding.inc"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "aicoding-gemini",
+      "name": "AICoding · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aicoding.inc"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicoding.inc"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aicoding.inc"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "aigocode",
+      "name": "AIGoCode",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aigocode.app"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aigocode.app"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aigocode.app"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "aigocode-anthropic",
+      "name": "AIGoCode · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aigocode.app"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aigocode.app"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aigocode.app"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "aigocode-gemini",
+      "name": "AIGoCode · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.aigocode.app"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aigocode.app"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.aigocode.app"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "aihubmix",
+      "name": "AiHubMix",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://aihubmix.com/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://aihubmix.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://aihubmix.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "aihubmix-anthropic",
+      "name": "AiHubMix · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://aihubmix.com"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://aihubmix.com"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://aihubmix.com"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "amux",
+      "name": "Amux",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.amux.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.amux.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.amux.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "amux-anthropic",
+      "name": "Amux · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.amux.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.amux.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.amux.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "apikey-fun",
+      "name": "APIKEY.FUN",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.apikey.fun/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.apikey.fun/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.apikey.fun/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "apikey-fun-anthropic",
+      "name": "APIKEY.FUN · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.apikey.fun"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.apikey.fun"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.apikey.fun"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "apikey-fun-gemini",
+      "name": "APIKEY.FUN · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.apikey.fun"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.apikey.fun"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.apikey.fun"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "apinebula",
+      "name": "APINebula",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://apinebula.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://apinebula.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://apinebula.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "apinebula-anthropic",
+      "name": "APINebula · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://apinebula.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://apinebula.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://apinebula.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "apinebula-gemini",
+      "name": "APINebula · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://apinebula.ai"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://apinebula.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://apinebula.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "atlascloud",
+      "name": "AtlasCloud",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.atlascloud.ai"
+      },
+      "suggested_models": [
+        "zai-org/glm-5.1"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.atlascloud.ai"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.atlascloud.ai"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "atlascloud-chat",
+      "name": "AtlasCloud · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.atlascloud.ai/v1"
+      },
+      "suggested_models": [
+        "zai-org/glm-5.1"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.atlascloud.ai/v1"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.atlascloud.ai/v1"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "azure-openai",
+      "name": "Azure OpenAI",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://YOUR_RESOURCE_NAME.openai.azure.com/openai"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://YOUR_RESOURCE_NAME.openai.azure.com/openai"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://YOUR_RESOURCE_NAME.openai.azure.com/openai"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "baidu-qianfan-coding-plan",
+      "name": "Baidu Qianfan Coding Plan",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://qianfan.baidubce.com/anthropic/coding"
+      },
+      "suggested_models": [
+        "qianfan-code-latest"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://qianfan.baidubce.com/anthropic/coding"
+          },
+          "suggested_models": [
+            "qianfan-code-latest"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://qianfan.baidubce.com/anthropic/coding"
+          },
+          "suggested_models": [
+            "qianfan-code-latest"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "baidu-qianfan-coding-plan-chat",
+      "name": "Baidu Qianfan Coding Plan · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://qianfan.baidubce.com/v2/coding"
+      },
+      "suggested_models": [
+        "qianfan-code-latest"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://qianfan.baidubce.com/v2/coding"
+          },
+          "suggested_models": [
+            "qianfan-code-latest"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://qianfan.baidubce.com/v2/coding"
+          },
+          "suggested_models": [
+            "qianfan-code-latest"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "bailian",
+      "name": "Bailian",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      },
+      "suggested_models": [
+        "qwen3-coder-plus"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+          },
+          "suggested_models": [
+            "qwen3-coder-plus"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+          },
+          "suggested_models": [
+            "qwen3-coder-plus"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "bailian-anthropic",
+      "name": "Bailian · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://dashscope.aliyuncs.com/apps/anthropic"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://dashscope.aliyuncs.com/apps/anthropic"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://dashscope.aliyuncs.com/apps/anthropic"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "bailian-for-coding",
+      "name": "Bailian For Coding",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://coding.dashscope.aliyuncs.com/apps/anthropic"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://coding.dashscope.aliyuncs.com/apps/anthropic"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://coding.dashscope.aliyuncs.com/apps/anthropic"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "bailing",
+      "name": "BaiLing",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.tbox.cn/api/anthropic"
+      },
+      "suggested_models": [
+        "Ling-2.5-1T"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.tbox.cn/api/anthropic"
+          },
+          "suggested_models": [
+            "Ling-2.5-1T"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.tbox.cn/api/anthropic"
+          },
+          "suggested_models": [
+            "Ling-2.5-1T"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "bailing-chat",
+      "name": "BaiLing · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.tbox.cn/api/llm/v1"
+      },
+      "suggested_models": [
+        "Ling-2.6-1T"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.tbox.cn/api/llm/v1"
+          },
+          "suggested_models": [
+            "Ling-2.6-1T"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.tbox.cn/api/llm/v1"
+          },
+          "suggested_models": [
+            "Ling-2.6-1T"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "byteplus",
+      "name": "BytePlus",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://ark.ap-southeast.bytepluses.com/api/coding"
+      },
+      "suggested_models": [
+        "ark-code-latest"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.ap-southeast.bytepluses.com/api/coding"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.ap-southeast.bytepluses.com/api/coding"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "byteplus-chat",
+      "name": "BytePlus · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://ark.ap-southeast.bytepluses.com/api/coding/v3"
+      },
+      "suggested_models": [
+        "ark-code-latest"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.ap-southeast.bytepluses.com/api/coding/v3"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.ap-southeast.bytepluses.com/api/coding/v3"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "ccsub",
+      "name": "CCSub",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.ccsub.net/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.ccsub.net/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.ccsub.net/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "ccsub-anthropic",
+      "name": "CCSub · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.ccsub.net"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.ccsub.net"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.ccsub.net"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "cherryin",
+      "name": "CherryIN",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://open.cherryin.net/v1"
+      },
+      "suggested_models": [
+        "openai/gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.cherryin.net/v1"
+          },
+          "suggested_models": [
+            "openai/gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.cherryin.net/v1"
+          },
+          "suggested_models": [
+            "openai/gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "cherryin-anthropic",
+      "name": "CherryIN · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://open.cherryin.net"
+      },
+      "suggested_models": [
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-haiku-4.5",
+        "anthropic/claude-opus-5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.cherryin.net"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.cherryin.net"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "cherryin-gemini",
+      "name": "CherryIN · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://open.cherryin.net"
+      },
+      "suggested_models": [
+        "google/gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.cherryin.net"
+          },
+          "suggested_models": [
+            "google/gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.cherryin.net"
+          },
+          "suggested_models": [
+            "google/gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "claudeapi",
+      "name": "ClaudeAPI",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://gw.apito.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://gw.apito.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://gw.apito.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "claudecn",
+      "name": "ClaudeCN",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://claudecn.top/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://claudecn.top/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://claudecn.top/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "claudecn-anthropic",
+      "name": "ClaudeCN · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://claudecn.top"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://claudecn.top"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://claudecn.top"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "code0",
+      "name": "Code0",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://code0.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://code0.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://code0.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "code0-anthropic",
+      "name": "Code0 · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://code0.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://code0.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://code0.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "code0-gemini",
+      "name": "Code0 · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://code0.ai"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://code0.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://code0.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "compshare",
+      "name": "Compshare",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.modelverse.cn/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.modelverse.cn/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.modelverse.cn/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "compshare-anthropic",
+      "name": "Compshare · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.modelverse.cn"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.modelverse.cn"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.modelverse.cn"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "compshare-coding-plan",
+      "name": "Compshare Coding Plan",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://cp.compshare.cn/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cp.compshare.cn/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cp.compshare.cn/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "compshare-coding-plan-anthropic",
+      "name": "Compshare Coding Plan · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://cp.compshare.cn"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cp.compshare.cn"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cp.compshare.cn"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "crazyrouter",
+      "name": "CrazyRouter",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://cn.crazyrouter.com/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cn.crazyrouter.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cn.crazyrouter.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "crazyrouter-anthropic",
+      "name": "CrazyRouter · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://cn.crazyrouter.com"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cn.crazyrouter.com"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cn.crazyrouter.com"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "crazyrouter-gemini",
+      "name": "CrazyRouter · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://cn.crazyrouter.com"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cn.crazyrouter.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cn.crazyrouter.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cubence",
+      "name": "Cubence",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.cubence.com/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.cubence.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.cubence.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "cubence-anthropic",
+      "name": "Cubence · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.cubence.com"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.cubence.com"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.cubence.com"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "cubence-gemini",
+      "name": "Cubence · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.cubence.com"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.cubence.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.cubence.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.deepseek.com"
+      },
+      "suggested_models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "model_protocol_capabilities": {
+        "deepseek-v4-pro": [
+          "reasoning_items"
+        ],
+        "deepseek-v4-flash": [
+          "reasoning_items"
+        ]
+      },
+      "models_url": "https://api.deepseek.com/models",
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.deepseek.com"
+          },
+          "suggested_models": [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.deepseek.com"
+          },
+          "suggested_models": [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "deepseek-anthropic",
+      "name": "DeepSeek · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.deepseek.com/anthropic"
+      },
+      "suggested_models": [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": "https://api.deepseek.com/models",
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.deepseek.com/anthropic"
+          },
+          "suggested_models": [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.deepseek.com/anthropic"
+          },
+          "suggested_models": [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "dmxapi",
+      "name": "DMXAPI",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.dmxapi.cn/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.dmxapi.cn/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.dmxapi.cn/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "dmxapi-anthropic",
+      "name": "DMXAPI · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.dmxapi.cn"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.dmxapi.cn"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.dmxapi.cn"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "doubaoseed",
+      "name": "DouBaoSeed",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://ark.cn-beijing.volces.com/api/v3"
+      },
+      "suggested_models": [
+        "doubao-seed-2-1-pro-260628"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/v3"
+          },
+          "suggested_models": [
+            "doubao-seed-2-1-pro-260628"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/v3"
+          },
+          "suggested_models": [
+            "doubao-seed-2-1-pro-260628"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "doubaoseed-anthropic",
+      "name": "DouBaoSeed · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://ark.cn-beijing.volces.com/api/compatible"
+      },
+      "suggested_models": [
+        "doubao-seed-2-1-pro-260628"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/compatible"
+          },
+          "suggested_models": [
+            "doubao-seed-2-1-pro-260628"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/compatible"
+          },
+          "suggested_models": [
+            "doubao-seed-2-1-pro-260628"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "e-flowcode",
+      "name": "E-FlowCode",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://e-flowcode.cc/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://e-flowcode.cc/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://e-flowcode.cc/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "e-flowcode-anthropic",
+      "name": "E-FlowCode · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://e-flowcode.cc"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://e-flowcode.cc"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://e-flowcode.cc"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "e-flowcode-gemini",
+      "name": "E-FlowCode · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://e-flowcode.cc"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://e-flowcode.cc"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://e-flowcode.cc"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "etok-ai",
+      "name": "ETok.ai",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.etok.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.etok.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.etok.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "etok-ai-anthropic",
+      "name": "ETok.ai · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.etok.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.etok.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.etok.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "etok-ai-gemini",
+      "name": "ETok.ai · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.etok.ai/v1beta"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.etok.ai/v1beta"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.etok.ai/v1beta"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "fennoai",
+      "name": "FennoAI",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.fenno.ai"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.fenno.ai"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.fenno.ai"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "fennoai-anthropic",
+      "name": "FennoAI · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.fenno.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.fenno.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.fenno.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "gemini-native",
+      "name": "Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://generativelanguage.googleapis.com"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://generativelanguage.googleapis.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://generativelanguage.googleapis.com"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "kat-coder",
+      "name": "KAT-Coder",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "parameterized",
+        "template": "https://vanchin.streamlake.ai/api/gateway/v1/endpoints/{endpoint_id}/claude-code-proxy",
+        "parameters": [
+          {
+            "id": "endpoint_id",
+            "label": "Vanchin Endpoint ID",
+            "placeholder": "ep-xxx-xxx",
+            "required": true
+          }
+        ]
+      },
+      "suggested_models": [
+        "KAT-Coder-Pro V1",
+        "KAT-Coder-Air V1"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "parameterized",
+            "template": "https://vanchin.streamlake.ai/api/gateway/v1/endpoints/{endpoint_id}/claude-code-proxy",
+            "parameters": [
+              {
+                "id": "endpoint_id",
+                "label": "Vanchin Endpoint ID",
+                "placeholder": "ep-xxx-xxx",
+                "required": true
+              }
+            ]
+          },
+          "suggested_models": [
+            "KAT-Coder-Pro V1",
+            "KAT-Coder-Air V1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "parameterized",
+            "template": "https://vanchin.streamlake.ai/api/gateway/v1/endpoints/{endpoint_id}/claude-code-proxy",
+            "parameters": [
+              {
+                "id": "endpoint_id",
+                "label": "Vanchin Endpoint ID",
+                "placeholder": "ep-xxx-xxx",
+                "required": true
+              }
+            ]
+          },
+          "suggested_models": [
+            "KAT-Coder-Pro V1",
+            "KAT-Coder-Air V1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "kimi",
+      "name": "Kimi",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.moonshot.cn/anthropic"
+      },
+      "suggested_models": [
+        "kimi-k2.7-code"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.moonshot.cn/anthropic"
+          },
+          "suggested_models": [
+            "kimi-k2.7-code"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.moonshot.cn/anthropic"
+          },
+          "suggested_models": [
+            "kimi-k2.7-code"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "kimi-chat",
+      "name": "Kimi · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.moonshot.cn/v1"
+      },
+      "suggested_models": [
+        "kimi-k2.7-code",
+        "kimi-k3"
+      ],
+      "model_protocol_capabilities": {
+        "kimi-k2.7-code": [
+          "reasoning_content"
+        ],
+        "kimi-k3": [
+          "reasoning_content"
+        ]
+      },
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.moonshot.cn/v1"
+          },
+          "suggested_models": [
+            "kimi-k2.7-code",
+            "kimi-k3"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.moonshot.cn/v1"
+          },
+          "suggested_models": [
+            "kimi-k2.7-code",
+            "kimi-k3"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "kimi-for-coding",
+      "name": "Kimi For Coding",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.kimi.com/coding/"
+      },
+      "suggested_models": [
+        "kimi-for-coding"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.kimi.com/coding/"
+          },
+          "suggested_models": [
+            "kimi-for-coding"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.kimi.com/coding/"
+          },
+          "suggested_models": [
+            "kimi-for-coding"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "kimi-for-coding-chat",
+      "name": "Kimi For Coding · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.kimi.com/coding/v1"
+      },
+      "suggested_models": [
+        "kimi-for-coding"
+      ],
+      "model_protocol_capabilities": {
+        "kimi-for-coding": [
+          "reasoning_content"
+        ]
+      },
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.kimi.com/coding/v1"
+          },
+          "suggested_models": [
+            "kimi-for-coding"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.kimi.com/coding/v1"
+          },
+          "suggested_models": [
+            "kimi-for-coding"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "longcat",
+      "name": "Longcat",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.longcat.chat/openai/v1"
+      },
+      "suggested_models": [
+        "LongCat-2.0"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.longcat.chat/openai/v1"
+          },
+          "suggested_models": [
+            "LongCat-2.0"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.longcat.chat/openai/v1"
+          },
+          "suggested_models": [
+            "LongCat-2.0"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "longcat-anthropic",
+      "name": "Longcat · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.longcat.chat/anthropic"
+      },
+      "suggested_models": [
+        "LongCat-2.0"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.longcat.chat/anthropic"
+          },
+          "suggested_models": [
+            "LongCat-2.0"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.longcat.chat/anthropic"
+          },
+          "suggested_models": [
+            "LongCat-2.0"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "micu",
+      "name": "Micu",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.micuapi.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.micuapi.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.micuapi.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "micu-anthropic",
+      "name": "Micu · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.micuapi.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.micuapi.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.micuapi.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "minimax",
+      "name": "MiniMax",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.minimaxi.com/v1"
+      },
+      "suggested_models": [
+        "MiniMax-M3"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimaxi.com/v1"
+          },
+          "suggested_models": [
+            "MiniMax-M3"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimaxi.com/v1"
+          },
+          "suggested_models": [
+            "MiniMax-M3"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "minimax-anthropic",
+      "name": "MiniMax · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.minimaxi.com/anthropic"
+      },
+      "suggested_models": [
+        "MiniMax-M2.7"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimaxi.com/anthropic"
+          },
+          "suggested_models": [
+            "MiniMax-M2.7"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimaxi.com/anthropic"
+          },
+          "suggested_models": [
+            "MiniMax-M2.7"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "minimax-en",
+      "name": "MiniMax en",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.minimax.io/v1"
+      },
+      "suggested_models": [
+        "MiniMax-M3"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimax.io/v1"
+          },
+          "suggested_models": [
+            "MiniMax-M3"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimax.io/v1"
+          },
+          "suggested_models": [
+            "MiniMax-M3"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "minimax-en-anthropic",
+      "name": "MiniMax en · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.minimax.io/anthropic"
+      },
+      "suggested_models": [
+        "MiniMax-M2.7"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimax.io/anthropic"
+          },
+          "suggested_models": [
+            "MiniMax-M2.7"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.minimax.io/anthropic"
+          },
+          "suggested_models": [
+            "MiniMax-M2.7"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "modelscope",
+      "name": "ModelScope",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api-inference.modelscope.cn"
+      },
+      "suggested_models": [
+        "ZhipuAI/GLM-5.1"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api-inference.modelscope.cn"
+          },
+          "suggested_models": [
+            "ZhipuAI/GLM-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api-inference.modelscope.cn"
+          },
+          "suggested_models": [
+            "ZhipuAI/GLM-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "modelscope-chat",
+      "name": "ModelScope · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api-inference.modelscope.cn/v1"
+      },
+      "suggested_models": [
+        "ZhipuAI/GLM-5.1"
+      ],
+      "model_protocol_capabilities": {
+        "ZhipuAI/GLM-5.1": [
+          "reasoning_content"
+        ]
+      },
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api-inference.modelscope.cn/v1"
+          },
+          "suggested_models": [
+            "ZhipuAI/GLM-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api-inference.modelscope.cn/v1"
+          },
+          "suggested_models": [
+            "ZhipuAI/GLM-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "novita-ai",
+      "name": "Novita AI",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.novita.ai/anthropic"
+      },
+      "suggested_models": [
+        "zai-org/glm-5.1"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.novita.ai/anthropic"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.novita.ai/anthropic"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "novita-ai-chat",
+      "name": "Novita AI · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.novita.ai/openai/v1"
+      },
+      "suggested_models": [
+        "zai-org/glm-5.1"
+      ],
+      "model_protocol_capabilities": {
+        "zai-org/glm-5.1": [
+          "reasoning_content"
+        ]
+      },
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.novita.ai/openai/v1"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.novita.ai/openai/v1"
+          },
+          "suggested_models": [
+            "zai-org/glm-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "nvidia",
+      "name": "Nvidia",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://integrate.api.nvidia.com"
+      },
+      "suggested_models": [
+        "moonshotai/kimi-k2.5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://integrate.api.nvidia.com"
+          },
+          "suggested_models": [
+            "moonshotai/kimi-k2.5"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://integrate.api.nvidia.com"
+          },
+          "suggested_models": [
+            "moonshotai/kimi-k2.5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "nvidia-chat",
+      "name": "Nvidia · OpenAI Chat Completions · Codex",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://integrate.api.nvidia.com/v1"
+      },
+      "suggested_models": [
+        "moonshotai/kimi-k2.5"
+      ],
+      "model_protocol_capabilities": {
+        "moonshotai/kimi-k2.5": [
+          "reasoning_content"
+        ]
+      },
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://integrate.api.nvidia.com/v1"
+          },
+          "suggested_models": [
+            "moonshotai/kimi-k2.5"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://integrate.api.nvidia.com/v1"
+          },
+          "suggested_models": [
+            "moonshotai/kimi-k2.5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "opencode-go",
+      "name": "OpenCode Go",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://opencode.ai/zen/go"
+      },
+      "suggested_models": [
+        "deepseek-v4-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://opencode.ai/zen/go"
+          },
+          "suggested_models": [
+            "deepseek-v4-flash"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://opencode.ai/zen/go"
+          },
+          "suggested_models": [
+            "deepseek-v4-flash"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "opencode-go-chat",
+      "name": "OpenCode Go · OpenAI Chat Completions · Codex",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://opencode.ai/zen/go/v1"
+      },
+      "suggested_models": [
+        "glm-5.2",
+        "glm-5.1",
+        "kimi-k2.7-code",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "mimo-v2.5-pro"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://opencode.ai/zen/go/v1"
+          },
+          "suggested_models": [
+            "glm-5.2",
+            "glm-5.1",
+            "kimi-k2.7-code",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "mimo-v2.5-pro"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://opencode.ai/zen/go/v1"
+          },
+          "suggested_models": [
+            "glm-5.2",
+            "glm-5.1",
+            "kimi-k2.7-code",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "mimo-v2.5-pro"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://openrouter.ai/api/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://openrouter.ai/api/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://openrouter.ai/api/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "openrouter-anthropic",
+      "name": "OpenRouter · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://openrouter.ai/api"
+      },
+      "suggested_models": [
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-haiku-4.5",
+        "anthropic/claude-opus-5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://openrouter.ai/api"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://openrouter.ai/api"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "openrouter-gemini",
+      "name": "OpenRouter · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://openrouter.ai/api"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://openrouter.ai/api"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://openrouter.ai/api"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "packycode",
+      "name": "PackyCode",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.packyapi.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.packyapi.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.packyapi.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "packycode-anthropic",
+      "name": "PackyCode · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.packyapi.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.packyapi.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.packyapi.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "packycode-gemini",
+      "name": "PackyCode · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.packyapi.ai"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.packyapi.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.packyapi.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "patewayai",
+      "name": "PatewayAI",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.pateway.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.pateway.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.pateway.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "patewayai-anthropic",
+      "name": "PatewayAI · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.pateway.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.pateway.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.pateway.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "pipellm",
+      "name": "PIPELLM",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://cc-api.pipellm.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cc-api.pipellm.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cc-api.pipellm.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "pipellm-anthropic",
+      "name": "PIPELLM · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://cc-api.pipellm.ai"
+      },
+      "suggested_models": [
+        "claude-opus-5",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cc-api.pipellm.ai"
+          },
+          "suggested_models": [
+            "claude-opus-5",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://cc-api.pipellm.ai"
+          },
+          "suggested_models": [
+            "claude-opus-5",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "qiniu",
+      "name": "Qiniu",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.qnaigc.com/bypass/openai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.qnaigc.com/bypass/openai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.qnaigc.com/bypass/openai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "qiniu-anthropic",
+      "name": "Qiniu · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.qnaigc.com"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.qnaigc.com"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.qnaigc.com"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "qiniu-gemini",
+      "name": "Qiniu · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.qnaigc.com/bypass/vertex"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.qnaigc.com/bypass/vertex"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.qnaigc.com/bypass/vertex"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "relaxycode",
+      "name": "RelaxyCode",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.relaxycode.com/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.relaxycode.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.relaxycode.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "relaxycode-anthropic",
+      "name": "RelaxyCode · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.relaxycode.com"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.relaxycode.com"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.relaxycode.com"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "rightcode",
+      "name": "RightCode",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.rightapi.ai/codex/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.rightapi.ai/codex/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.rightapi.ai/codex/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "rightcode-anthropic",
+      "name": "RightCode · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://www.rightapi.ai/claude"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.rightapi.ai/claude"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://www.rightapi.ai/claude"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "runapi",
+      "name": "RunAPI",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://runapi.co/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://runapi.co/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://runapi.co/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "runapi-anthropic",
+      "name": "RunAPI · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://runapi.co"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://runapi.co"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://runapi.co"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "shengsuanyun",
+      "name": "Shengsuanyun",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://router.shengsuanyun.com/api/v1"
+      },
+      "suggested_models": [
+        "openai/gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://router.shengsuanyun.com/api/v1"
+          },
+          "suggested_models": [
+            "openai/gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://router.shengsuanyun.com/api/v1"
+          },
+          "suggested_models": [
+            "openai/gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "shengsuanyun-anthropic",
+      "name": "Shengsuanyun · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://router.shengsuanyun.com/api"
+      },
+      "suggested_models": [
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-haiku-4.5",
+        "anthropic/claude-opus-5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://router.shengsuanyun.com/api"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://router.shengsuanyun.com/api"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "shengsuanyun-gemini",
+      "name": "Shengsuanyun · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://router.shengsuanyun.com/api"
+      },
+      "suggested_models": [
+        "google/gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://router.shengsuanyun.com/api"
+          },
+          "suggested_models": [
+            "google/gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://router.shengsuanyun.com/api"
+          },
+          "suggested_models": [
+            "google/gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "siliconflow",
+      "name": "SiliconFlow",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.siliconflow.cn"
+      },
+      "suggested_models": [
+        "Pro/MiniMaxAI/MiniMax-M2.7"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.cn"
+          },
+          "suggested_models": [
+            "Pro/MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.cn"
+          },
+          "suggested_models": [
+            "Pro/MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "siliconflow-chat",
+      "name": "SiliconFlow · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.siliconflow.cn/v1"
+      },
+      "suggested_models": [
+        "Pro/MiniMaxAI/MiniMax-M2.7"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.cn/v1"
+          },
+          "suggested_models": [
+            "Pro/MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.cn/v1"
+          },
+          "suggested_models": [
+            "Pro/MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "siliconflow-en",
+      "name": "SiliconFlow en",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.siliconflow.com"
+      },
+      "suggested_models": [
+        "MiniMaxAI/MiniMax-M2.7"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.com"
+          },
+          "suggested_models": [
+            "MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.com"
+          },
+          "suggested_models": [
+            "MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "siliconflow-en-chat",
+      "name": "SiliconFlow en · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.siliconflow.com/v1"
+      },
+      "suggested_models": [
+        "MiniMaxAI/MiniMax-M2.7"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.com/v1"
+          },
+          "suggested_models": [
+            "MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.siliconflow.com/v1"
+          },
+          "suggested_models": [
+            "MiniMaxAI/MiniMax-M2.7"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "sssaicode",
+      "name": "SSSAiCode",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://node-hk.sssaicodeapi.com/api/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://node-hk.sssaicodeapi.com/api/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://node-hk.sssaicodeapi.com/api/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "sssaicode-anthropic",
+      "name": "SSSAiCode · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://node-hk.sssaicodeapi.com/api"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://node-hk.sssaicodeapi.com/api"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://node-hk.sssaicodeapi.com/api"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "sssaicode-gemini",
+      "name": "SSSAiCode · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://node-hk.sssaicodeapi.com/api"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://node-hk.sssaicodeapi.com/api"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://node-hk.sssaicodeapi.com/api"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "stepfun",
+      "name": "StepFun",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.stepfun.com/step_plan"
+      },
+      "suggested_models": [
+        "step-3.5-flash-2603"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.com/step_plan"
+          },
+          "suggested_models": [
+            "step-3.5-flash-2603"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.com/step_plan"
+          },
+          "suggested_models": [
+            "step-3.5-flash-2603"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "stepfun-chat",
+      "name": "StepFun · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.stepfun.com/step_plan/v1"
+      },
+      "suggested_models": [
+        "step-3.7-flash",
+        "step-3.5-flash-2603",
+        "step-3.5-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.com/step_plan/v1"
+          },
+          "suggested_models": [
+            "step-3.7-flash",
+            "step-3.5-flash-2603",
+            "step-3.5-flash"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.com/step_plan/v1"
+          },
+          "suggested_models": [
+            "step-3.7-flash",
+            "step-3.5-flash-2603",
+            "step-3.5-flash"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "stepfun-en",
+      "name": "StepFun en",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.stepfun.ai/step_plan"
+      },
+      "suggested_models": [
+        "step-3.5-flash-2603"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.ai/step_plan"
+          },
+          "suggested_models": [
+            "step-3.5-flash-2603"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.ai/step_plan"
+          },
+          "suggested_models": [
+            "step-3.5-flash-2603"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "stepfun-en-chat",
+      "name": "StepFun en · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.stepfun.ai/step_plan/v1"
+      },
+      "suggested_models": [
+        "step-3.7-flash",
+        "step-3.5-flash-2603",
+        "step-3.5-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.ai/step_plan/v1"
+          },
+          "suggested_models": [
+            "step-3.7-flash",
+            "step-3.5-flash-2603",
+            "step-3.5-flash"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.stepfun.ai/step_plan/v1"
+          },
+          "suggested_models": [
+            "step-3.7-flash",
+            "step-3.5-flash-2603",
+            "step-3.5-flash"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "subrouter",
+      "name": "SubRouter",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://subrouter.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://subrouter.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://subrouter.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "subrouter-anthropic",
+      "name": "SubRouter · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://subrouter.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://subrouter.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://subrouter.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "subrouter-gemini",
+      "name": "SubRouter · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://subrouter.ai/v1beta"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://subrouter.ai/v1beta"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://subrouter.ai/v1beta"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "sudocode-chat",
+      "name": "SudoCode.chat",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.sudocode.chat/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.sudocode.chat/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.sudocode.chat/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "sudocode-chat-anthropic",
+      "name": "SudoCode.chat · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.sudocode.chat"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.sudocode.chat"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.sudocode.chat"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "sudocode-us",
+      "name": "SudoCode.us",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://sudocode.us/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://sudocode.us/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://sudocode.us/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "sudocode-us-anthropic",
+      "name": "SudoCode.us · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://sudocode.us"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://sudocode.us"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://sudocode.us"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "sudocode-us-gemini",
+      "name": "SudoCode.us · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://sudocode.us"
+      },
+      "suggested_models": [
+        "gemini-3.1-flash-lite"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://sudocode.us"
+          },
+          "suggested_models": [
+            "gemini-3.1-flash-lite"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://sudocode.us"
+          },
+          "suggested_models": [
+            "gemini-3.1-flash-lite"
+          ]
+        }
+      }
+    },
+    {
+      "id": "teamorouter",
+      "name": "TeamoRouter",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.teamorouter.com/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.teamorouter.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.teamorouter.com/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "teamorouter-anthropic",
+      "name": "TeamoRouter · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.teamorouter.com"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.teamorouter.com"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.teamorouter.com"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "tencent-hunyuan",
+      "name": "Tencent Hunyuan",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://tokenhub.tencentmaas.com/v1"
+      },
+      "suggested_models": [
+        "hy3",
+        "hy3-preview"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://tokenhub.tencentmaas.com/v1"
+          },
+          "suggested_models": [
+            "hy3",
+            "hy3-preview"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://tokenhub.tencentmaas.com/v1"
+          },
+          "suggested_models": [
+            "hy3",
+            "hy3-preview"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "therouter",
+      "name": "TheRouter",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.therouter.ai/v1"
+      },
+      "suggested_models": [
+        "openai/gpt-5.3-codex"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.therouter.ai/v1"
+          },
+          "suggested_models": [
+            "openai/gpt-5.3-codex"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.therouter.ai/v1"
+          },
+          "suggested_models": [
+            "openai/gpt-5.3-codex"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "therouter-anthropic",
+      "name": "TheRouter · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.therouter.ai"
+      },
+      "suggested_models": [
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-haiku-4.5",
+        "anthropic/claude-opus-5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.therouter.ai"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.therouter.ai"
+          },
+          "suggested_models": [
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-opus-5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "therouter-gemini",
+      "name": "TheRouter · Gemini Native",
+      "protocol": "gemini_native",
+      "auth": "x_api_key",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.therouter.ai"
+      },
+      "suggested_models": [
+        "gemini-3.6-flash"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.therouter.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        },
+        "codex": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "direct",
+          "protocol": "gemini_native",
+          "auth": "x_api_key",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.therouter.ai"
+          },
+          "suggested_models": [
+            "gemini-3.6-flash"
+          ]
+        }
+      }
+    },
+    {
+      "id": "xai-grok",
+      "name": "xAI (Grok)",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.x.ai/v1"
+      },
+      "suggested_models": [
+        "grok-4.5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.x.ai/v1"
+          },
+          "suggested_models": [
+            "grok-4.5"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.x.ai/v1"
+          },
+          "suggested_models": [
+            "grok-4.5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "xiaomi-mimo",
+      "name": "Xiaomi MiMo",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.xiaomimimo.com/v1"
+      },
+      "suggested_models": [
+        "mimo-v2.5-pro",
+        "mimo-v2.5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.xiaomimimo.com/v1"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro",
+            "mimo-v2.5"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.xiaomimimo.com/v1"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro",
+            "mimo-v2.5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "xiaomi-mimo-anthropic",
+      "name": "Xiaomi MiMo · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.xiaomimimo.com/anthropic"
+      },
+      "suggested_models": [
+        "mimo-v2.5-pro"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.xiaomimimo.com/anthropic"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.xiaomimimo.com/anthropic"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "xiaomi-mimo-token-plan-china",
+      "name": "Xiaomi MiMo Token Plan (China)",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://token-plan-cn.xiaomimimo.com/v1"
+      },
+      "suggested_models": [
+        "mimo-v2.5-pro",
+        "mimo-v2.5"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://token-plan-cn.xiaomimimo.com/v1"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro",
+            "mimo-v2.5"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://token-plan-cn.xiaomimimo.com/v1"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro",
+            "mimo-v2.5"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "xiaomi-mimo-token-plan-china-anthropic",
+      "name": "Xiaomi MiMo Token Plan (China) · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://token-plan-cn.xiaomimimo.com/anthropic"
+      },
+      "suggested_models": [
+        "mimo-v2.5-pro"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://token-plan-cn.xiaomimimo.com/anthropic"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://token-plan-cn.xiaomimimo.com/anthropic"
+          },
+          "suggested_models": [
+            "mimo-v2.5-pro"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "zetaapi",
+      "name": "ZetaAPI",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.zetaapi.ai/v1"
+      },
+      "suggested_models": [
+        "gpt-5.6-sol"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.zetaapi.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.zetaapi.ai/v1"
+          },
+          "suggested_models": [
+            "gpt-5.6-sol"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "zetaapi-anthropic",
+      "name": "ZetaAPI · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.zetaapi.ai"
+      },
+      "suggested_models": [],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.zetaapi.ai"
+          },
+          "suggested_models": []
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.zetaapi.ai"
+          },
+          "suggested_models": []
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "zhipu-glm",
+      "name": "Zhipu GLM",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://open.bigmodel.cn/api/anthropic"
+      },
+      "suggested_models": [
+        "glm-5.1"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.bigmodel.cn/api/anthropic"
+          },
+          "suggested_models": [
+            "glm-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.bigmodel.cn/api/anthropic"
+          },
+          "suggested_models": [
+            "glm-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "zhipu-glm-chat",
+      "name": "Zhipu GLM · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://open.bigmodel.cn/api/coding/paas/v4"
+      },
+      "suggested_models": [
+        "glm-5.2"
+      ],
+      "model_protocol_capabilities": {
+        "glm-5.2": [
+          "reasoning_content"
+        ]
+      },
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.bigmodel.cn/api/coding/paas/v4"
+          },
+          "suggested_models": [
+            "glm-5.2"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://open.bigmodel.cn/api/coding/paas/v4"
+          },
+          "suggested_models": [
+            "glm-5.2"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "zhipu-glm-en",
+      "name": "Zhipu GLM en",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.z.ai/api/anthropic"
+      },
+      "suggested_models": [
+        "glm-5.1"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.z.ai/api/anthropic"
+          },
+          "suggested_models": [
+            "glm-5.1"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.z.ai/api/anthropic"
+          },
+          "suggested_models": [
+            "glm-5.1"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "zhipu-glm-en-chat",
+      "name": "Zhipu GLM en · OpenAI Chat Completions",
+      "protocol": "openai_chat_completions",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://api.z.ai/api/coding/paas/v4"
+      },
+      "suggested_models": [
+        "glm-5.2"
+      ],
+      "model_protocol_capabilities": {
+        "glm-5.2": [
+          "reasoning_content"
+        ]
+      },
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.z.ai/api/coding/paas/v4"
+          },
+          "suggested_models": [
+            "glm-5.2"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "openai_chat_completions",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://api.z.ai/api/coding/paas/v4"
+          },
+          "suggested_models": [
+            "glm-5.2"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "volcengine-agentplan",
+      "name": "火山Agentplan",
+      "protocol": "openai_responses",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://ark.cn-beijing.volces.com/api/coding/v3"
+      },
+      "suggested_models": [
+        "ark-code-latest"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "local_route",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/coding/v3"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "codex": {
+          "mode": "direct",
+          "protocol": "openai_responses",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/coding/v3"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    },
+    {
+      "id": "volcengine-agentplan-anthropic",
+      "name": "火山Agentplan · Anthropic Messages",
+      "protocol": "anthropic_messages",
+      "auth": "bearer",
+      "endpoint": {
+        "kind": "literal",
+        "url": "https://ark.cn-beijing.volces.com/api/coding"
+      },
+      "suggested_models": [
+        "ark-code-latest"
+      ],
+      "model_protocol_capabilities": {},
+      "models_url": null,
+      "client_compatibility": {
+        "claude_code": {
+          "mode": "direct",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/coding"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "codex": {
+          "mode": "local_route",
+          "protocol": "anthropic_messages",
+          "auth": "bearer",
+          "endpoint": {
+            "kind": "literal",
+            "url": "https://ark.cn-beijing.volces.com/api/coding"
+          },
+          "suggested_models": [
+            "ark-code-latest"
+          ]
+        },
+        "gemini": {
+          "mode": "unsupported",
+          "protocol": null,
+          "auth": null,
+          "endpoint": null,
+          "suggested_models": []
+        }
+      }
+    }
+  ]
+}

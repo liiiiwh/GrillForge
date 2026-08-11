@@ -1,0 +1,10 @@
+pub mod claude_code;
+pub mod claude_desktop;
+pub mod codex;
+pub mod gemini;
+pub mod grok_build;
+pub mod hermes;
+pub mod kimi_code;
+pub mod openclaw;
+pub mod opencode;
+pub mod pi;
