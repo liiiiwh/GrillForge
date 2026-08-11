@@ -135,10 +135,19 @@ fn anthropic_to_gemini(body: Value, streaming: bool) -> Result<Value, BridgeErro
         }
         generation.insert("stopSequences".into(), Value::Array(stops.clone()));
     }
-    if let Some(tools) = object.get("tools") {
-        result["tools"] = json!([{"functionDeclarations":convert_tools(tools)?}]);
-    }
-    if object.contains_key("tool_choice") && !object.contains_key("tools") {
+    let has_tools = match object.get("tools") {
+        Some(tools) => {
+            let values = tools
+                .as_array()
+                .ok_or_else(|| invalid_request("tools must be an array"))?;
+            if !values.is_empty() {
+                result["tools"] = json!([{"functionDeclarations":convert_tools(tools)?}]);
+            }
+            !values.is_empty()
+        }
+        None => false,
+    };
+    if object.contains_key("tool_choice") && !has_tools {
         return Err(invalid_request("tool_choice requires tools"));
     }
     if let Some(choice) = object.get("tool_choice") {

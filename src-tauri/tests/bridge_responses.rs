@@ -91,6 +91,21 @@ fn valid_response() -> Value {
 }
 
 #[tokio::test]
+async fn empty_claude_tool_list_is_omitted_from_responses_request() {
+    let (base_url, captured) = serve_once(200, valid_response()).await;
+    let mut request = valid_request();
+    request["tools"] = json!([]);
+
+    OpenAiResponsesBridge::new(base_url, "responses-secret")
+        .complete(request)
+        .await
+        .expect("an empty Claude tool list is valid");
+
+    let captured = captured.await.unwrap();
+    assert!(captured.body.get("tools").is_none());
+}
+
+#[tokio::test]
 async fn claude_subagent_system_history_is_preserved_as_a_system_input_message() {
     let (base_url, captured) = serve_once(200, valid_response()).await;
     let mut request = valid_request();

@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.1-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.2-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -102,7 +102,7 @@ flowchart LR
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.1-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.2-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
 
 解压后将 `GrillForge.app` 移入“应用程序”即可。首次运行不需要绕过 Gatekeeper。
 
@@ -230,8 +230,7 @@ GrillForge/
 ├── skills/                      # GrillForge Selector Skill
 ├── CONTEXT.md                   # 产品边界与领域语言
 ├── ARCHITECTURE.md              # 架构约束
-├── LOGIC.md                     # 核心行为与不变量
-└── MVP_PLAN.md                  # MVP 验收计划
+└── LOGIC.md                     # 核心行为与不变量
 ```
 
 ## 贡献

@@ -15,6 +15,53 @@ use url::Url;
 struct Capture(Arc<Mutex<Vec<(HeaderMap, Value)>>>);
 
 #[tokio::test]
+async fn empty_claude_tool_list_is_omitted_from_gemini_request() {
+    let capture = Capture::default();
+    let upstream =
+        Router::new()
+            .route(
+                "/v1beta/models/gemini-2.5-pro:generateContent",
+                post(
+                    |State(capture): State<Capture>,
+                     headers: HeaderMap,
+                     Json(body): Json<Value>| async move {
+                        capture.0.lock().unwrap().push((headers, body));
+                        Json(json!({
+                            "responseId":"gemini-empty-tools",
+                            "modelVersion":"gemini-2.5-pro",
+                            "candidates":[{
+                                "finishReason":"STOP",
+                                "content":{"role":"model","parts":[{"text":"pong"}]}
+                            }],
+                            "usageMetadata":{"promptTokenCount":3,"totalTokenCount":4}
+                        }))
+                    },
+                ),
+            )
+            .with_state(capture.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let endpoint = Url::parse(&format!(
+        "http://{address}/v1beta/models/gemini-2.5-pro:generateContent"
+    ))
+    .unwrap();
+
+    GeminiNativeBridge::from_endpoint(endpoint, "gemini-secret")
+        .complete(json!({
+            "model":"gemini-2.5-pro","max_tokens":128,
+            "messages":[{"role":"user","content":"ping"}],
+            "tools":[]
+        }))
+        .await
+        .expect("an empty Claude tool list is valid");
+
+    let calls = capture.0.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.get("tools").is_none());
+}
+
+#[tokio::test]
 async fn anthropic_text_round_trips_through_gemini_native_with_usage() {
     let capture = Capture::default();
     let upstream =

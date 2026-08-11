@@ -68,9 +68,9 @@ its current official primary/secondary model configuration and synchronizes
 built-in and persistent global Agent definitions without pretending that it
 supports arbitrary per-Agent model IDs.
 
-The current macOS artifact is a Universal x86_64/arm64 App bundle with a valid
-Apple Development signature for local verification. Public distribution still
-requires a Developer ID Application identity and notarization.
+The current macOS artifact is a Universal x86_64/arm64 App bundle signed with a
+Developer ID Application identity, notarized by Apple, stapled, and accepted by
+Gatekeeper.
 
 ## Engineering Philosophy
 
@@ -102,7 +102,8 @@ The MVP implements:
 - Claude Code detection, configuration backup/apply/restore, and status
 - GrillForge Skill installation for model capability discovery and selection
 - A local Anthropic-compatible protocol gateway when model routing requires it
-- Anthropic Messages, OpenAI Responses, and OpenAI Chat-compatible upstreams
+- Anthropic Messages, OpenAI Responses, OpenAI Chat-compatible, and Gemini
+  Native upstreams
 
 ## Non-Goals
 
@@ -159,10 +160,11 @@ model has been replaced. GrillForge now supports cc-switch-style main model
 management, while preserving Native/Default as the state in which it does not
 override the coding agent's main model.
 
-The canonical implementation documents are:
+The canonical implementation documents, in precedence order, are:
 
 1. `CONTEXT.md`
 2. `ARCHITECTURE.md`
 3. `LOGIC.md`
-4. `GRILLFORGE_ARCHITECTURE_SUPPLEMENT.md`
-5. Earlier final specification and review documents
+
+Release history belongs in `CHANGELOG.md`; superseded requirement drafts are
+not retained as competing sources of truth.

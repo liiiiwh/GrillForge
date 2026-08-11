@@ -4,6 +4,25 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-08-11
+
+### Fixed
+
+- Claude Client Code and Claude Code SubAgents no longer fail when the client
+  sends a legal empty `tools` list to a bridged model route.
+- OpenAI Responses, OpenAI Chat, Gemini Native, and Codex-to-Anthropic bridges
+  now omit empty tool arrays while still rejecting a dangling tool choice.
+- Applying Claude Code configuration now tells users to restart an already-open
+  Claude Client Code session so it reloads the shared route environment.
+
+### Changed
+
+- Removed superseded requirement drafts, completed MVP planning documents,
+  unused Vite/Tauri template assets, and obsolete conditional-compilation lint
+  suppressions.
+- Updated canonical architecture documentation to match the implemented client
+  adapters, protocol bridges, navigation, and notarized macOS release.
+
 ## [0.1.1] - 2026-08-11
 
 ### Fixed
@@ -63,5 +82,6 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Claude Code and Claude Client Code now resolve the installed selector binary
   even when the GUI application is not on the login-shell PATH.
 
+[0.1.2]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.2
 [0.1.1]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.1
 [0.1.0]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.0

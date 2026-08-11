@@ -18,12 +18,13 @@ Status: Canonical architecture
                              |
               +--------------+--------------+
               |              |              |
-        Claude Code       Codex          Pi / Kimi
-        Adapter (MVP)     (future)        (future)
+       Claude adapters   Codex adapter   Pi / Kimi adapters
+              |              |              |
+       Gemini / Grok / OpenCode / OpenClaw / Hermes adapters
                              |
                        Provider Layer
                              |
-       Anthropic / OpenAI Responses / OpenAI Chat / Local
+       Anthropic / OpenAI Responses / OpenAI Chat / Gemini / Local
                              |
                        Model Registry
 ```
@@ -104,8 +105,7 @@ Protocol compatibility order:
 1. Native Anthropic Messages: pass through with only required normalization.
 2. OpenAI Responses: bridge to and from Anthropic Messages.
 3. OpenAI Chat Completions-compatible: bridge to and from Anthropic Messages.
-4. Additional cc-switch-supported protocols are ported from upstream when a
-   selected MVP Provider requires them.
+4. Gemini Native: bridge to and from Anthropic Messages.
 
 Protocol format is selected by a cc-switch-derived preset or explicit user
 configuration. GrillForge must not blindly retry another protocol after an
@@ -143,34 +143,33 @@ only the thin model-to-provider selection needed to keep the main model and
 Worker models independent. All underlying provider protocol behavior remains
 cc-switch-derived.
 
-## Proposed MVP Source Layout
+## Source Layout
 
 ```text
 src-tauri/src/
   core/
-    provider/
-    model_registry/
-    routing/
-  application/
-    agent_service.rs
-    provider_service.rs
-    model_service.rs
-  agent_adapters/
+    agent.rs
+    model.rs
+    provider.rs
+    routing.rs
+  adapters/
     mod.rs
     claude_code/
-      detection.rs
-      configuration.rs
-      skill.rs
-      status.rs
-      model_routes.rs
-  provider_protocols/
-    anthropic/
-    openai_responses/
-    openai_chat/
-  infrastructure/
-    config_store/
-    secrets/
-    local_gateway/
+    claude_desktop/
+    codex/
+    pi/
+    kimi_code/
+    gemini/
+    grok_build/
+    opencode/
+    openclaw/
+    hermes/
+  bridge/
+  application.rs
+  configuration.rs
+  gateway.rs
+  integration.rs
+  storage.rs
 ```
 
 Dependency rules:
@@ -180,8 +179,8 @@ Dependency rules:
   infrastructure.
 - Agent Adapters depend on neutral core types, never the reverse.
 - Protocol bridges never read or write coding-agent configuration.
-- Filesystem, HTTP, database, and secret-storage details remain in
-  infrastructure.
+- Filesystem, HTTP, and secret-storage details remain outside neutral core
+  modules.
 - Tauri commands call application services rather than domain internals.
 
 ## Claude Code Adapter
@@ -275,9 +274,8 @@ The GUI is client-first rather than model-first. Its v0.6 primary navigation is:
 
 - Control Center
 - Coding Agent Clients
-- Models
 - Providers
-- Configuration Relationships
+- Routing
 
 Selecting a Client opens the configuration described by that Client Adapter.
 The Claude Code page contains its status, four fixed single-model Slots, named
@@ -288,7 +286,7 @@ links back to that shared Code configuration and only exposes its independent
 3P conversation/Cowork role routes. Provider credentials are never copied into
 a Client page; Slots and SubAgents reference the global Model Registry.
 
-The Configuration Relationships page is read-only. It renders the persisted
+The Routing page is read-only. It renders the persisted
 `Client -> Slot or SubAgent -> Model` relationship and must never imply a
 runtime route decision. Model details use only registry fields that actually
 exist; pricing, context limits, and recommendation claims are not invented.

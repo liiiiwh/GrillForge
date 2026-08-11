@@ -146,17 +146,26 @@ fn codex_response_to_anthropic_inner(
                 .ok_or_else(|| invalid_request("stream must be a boolean"))?
         );
     }
-    if let Some(tools) = body.get("tools") {
-        request["tools"] = Value::Array(convert_tools(tools)?);
-    }
+    let has_tools = match body.get("tools") {
+        Some(tools) => {
+            let values = tools
+                .as_array()
+                .ok_or_else(|| invalid_request("tools must be an array"))?;
+            if !values.is_empty() {
+                request["tools"] = Value::Array(convert_tools(tools)?);
+            }
+            !values.is_empty()
+        }
+        None => false,
+    };
     if let Some(choice) = body.get("tool_choice") {
-        if !body.contains_key("tools") {
+        if !has_tools {
             return Err(invalid_request("tool_choice requires tools"));
         }
         request["tool_choice"] = convert_tool_choice(choice)?;
     }
     if parallel_tool_calls == Some(false) {
-        if !body.contains_key("tools") {
+        if !has_tools {
             return Err(invalid_request("parallel_tool_calls requires tools"));
         }
         if request.get("tool_choice").is_none() {

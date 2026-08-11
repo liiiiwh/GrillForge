@@ -411,13 +411,22 @@ fn anthropic_to_responses(
     if let Some(system) = object.get("system") {
         result["instructions"] = json!(convert_system(system)?);
     }
-    if object.contains_key("tool_choice") && !object.contains_key("tools") {
+    let has_tools = match object.get("tools") {
+        Some(tools) => {
+            let values = tools
+                .as_array()
+                .ok_or_else(|| BridgeError::InvalidRequest("tools must be an array".into()))?;
+            if !values.is_empty() {
+                result["tools"] = Value::Array(convert_tools(tools)?);
+            }
+            !values.is_empty()
+        }
+        None => false,
+    };
+    if object.contains_key("tool_choice") && !has_tools {
         return Err(BridgeError::InvalidRequest(
             "tool_choice requires a non-empty tools array".into(),
         ));
-    }
-    if let Some(tools) = object.get("tools") {
-        result["tools"] = Value::Array(convert_tools(tools)?);
     }
     if let Some(tool_choice) = object.get("tool_choice") {
         result["tool_choice"] = convert_tool_choice(tool_choice)?;

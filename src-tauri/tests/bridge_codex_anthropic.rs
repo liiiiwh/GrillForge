@@ -10,6 +10,17 @@ use serde_json::json;
 use std::convert::Infallible;
 
 #[test]
+fn empty_codex_tool_list_is_omitted_from_anthropic_request() {
+    let request = codex_response_to_anthropic(
+        json!({"model":"claude-sonnet","input":"ping","tools":[]}),
+        CodexAnthropicCapabilities::default(),
+    )
+    .expect("an empty Codex tool list is valid");
+
+    assert!(request.get("tools").is_none());
+}
+
+#[test]
 fn tool_call_and_result_history_round_trip_without_being_flattened() {
     let capabilities = CodexAnthropicCapabilities::default();
     let request = codex_response_to_anthropic(

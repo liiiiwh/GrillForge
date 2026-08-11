@@ -75,6 +75,28 @@ async fn serve_once(response: Value) -> (Url, tokio::task::JoinHandle<CapturedRe
 }
 
 #[tokio::test]
+async fn empty_claude_tool_list_is_omitted_from_chat_request() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chatcmpl_empty_tools","model":"qwen-coder",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}
+    }))
+    .await;
+
+    OpenAiChatBridge::new(base_url, "chat-secret")
+        .complete(json!({
+            "model":"qwen-coder","max_tokens":128,
+            "messages":[{"role":"user","content":"ping"}],
+            "tools":[]
+        }))
+        .await
+        .expect("an empty Claude tool list is valid");
+
+    let captured = captured.await.unwrap();
+    assert!(captured.body.get("tools").is_none());
+}
+
+#[tokio::test]
 async fn text_system_and_parameters_round_trip_over_chat_http() {
     let (base_url, captured) = serve_once(json!({
         "id":"chatcmpl_1","model":"qwen-coder",

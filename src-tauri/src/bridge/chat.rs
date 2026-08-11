@@ -193,13 +193,22 @@ fn anthropic_to_chat(
                 .ok_or_else(|| invalid_request("stream must be a boolean"))?
         );
     }
-    if object.contains_key("tool_choice") && !object.contains_key("tools") {
+    let has_tools = match object.get("tools") {
+        Some(tools) => {
+            let values = tools
+                .as_array()
+                .ok_or_else(|| invalid_request("tools must be an array"))?;
+            if !values.is_empty() {
+                result["tools"] = Value::Array(convert_tools(tools)?);
+            }
+            !values.is_empty()
+        }
+        None => false,
+    };
+    if object.contains_key("tool_choice") && !has_tools {
         return Err(invalid_request(
             "tool_choice requires a non-empty tools array",
         ));
-    }
-    if let Some(value) = object.get("tools") {
-        result["tools"] = Value::Array(convert_tools(value)?);
     }
     if let Some(value) = object.get("tool_choice") {
         result["tool_choice"] = convert_tool_choice(value)?;

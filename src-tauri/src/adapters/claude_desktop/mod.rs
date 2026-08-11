@@ -35,26 +35,25 @@ pub fn windows_paths_from_local_app_data(local_app_data: impl AsRef<Path>) -> Cl
     )
 }
 
-#[allow(clippy::needless_return)]
+#[cfg(target_os = "macos")]
 pub fn current_claude_desktop_paths() -> Result<ClaudeDesktopPaths, ClaudeDesktopAdapterError> {
-    #[cfg(target_os = "macos")]
-    {
-        return dirs::home_dir()
-            .map(macos_paths_from_home)
-            .ok_or(ClaudeDesktopAdapterError::HomeDirectoryMissing);
-    }
-    #[cfg(windows)]
-    {
-        let local_app_data = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|home| home.join("AppData/Local")))
-            .ok_or(ClaudeDesktopAdapterError::HomeDirectoryMissing)?;
-        return Ok(windows_paths_from_local_app_data(local_app_data));
-    }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    {
-        Err(ClaudeDesktopAdapterError::UnsupportedPlatform)
-    }
+    dirs::home_dir()
+        .map(macos_paths_from_home)
+        .ok_or(ClaudeDesktopAdapterError::HomeDirectoryMissing)
+}
+
+#[cfg(windows)]
+pub fn current_claude_desktop_paths() -> Result<ClaudeDesktopPaths, ClaudeDesktopAdapterError> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join("AppData/Local")))
+        .ok_or(ClaudeDesktopAdapterError::HomeDirectoryMissing)?;
+    Ok(windows_paths_from_local_app_data(local_app_data))
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn current_claude_desktop_paths() -> Result<ClaudeDesktopPaths, ClaudeDesktopAdapterError> {
+    Err(ClaudeDesktopAdapterError::UnsupportedPlatform)
 }
 
 fn paths_from_dirs(normal_dir: PathBuf, threep_dir: PathBuf) -> ClaudeDesktopPaths {
@@ -99,29 +98,28 @@ pub fn detect_windows_claude_client_in(
     })
 }
 
-#[allow(clippy::needless_return)]
+#[cfg(target_os = "macos")]
 pub fn detect_claude_client() -> Option<ClaudeDesktopDetection> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut roots = vec![PathBuf::from("/Applications")];
-        if let Some(home) = dirs::home_dir() {
-            roots.push(home.join("Applications"));
-        }
-        return detect_macos_claude_client_in(&roots);
+    let mut roots = vec![PathBuf::from("/Applications")];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join("Applications"));
     }
-    #[cfg(windows)]
-    {
-        let roots = ["LOCALAPPDATA", "PROGRAMFILES"]
-            .into_iter()
-            .filter_map(std::env::var_os)
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
-        return detect_windows_claude_client_in(&roots);
-    }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    {
-        None
-    }
+    detect_macos_claude_client_in(&roots)
+}
+
+#[cfg(windows)]
+pub fn detect_claude_client() -> Option<ClaudeDesktopDetection> {
+    let roots = ["LOCALAPPDATA", "PROGRAMFILES"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    detect_windows_claude_client_in(&roots)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn detect_claude_client() -> Option<ClaudeDesktopDetection> {
+    None
 }
 
 pub fn is_claude_desktop_route_id(value: &str) -> bool {

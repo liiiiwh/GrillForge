@@ -1957,7 +1957,7 @@ function App() {
                           onClick={() =>
                             runIntegration(
                               "apply_claude_code",
-                              "Claude Code 配置已应用。",
+                              "Claude Code 配置已应用。Claude Client 中已打开的 Code 会话需要重新启动后使用新路由。",
                             )
                           }
                         >
