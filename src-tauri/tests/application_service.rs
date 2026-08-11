@@ -1,4 +1,5 @@
 use axum::{Json, Router, routing::post};
+use grillforge_lib::adapters::codex::{CodexAdapter, CodexPaths};
 use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput};
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use serde_json::{Value, json};
@@ -148,6 +149,43 @@ fn codex_accepts_anthropic_provider_through_the_explicit_responses_bridge() {
         .expect("Codex Anthropic bridge route");
 
     assert_eq!(state.codex_main_model_id.as_deref(), Some("local-coder"));
+}
+
+#[test]
+fn codex_can_keep_the_current_real_main_model_while_configuring_subagents() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let config = directory.path().join("home/.codex/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        "model = \"gpt-5.6-sol\"\nmodel_provider = \"openai\"\n",
+    )
+    .unwrap();
+    let service = ControlPlaneService::new(directory.path().join("grillforge"));
+    service
+        .set_codex_native_default_subagent_model(Some("gpt-5.4-mini".into()))
+        .unwrap();
+    let adapter = CodexAdapter::new(
+        CodexPaths::new(config.clone()),
+        directory.path().join("grillforge"),
+    );
+    let current = adapter.configured_model().unwrap();
+
+    let request = service
+        .codex_request("http://127.0.0.1:15721", "token", current.as_ref())
+        .unwrap();
+    adapter.apply(request).unwrap();
+
+    let written = std::fs::read_to_string(config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    assert_eq!(written["model"].as_str(), Some("gpt-5.6-sol"));
+    assert_eq!(written["model_provider"].as_str(), Some("openai"));
+    assert_eq!(
+        written["agents"]["default_subagent_model"].as_str(),
+        Some("gpt-5.4-mini")
+    );
 }
 
 #[test]

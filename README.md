@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.1-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -44,6 +44,7 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 ## 为什么使用 GrillForge
 
 - **以客户端为中心**：先选择 Claude Code、Codex、Pi、Kimi Code 等客户端，再配置该客户端真实支持的模型结构。
+- **槽位独立选模**：同一个 Coding Agent 的不同槽位可分别选择不同的 Provider 与模型；GrillForge 会按客户端的真实能力呈现槽位，并保留 Codex 内置 SubAgent 必须与主模型同 Provider 等原生约束。
 - **共享模型资产**：Provider 和 Model 只维护一次，可被多个客户端独立使用。
 - **多协议桥接**：支持 Anthropic Messages、OpenAI Responses、OpenAI Chat Compatible 与 Gemini Native。
 - **安全接管与恢复**：原子写入、单一恢复快照、配置差异检测和精确恢复。
@@ -101,7 +102,7 @@ flowchart LR
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.0-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.1-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
 
 解压后将 `GrillForge.app` 移入“应用程序”即可。首次运行不需要绕过 Gatekeeper。
 
@@ -243,11 +244,6 @@ GrillForge/
 - [LOGIC.md](./LOGIC.md)：配置与路由不变量
 
 提交代码时请保持变更范围小、补充公开接口测试，并确保 `build`、`fmt`、`test` 与 `clippy` 全部通过。新增客户端必须基于真实安装、配置和运行链路，不接受只展示 UI 的空 Adapter。
-
-### Contributors
-
-- `1742312272@qq.com` — 项目维护与发布
-- OpenAI Codex — 架构、实现与测试协作
 
 ## 致谢
 

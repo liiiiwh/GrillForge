@@ -52,6 +52,12 @@ pub struct CodexNativeModel {
     pub name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexConfiguredModel {
+    pub model: String,
+    pub provider: Option<String>,
+}
+
 pub fn detect_codex_cli() -> Result<Option<CodexCliDetection>, CodexAdapterError> {
     let executable = if cfg!(windows) { "codex.exe" } else { "codex" };
     let mut candidates = env::var_os("PATH")
@@ -325,6 +331,10 @@ pub enum CodexModelSelection {
     Native {
         model: String,
     },
+    Existing {
+        model: String,
+        provider: String,
+    },
     Managed {
         provider: CodexProviderRequest,
         model: String,
@@ -338,6 +348,17 @@ impl CodexModelSelection {
         Ok(Self::Native { model })
     }
 
+    pub fn existing(
+        model: impl Into<String>,
+        provider: Option<&str>,
+    ) -> Result<Self, CodexAdapterError> {
+        let model = model.into();
+        validate_model(&model)?;
+        let provider = provider.unwrap_or("openai").to_string();
+        validate_text(&provider, "Codex model provider")?;
+        Ok(Self::Existing { model, provider })
+    }
+
     pub fn managed(
         provider: CodexProviderRequest,
         model: impl Into<String>,
@@ -349,13 +370,16 @@ impl CodexModelSelection {
 
     fn model(&self) -> &str {
         match self {
-            Self::Native { model } | Self::Managed { model, .. } => model,
+            Self::Native { model } | Self::Existing { model, .. } | Self::Managed { model, .. } => {
+                model
+            }
         }
     }
 
     fn provider_id(&self) -> String {
         match self {
             Self::Native { .. } => "openai".into(),
+            Self::Existing { provider, .. } => provider.clone(),
             Self::Managed { provider, .. } => provider.config_id(),
         }
     }
@@ -590,6 +614,32 @@ impl CodexAdapter {
                 CodexTakeoverStatus::Drifted
             },
         })
+    }
+
+    pub fn configured_model(&self) -> Result<Option<CodexConfiguredModel>, CodexAdapterError> {
+        let Some(bytes) = read_optional(&self.paths.config_path)? else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| CodexAdapterError::Invalid("Codex config.toml must be UTF-8".into()))?;
+        let document = text.parse::<DocumentMut>().map_err(|error| {
+            CodexAdapterError::Invalid(format!("Codex config.toml is invalid TOML: {error}"))
+        })?;
+        let Some(model) = document.get("model").and_then(Item::as_str) else {
+            return Ok(None);
+        };
+        validate_model(model)?;
+        let provider = document
+            .get("model_provider")
+            .and_then(Item::as_str)
+            .map(str::to_string);
+        if let Some(provider) = &provider {
+            validate_text(provider, "Codex model provider")?;
+        }
+        Ok(Some(CodexConfiguredModel {
+            model: model.to_string(),
+            provider,
+        }))
     }
 
     pub fn custom_agents(&self) -> Result<Vec<CodexCustomAgent>, CodexAdapterError> {

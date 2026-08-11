@@ -211,6 +211,8 @@ type CodexStatus = {
   snapshotPresent: boolean;
   takeover: Takeover;
   configuredModelId: string | null;
+  currentConfigModel: string | null;
+  currentConfigProvider: string | null;
   supportedProtocols: Protocol[];
   nativeModels: { id: string; name: string }[];
   nativeModelsError: string | null;
@@ -2836,15 +2838,15 @@ function App() {
                     const nativeMain = state.codexNativeModelSlots.main ?? "";
                     const mainProviderId =
                       codexProviderSelection ||
-                      (nativeMain
-                        ? "codex_native"
-                        : modelProviderId(state.codexMainModelId ?? undefined));
+                      (state.codexMainModelId
+                        ? modelProviderId(state.codexMainModelId)
+                        : "codex_native");
                     const selectedRoutedProvider = responseProviders.find(
                       (provider) => provider.id === mainProviderId,
                     );
                     const mainValue =
                       mainProviderId === "codex_native"
-                        ? nativeMain
+                        ? nativeMain || (codexStatus.currentConfigModel ?? "")
                         : modelProviderId(
                               state.codexMainModelId ?? undefined,
                             ) === mainProviderId
@@ -2861,7 +2863,9 @@ function App() {
                           ? defaultExternal
                           : "";
                     const hasMain = Boolean(
-                      nativeMain || state.codexMainModelId,
+                      nativeMain ||
+                        state.codexMainModelId ||
+                        codexStatus.currentConfigModel,
                     );
                     return (
                       <section className="client-detail">
@@ -2913,11 +2917,18 @@ function App() {
                                       (model) =>
                                         model.id === state.codexMainModelId,
                                     )?.name ?? "已选择")
-                                  : "跟随原生"}
+                                  : codexStatus.currentConfigModel
+                                    ? (codexStatus.nativeModels.find(
+                                        (model) =>
+                                          model.id ===
+                                          codexStatus.currentConfigModel,
+                                      )?.name ??
+                                      codexStatus.currentConfigModel)
+                                    : "Codex 默认模型"}
                             </strong>
                             <span>
                               {nativeMain
-                                ? "Codex 原生认证"
+                                ? "Codex 原生模型"
                                 : state.codexMainModelId
                                   ? (providers.find(
                                       (provider) =>
@@ -2926,7 +2937,9 @@ function App() {
                                           state.codexMainModelId ?? undefined,
                                         ),
                                     )?.name ?? "")
-                                  : ""}
+                                  : codexStatus.currentConfigProvider
+                                    ? `${codexStatus.currentConfigProvider} · 当前 Codex 配置`
+                                    : "跟随 Codex 原生配置"}
                             </span>
                           </article>
                         </section>
@@ -2963,18 +2976,15 @@ function App() {
                                   onChange={(event) => {
                                     const providerId = event.target.value;
                                     setCodexProviderSelection(providerId);
-                                    if (!providerId)
+                                    if (providerId === "codex_native")
                                       void commit(
                                         "set_codex_native_main_model",
                                         { model: null },
-                                        "Codex 主模型已清除。",
+                                        "Codex 主模型已恢复跟随原生。",
                                       );
                                   }}
                                 >
-                                  <option value="">跟随原生</option>
-                                  <option value="codex_native">
-                                    Codex 原生认证
-                                  </option>
+                                  <option value="codex_native">跟随原生</option>
                                   {responseProviders.map((provider) => (
                                     <option
                                       key={provider.id}
@@ -2989,7 +2999,11 @@ function App() {
                               <label>
                                 <small>模型</small>
                                 <select
-                                  disabled={Boolean(pending) || !mainProviderId}
+                                  disabled={
+                                    Boolean(pending) ||
+                                    (mainProviderId === "codex_native" &&
+                                      codexStatus.nativeModels.length === 0)
+                                  }
                                   value={mainValue}
                                   onChange={(event) =>
                                     mainProviderId === "codex_native"
@@ -3005,7 +3019,22 @@ function App() {
                                         )
                                   }
                                 >
-                                  <option value="">选择模型</option>
+                                  {mainProviderId === "codex_native" &&
+                                    !mainValue && (
+                                      <option value="">Codex 默认模型</option>
+                                    )}
+                                  {mainProviderId === "codex_native" &&
+                                    mainValue &&
+                                    !codexStatus.nativeModels.some(
+                                      (model) => model.id === mainValue,
+                                    ) && (
+                                      <option value={mainValue}>
+                                        当前配置 · {mainValue}
+                                      </option>
+                                    )}
+                                  {mainProviderId !== "codex_native" && (
+                                    <option value="">选择模型</option>
+                                  )}
                                   {mainProviderId === "codex_native"
                                     ? codexStatus.nativeModels.map((model) => (
                                         <option key={model.id} value={model.id}>
@@ -3043,7 +3072,7 @@ function App() {
                                 <select disabled value={mainProviderId}>
                                   <option value={mainProviderId}>
                                     {mainProviderId === "codex_native"
-                                      ? "Codex 原生认证"
+                                      ? "跟随主模型（Codex 原生）"
                                       : selectedRoutedProvider
                                         ? `${selectedRoutedProvider.name} · ${protocolLabels[selectedRoutedProvider.protocol]}`
                                         : "请先选择主模型"}
@@ -3162,7 +3191,7 @@ function App() {
                                           >
                                             <option value="">跟随默认</option>
                                             <option value="codex_native">
-                                              Codex 原生认证
+                                              Codex 原生模型
                                             </option>
                                             {responseProviders.map(
                                               (provider) => (

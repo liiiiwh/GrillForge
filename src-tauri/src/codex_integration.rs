@@ -22,6 +22,8 @@ pub struct CodexIntegrationStatus {
     pub snapshot_present: bool,
     pub takeover: &'static str,
     pub configured_model_id: Option<String>,
+    pub current_config_model: Option<String>,
+    pub current_config_provider: Option<String>,
     pub supported_protocols: Vec<&'static str>,
     pub native_models: Vec<CodexNativeModel>,
     pub native_models_error: Option<String>,
@@ -40,6 +42,10 @@ impl CodexIntegrationService {
         let detection = detect_codex_cli().map_err(|error| error.to_string())?;
         let (native_models, native_models_error) = inspect_native_models_for(detection.as_ref());
         let adapter = self.adapter.status().map_err(|error| error.to_string())?;
+        let configured = self
+            .adapter
+            .configured_model()
+            .map_err(|error| error.to_string())?;
         let state = control.state()?;
         let takeover = match adapter.takeover {
             CodexTakeoverStatus::Inactive => "inactive",
@@ -58,6 +64,8 @@ impl CodexIntegrationService {
             snapshot_present: adapter.snapshot_present,
             takeover,
             configured_model_id: state.codex_main_model_id,
+            current_config_model: configured.as_ref().map(|value| value.model.clone()),
+            current_config_provider: configured.and_then(|value| value.provider),
             supported_protocols: vec!["open_ai_responses", "open_ai_chat_completions"],
             native_models,
             native_models_error,
@@ -91,8 +99,12 @@ impl CodexIntegrationService {
     ) -> Result<(), String> {
         let model_ids = control.codex_route_model_ids()?;
         let token = uuid::Uuid::new_v4().to_string();
+        let current = self
+            .adapter
+            .configured_model()
+            .map_err(|error| error.to_string())?;
         self.adapter
-            .apply(control.codex_request(&gateway.base_url, &token)?)
+            .apply(control.codex_request(&gateway.base_url, &token, current.as_ref())?)
             .map_err(|error| error.to_string())?;
         if model_ids.is_empty() {
             gateway.deactivate_codex();

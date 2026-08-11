@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.1-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -44,6 +44,7 @@ GrillForge is a local-first, client-centric model configuration center for codin
 ## Why GrillForge
 
 - **Client-centric configuration**: choose Claude Code, Codex, Pi, Kimi Code, or another supported client first, then configure its real model shape.
+- **Independent slot routing**: different slots in the same Coding Agent can select different Providers and models. GrillForge exposes only the client's real slots and preserves native constraints, such as Codex built-in SubAgents sharing the main model's Provider.
 - **Shared model assets**: maintain Providers and Models once and reuse them independently across clients.
 - **Multi-protocol bridges**: Anthropic Messages, OpenAI Responses, OpenAI Chat Compatible, and Gemini Native.
 - **Safe takeover and restore**: atomic writes, one recovery snapshot, configuration difference reporting, and exact restoration.
@@ -101,7 +102,7 @@ flowchart LR
 
 ## Download
 
-Download `GrillForge-v0.1.0-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
+Download `GrillForge-v0.1.1-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
 
 Unzip it and move `GrillForge.app` to Applications. No Gatekeeper bypass is required.
 
@@ -243,11 +244,6 @@ Issues and pull requests are welcome. Before contributing, read:
 - [LOGIC.md](./LOGIC.md) for configuration and routing invariants
 
 Keep changes narrow, add tests at public boundaries, and ensure `build`, `fmt`, `test`, and `clippy` all pass. A new client must be backed by its real installation, configuration, and runtime path; UI-only placeholder adapters are not accepted.
-
-### Contributors
-
-- `1742312272@qq.com` — project maintenance and releases
-- OpenAI Codex — architecture, implementation, and test collaboration
 
 ## Acknowledgements
 

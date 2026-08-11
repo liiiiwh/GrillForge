@@ -1,5 +1,7 @@
 use crate::adapters::claude_code::MODEL_SLOT_IDS;
-use crate::adapters::codex::{CodexModelSelection, CodexProviderRequest, CodexRequest};
+use crate::adapters::codex::{
+    CodexConfiguredModel, CodexModelSelection, CodexProviderRequest, CodexRequest,
+};
 use crate::configuration::{
     AgentRecord, ConfigurationDocuments, ConfigurationFiles, MainRecord, ModelRecord,
     ProviderRecord, SubAgentRecord,
@@ -742,6 +744,7 @@ impl ControlPlaneService {
         &self,
         gateway_base_url: &str,
         token: &str,
+        current_config: Option<&CodexConfiguredModel>,
     ) -> Result<CodexRequest, String> {
         let documents = self.documents()?;
         let routed_provider = CodexProviderRequest::new(
@@ -764,10 +767,17 @@ impl ControlPlaneService {
             MainRecord::Native => agent
                 .native_model_slots
                 .get(CODEX_MAIN_NATIVE_SLOT)
-                .ok_or_else(|| "Codex has no configured model".to_string())
-                .and_then(|model| {
-                    CodexModelSelection::native(model).map_err(|error| error.to_string())
-                })?,
+                .map(CodexModelSelection::native)
+                .or_else(|| {
+                    current_config.map(|configured| {
+                        CodexModelSelection::existing(
+                            &configured.model,
+                            configured.provider.as_deref(),
+                        )
+                    })
+                })
+                .ok_or_else(|| "Codex 当前配置没有可用的主模型；请先选择一个模型".to_string())?
+                .map_err(|error| error.to_string())?,
         };
         let default_subagent =
             if let Some(model) = agent.native_model_slots.get(CODEX_DEFAULT_SUBAGENT_SLOT) {

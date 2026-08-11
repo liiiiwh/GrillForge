@@ -26,6 +26,25 @@ fn detector_accepts_a_chatgpt_bundled_codex_cli_outside_path() {
     assert_eq!(detected.version, "codex-cli bundled-test");
 }
 
+#[test]
+fn codex_reports_the_model_from_the_current_real_configuration() {
+    let temp = tempdir().unwrap();
+    let codex = temp.path().join("home/.codex");
+    fs::create_dir_all(&codex).unwrap();
+    let config = codex.join("config.toml");
+    fs::write(
+        &config,
+        "model = \"gpt-5.6-sol\"\nmodel_provider = \"openai\"\napproval_policy = \"on-request\"\n",
+    )
+    .unwrap();
+    let adapter = CodexAdapter::new(CodexPaths::new(config), temp.path().join("grillforge"));
+
+    let configured = adapter.configured_model().unwrap().unwrap();
+
+    assert_eq!(configured.model, "gpt-5.6-sol");
+    assert_eq!(configured.provider.as_deref(), Some("openai"));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires an installed ChatGPT.app with its bundled Codex CLI"]

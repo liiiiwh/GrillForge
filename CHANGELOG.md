@@ -4,6 +4,22 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-08-11
+
+### Fixed
+
+- Codex now treats its current native configuration as the default route, shows
+  the actual configured model, and allows switching among the CLI's available
+  native models without presenting native authentication as a Provider.
+- Configuring only a Codex SubAgent preserves the current native main model and
+  Provider instead of requiring a separate GrillForge main-model selection.
+
+### Documentation
+
+- Clarified that one Coding Agent can map different supported slots to
+  different Providers and models while preserving client-native constraints.
+- Removed the manually maintained Contributors list from the README files.
+
 ## [0.1.0] - 2026-08-11
 
 ### Added
@@ -47,4 +63,5 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Claude Code and Claude Client Code now resolve the installed selector binary
   even when the GUI application is not on the login-shell PATH.
 
+[0.1.1]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.1
 [0.1.0]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.0
