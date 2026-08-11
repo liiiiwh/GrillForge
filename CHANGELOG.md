@@ -4,6 +4,18 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.5] - 2026-08-11
+
+### Fixed
+
+- An unavailable or slow login shell no longer makes an uninstalled optional
+  Coding Agent client fail the entire GrillForge startup.
+- Optional shell discovery now reports an absent CLI as not installed while
+  preserving actionable errors for real executable candidates that fail their
+  version check.
+- The behavior applies consistently to every client that uses login-shell CLI
+  discovery.
+
 ## [0.1.4] - 2026-08-11
 
 ### Fixed
@@ -118,6 +130,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Claude Code and Claude Client Code now resolve the installed selector binary
   even when the GUI application is not on the login-shell PATH.
 
+[0.1.5]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.5
 [0.1.4]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.4
 [0.1.3]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.3
 [0.1.2]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.2

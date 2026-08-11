@@ -121,3 +121,15 @@ fn candidate_discovery_does_not_start_a_shell_when_a_primary_candidate_is_valid(
 
     assert_eq!(found, Some(valid));
 }
+
+#[test]
+fn optional_shell_discovery_failure_means_the_cli_was_not_found() {
+    let found = first_valid_candidate_across_sources(
+        Vec::new(),
+        || Err::<Vec<_>, _>("login shell CLI discovery timed out"),
+        |_path: &Path| Ok::<_, &str>(()),
+    )
+    .expect("an unavailable optional discovery source is not a broken client");
+
+    assert_eq!(found, None);
+}

@@ -49,13 +49,7 @@ pub fn first_valid_candidate_across_sources<T, E>(
             .into_iter()
             .filter(|path| seen.insert(path.clone()))
             .collect::<Vec<_>>(),
-        Err(secondary_error) => {
-            return match primary_result {
-                Err(primary_error) => Err(primary_error),
-                Ok(None) => Err(secondary_error),
-                Ok(Some(_)) => unreachable!("a valid primary candidate already returned"),
-            };
-        }
+        Err(_) => return primary_result,
     };
     match first_valid_candidate(secondary_candidates, inspect) {
         Ok(None) => primary_result,
