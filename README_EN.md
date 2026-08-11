@@ -31,11 +31,12 @@ GrillForge is a local-first, client-centric model configuration center for codin
 - [Why GrillForge](#why-grillforge)
 - [Current Support](#current-support)
 - [How It Works](#how-it-works)
+- [Download](#download)
 - [Quick Start](#quick-start)
 - [Configuration and Security](#configuration-and-security)
 - [Development](#development)
 - [Changelog](./CHANGELOG.md)
-- [Before the First Public Release](#before-the-first-public-release)
+- [Roadmap](#roadmap)
 - [Repository Layout](#repository-layout)
 - [Contributing](#contributing)
 - [License](#license)
@@ -97,6 +98,12 @@ flowchart LR
 - **Provider Layer** owns endpoints, authentication placement, and API protocols.
 - **Model Registry** stores upstream model IDs, display names, task capabilities, and transport capabilities.
 - **Local Gateway** performs authentication replacement, model routing, and protocol translation. It never executes agent tools.
+
+## Download
+
+Download `GrillForge-v0.1.0-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
+
+Unzip it and move `GrillForge.app` to Applications. No Gatekeeper bypass is required.
 
 ## Quick Start
 
@@ -199,13 +206,12 @@ The bundle is written to:
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
 ```
 
-The macOS Universal (`arm64` + `x86_64`) build and Developer ID Application signature are verified. The public archive will be published after Apple notarization completes. Windows paths and configuration behavior are covered by automated tests, but a native Windows installer must still be built and verified in a Windows/MSVC environment.
+The macOS Universal (`arm64` + `x86_64`) release has passed Developer ID Application signing, Apple notarization, ticket stapling, and Gatekeeper verification. Windows paths and configuration behavior are covered by automated tests, but a native Windows installer must still be built and verified in a Windows/MSVC environment.
 
-## Before the First Public Release
+## Roadmap
 
 - Complete a real Kimi Code CLI end-to-end run covering Primary, Secondary, and persistent Agents.
 - Build and verify a native installer in a Windows/MSVC environment.
-- Complete Apple notarization for the macOS release archive.
 - Add a contribution guide, security policy, and release automation.
 
 ## Repository Layout

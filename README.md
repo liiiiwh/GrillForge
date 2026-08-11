@@ -31,11 +31,12 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 - [为什么使用 GrillForge](#为什么使用-grillforge)
 - [当前支持](#当前支持)
 - [工作方式](#工作方式)
+- [下载](#下载)
 - [快速开始](#快速开始)
 - [配置与安全](#配置与安全)
 - [开发](#开发)
 - [更新记录](./CHANGELOG.md)
-- [发布前计划](#发布前计划)
+- [后续计划](#后续计划)
 - [项目结构](#项目结构)
 - [贡献](#贡献)
 - [许可证](#许可证)
@@ -97,6 +98,12 @@ flowchart LR
 - **Provider Layer** 负责 Endpoint、认证方式与 API 协议。
 - **Model Registry** 保存上游模型 ID、展示名称、任务能力和协议能力。
 - **Local Gateway** 只做鉴权替换、模型路由和协议转换，不执行任何 Agent 工具。
+
+## 下载
+
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.0-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
+
+解压后将 `GrillForge.app` 移入“应用程序”即可。首次运行不需要绕过 Gatekeeper。
 
 ## 快速开始
 
@@ -199,13 +206,12 @@ pnpm tauri build --target universal-apple-darwin --bundles app
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
 ```
 
-当前已验证 macOS Universal（`arm64` + `x86_64`）构建与 Developer ID Application 正式签名；公开下载包会在 Apple Notarization 完成后发布。Windows 路径和配置逻辑有自动化测试，但原生 Windows 安装包仍需在 Windows/MSVC 环境构建验证。
+macOS Universal（`arm64` + `x86_64`）发布包已通过 Developer ID Application 正式签名、Apple Notarization、ticket stapling 与 Gatekeeper 验证。Windows 路径和配置逻辑有自动化测试，但原生 Windows 安装包仍需在 Windows/MSVC 环境构建验证。
 
-## 发布前计划
+## 后续计划
 
 - 使用真实 Kimi Code CLI 完成 Primary、Secondary 与持久 Agent 端到端验收。
 - 在 Windows/MSVC 环境生成并验证原生安装包。
-- 完成 macOS 发布包的 Apple Notarization。
 - 补充贡献指南、安全策略和正式 Release 自动化。
 
 ## 项目结构

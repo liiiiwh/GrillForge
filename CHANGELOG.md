@@ -27,6 +27,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Background re-application of persistently enabled clients on launch and
   exact pre-takeover restoration on normal quit.
 - Bilingual documentation with Simplified Chinese as the default.
+- Universal macOS release signed with Developer ID Application and accepted by
+  Apple Notary with a stapled Gatekeeper ticket.
 
 ### Fixed
 
