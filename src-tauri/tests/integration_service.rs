@@ -89,6 +89,20 @@ fn apply_and_disable_restore_claude_code_and_install_selector_skill() {
         selected["workers"][1]["agentName"],
         "grillforge-worker-coder-a"
     );
+    let client_official = Command::new("python3")
+        .arg(claude_root.join("skills/grillforge-model-selector/scripts/select_models.py"))
+        .args(["--config-dir"])
+        .arg(&grillforge_root)
+        .env("GRILLFORGE_BIN", env!("CARGO_BIN_EXE_grillforge"))
+        .env("CLAUDE_CODE_ENTRYPOINT", "claude-desktop")
+        .output()
+        .expect("Claude Client selector");
+    assert!(!client_official.status.success());
+    assert!(client_official.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&client_official.stderr)
+            .contains("Claude Client Code 正在使用官方路由")
+    );
     let settings = fs::read_to_string(claude_root.join("settings.json")).expect("settings");
     assert!(settings.contains("http://127.0.0.1:15721"));
     assert!(settings.contains("UNCHANGED"));

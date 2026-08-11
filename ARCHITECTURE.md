@@ -206,8 +206,10 @@ The MVP `ClaudeCodeAdapter` is responsible for:
 Claude Code CLI uses its settings and `ANTHROPIC_BASE_URL` gateway mechanism.
 Claude Client is a second, narrow MVP Adapter for its conversation/Cowork 3P
 profile and Claude-safe role routes. Its Code and background development tasks
-launch Claude Code and reuse the same user/project/local Agent, Skill, model
-Slot, and SubAgent configuration; GrillForge must not create a duplicate Code
+reuse the same user/project/local Agent definitions, Skill, model Slots, and
+SubAgent records, but Claude Client overrides the bundled runtime's network and
+authentication environment. External Workers become routable only after the
+Client 3P profile is applied; GrillForge must not create a duplicate Worker
 configuration store on the Claude Client page.
 
 ## Local Gateway
@@ -226,10 +228,11 @@ Responsibilities:
 
 It does not create agents, execute tools, schedule tasks, or manage context.
 
-When the main model is Native/Default and no Worker model is active, the Claude
-adapter restores native configuration and the gateway is not involved.
+For the standalone Claude Code CLI, when the main model is Native/Default and no
+Worker model is active, the adapter restores native configuration and the
+gateway is not involved.
 
-When Native/Default main and external Workers are both active, main-model
+For the standalone CLI, when Native/Default main and external Workers are both active, main-model
 requests pass through the gateway to the native Anthropic route while Worker
 aliases are sent to their configured Providers. Preservation of Claude account
 authentication on this mixed route must be verified by an integration test
@@ -239,6 +242,15 @@ For this mixed route the adapter changes `ANTHROPIC_BASE_URL` but does not set a
 placeholder `ANTHROPIC_AUTH_TOKEN`: Claude Code gives that variable precedence
 over subscription OAuth. The gateway forwards inbound OAuth only to the native
 Anthropic route and replaces it only for external Provider routes.
+
+Claude Client's bundled Code runtime is different: the Client host injects the
+official API host and authentication after reading the standalone CLI config.
+The supported external route is the Client's 3P inference profile, which sends
+conversation, Cowork, and bundled Code to one authenticated local gateway. The
+Client gateway never reads or proxies a subscription OAuth token. Consequently,
+official-subscription main plus third-party Worker is not advertised for Client
+Code, and the selector rejects external Workers while the Client remains in 1P
+mode.
 
 A custom base URL disables some Claude first-party additions, including Remote
 Control and default optimistic Tool Search behavior. The MVP does not emulate
@@ -282,9 +294,10 @@ The Claude Code page contains its status, four fixed single-model Slots, named
 SubAgent definitions, and Apply/Disable actions. Every SubAgent has its own
 stable ID, display name, Model reference, capability tags, and enabled state;
 multiple SubAgents may intentionally share one Model. The Claude Client page
-links back to that shared Code configuration and only exposes its independent
-3P conversation/Cowork role routes. Provider credentials are never copied into
-a Client page; Slots and SubAgents reference the global Model Registry.
+links back to the shared Worker definitions and exposes its independent 3P
+conversation/Cowork role routes, which are also the network entry for bundled
+Code. Provider credentials are never copied into a Client page; Slots and
+SubAgents reference the global Model Registry.
 
 The Routing page is read-only. It renders the persisted
 `Client -> Slot or SubAgent -> Model` relationship and must never imply a

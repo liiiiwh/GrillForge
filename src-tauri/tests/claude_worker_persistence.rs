@@ -34,7 +34,7 @@ fn worker_model() -> ModelInput {
 }
 
 #[test]
-fn enabled_claude_workers_restore_on_exit_and_reapply_for_cli_and_client_code() {
+fn enabled_claude_workers_restore_on_exit_and_reapply_for_cli() {
     let directory = tempfile::tempdir().expect("temporary home");
     let home = directory.path().join("home");
     let grillforge_root = home.join(".grillforge");
@@ -98,36 +98,6 @@ fn enabled_claude_workers_restore_on_exit_and_reapply_for_cli_and_client_code() 
     assert_eq!(
         before_restart.workers[0].route_alias,
         "grillforge/review-model"
-    );
-
-    // Claude Client's Code view launches Claude Code against the same ~/.claude
-    // root. It must observe the existing pool instead of creating client-specific
-    // Agent definitions or a second snapshot.
-    let claude_client_code =
-        IntegrationService::new(default_claude_config_root(&home), &grillforge_root);
-    assert_eq!(
-        claude_client_code
-            .status()
-            .expect("Claude Client Code status")
-            .generated_agent_names,
-        ["grillforge-worker-security-review"]
-    );
-    assert_eq!(
-        fs::read_to_string(&agent_path).expect("shared Agent definition"),
-        agent_definition
-    );
-    assert_eq!(
-        fs::read_dir(claude_root.join("agents"))
-            .expect("shared Claude Agent directory")
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("grillforge-worker-")
-            })
-            .count(),
-        1
     );
 
     // Normal application exit restores Claude's live files. The durable

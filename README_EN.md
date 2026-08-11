@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.5-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.6-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -58,7 +58,7 @@ GrillForge is a local-first, client-centric model configuration center for codin
 | Client | Supported configuration | Status |
 | --- | --- | --- |
 | Claude Code | Default model, Sonnet / Opus / Fable / Haiku slots, native SubAgent, unlimited named SubAgents | Implemented and verified through a real CLI chain |
-| Claude Client | Safe conversation / Cowork role routes; Code background tasks reuse Claude Code configuration | Implemented and locally verified |
+| Claude Client | Safe conversation / Cowork role routes; Code reuses Claude Code SubAgent definitions through a separate Client 3P gateway | Implemented and verified with the bundled Code runtime |
 | Codex | Main model, built-in SubAgent default, and per-custom-Agent models; standalone and ChatGPT-bundled CLI support | Implemented and verified with real CLI configuration |
 | Pi | Default model and available model pool | Implemented with real CLI, authentication, and gateway verification |
 | Kimi Code | Primary, Secondary, model pool, and built-in/global persistent Agent discovery | Implemented; configuration and gateway integration tests pass, real CLI E2E pending |
@@ -102,7 +102,7 @@ flowchart LR
 
 ## Download
 
-Download `GrillForge-v0.1.5-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
+Download `GrillForge-v0.1.6-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
 
 Unzip it and move `GrillForge.app` to Applications. No Gatekeeper bypass is required.
 
@@ -156,6 +156,9 @@ Control-plane data is stored under:
 
 > [!WARNING]
 > A custom `ANTHROPIC_BASE_URL` can disable Claude Remote Control and default Optimistic Tool Search. Disabling GrillForge restores the original Claude configuration.
+
+> [!NOTE]
+> Claude Client overrides authentication and networking for its bundled Code runtime, so the standalone Claude Code CLI gateway setting does not automatically control Client Code. To use an external SubAgent in Client Code, apply the Claude Code SubAgent definitions first, then configure at least one role on the Claude Client page, apply the Client 3P profile, and restart Claude Client. Client 3P mode routes conversation, Cowork, and bundled Code through the same gateway; mixing an official subscription main model with a third-party Worker has no supported safe credential path.
 
 ## Development
 

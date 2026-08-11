@@ -32,6 +32,37 @@ fn model(id: &str, provider_id: &str, capabilities: &[&str]) -> ModelRecord {
     }
 }
 
+fn save_active_worker(root: &std::path::Path) {
+    ConfigurationFiles::new(root)
+        .save(
+            &ConfigDocument {
+                version: 1,
+                providers: vec![provider("first", "secret")],
+            },
+            &ModelsDocument {
+                version: 1,
+                models: vec![model("alpha", "first", &["coding"])],
+            },
+            &AgentsDocument {
+                version: 1,
+                agents: vec![AgentRecord {
+                    id: "claude_code".into(),
+                    adapter: "claude_code".into(),
+                    enabled: true,
+                    main: MainRecord::Native,
+                    model_slots: Default::default(),
+                    native_model_slots: Default::default(),
+                    worker_mode: true,
+                    enabled_workers: vec!["alpha".into()],
+                    native_subagent_enabled: false,
+                    subagents: vec![],
+                }],
+            },
+        )
+        .unwrap();
+    std::fs::write(root.join("claude-code.snapshot.json"), "active").unwrap();
+}
+
 #[test]
 fn selector_returns_stably_sorted_credential_free_effective_workers() {
     let root = tempfile::tempdir().unwrap();
@@ -156,6 +187,66 @@ fn selector_cli_prints_exactly_one_json_document() {
 
     assert_eq!(output, Some("{\"workers\":[]}".to_string()));
     assert!(serde_json::from_str::<serde_json::Value>(output.as_deref().unwrap()).is_ok());
+}
+
+#[test]
+fn selector_rejects_external_workers_in_claude_client_official_mode() {
+    let root = tempfile::tempdir().unwrap();
+    save_active_worker(root.path());
+
+    let error = selector::run_cli([
+        OsString::from("selector"),
+        OsString::from("--config-dir"),
+        root.path().as_os_str().to_owned(),
+        OsString::from("--claude-entrypoint"),
+        OsString::from("claude-desktop"),
+    ])
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Claude Client Code 正在使用官方路由，不能调用 GrillForge 外部 SubAgent；请先在 GrillForge 的 Claude Client 页面配置模型并应用，然后重新启动 Claude Client"
+    );
+}
+
+#[test]
+fn selector_requires_a_live_grillforge_profile_in_claude_client_threep_mode() {
+    let root = tempfile::tempdir().unwrap();
+    save_active_worker(root.path());
+
+    let error = selector::run_cli([
+        OsString::from("selector"),
+        OsString::from("--config-dir"),
+        root.path().as_os_str().to_owned(),
+        OsString::from("--claude-entrypoint"),
+        OsString::from("claude-desktop-3p"),
+    ])
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Claude Client Code 正在使用第三方路由，但当前路由不是已生效的 GrillForge 配置；请在 GrillForge 的 Claude Client 页面重新应用"
+    );
+}
+
+#[test]
+fn selector_returns_workers_for_a_live_grillforge_claude_client_profile() {
+    let root = tempfile::tempdir().unwrap();
+    save_active_worker(root.path());
+    std::fs::write(root.path().join("claude-desktop.snapshot.json"), "active").unwrap();
+
+    let output = selector::run_cli([
+        OsString::from("selector"),
+        OsString::from("--config-dir"),
+        root.path().as_os_str().to_owned(),
+        OsString::from("--claude-entrypoint"),
+        OsString::from("claude-desktop-3p"),
+    ])
+    .unwrap()
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(json["workers"][0]["routeAlias"], "grillforge/alpha");
 }
 
 #[test]

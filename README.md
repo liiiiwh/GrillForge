@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.5-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.6-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -58,7 +58,7 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 | 客户端 | 当前支持的配置 | 状态 |
 | --- | --- | --- |
 | Claude Code | 默认模型、Sonnet / Opus / Fable / Haiku 槽位、原生 SubAgent、无限自定义 SubAgent | 已实现并完成真实 CLI 链路测试 |
-| Claude Client | 对话 / Cowork 安全角色映射；Code 后台任务复用 Claude Code 配置 | 已实现并完成本地客户端链路测试 |
+| Claude Client | 对话 / Cowork 安全角色映射；Code 复用 Claude Code SubAgent 定义，并通过独立的 Client 3P 网关路由 | 已实现并完成本机内置 Code 链路测试 |
 | Codex | 主模型、内置 SubAgent 默认模型、自定义 Agent 独立模型；支持独立 CLI 与 ChatGPT 内置 CLI | 已实现并完成真实 CLI 配置验收 |
 | Pi | 默认模型与可用模型池 | 已实现并完成真实 CLI、鉴权与网关链路测试 |
 | Kimi Code | Primary、Secondary、模型池，以及内置/全局永久 Agent 同步 | 已实现；配置与网关集成测试通过，真实 CLI E2E 待验证 |
@@ -102,7 +102,7 @@ flowchart LR
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.5-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.6-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
 
 解压后将 `GrillForge.app` 移入“应用程序”即可。首次运行不需要绕过 Gatekeeper。
 
@@ -156,6 +156,9 @@ GrillForge 的控制面数据默认位于：
 
 > [!WARNING]
 > Claude Code 使用自定义 `ANTHROPIC_BASE_URL` 时，Claude Remote Control 和默认的 Optimistic Tool Search 可能不可用。停用 GrillForge 后会恢复原始配置。
+
+> [!NOTE]
+> Claude Client 会覆盖内置 Code 的认证和网络入口，因此独立 Claude Code CLI 的网关设置不会自动控制 Client Code。要在 Client Code 中使用外部 SubAgent，需先应用 Claude Code 的 SubAgent 定义，再在 Claude Client 页面至少配置一个角色模型、应用 Client 3P 配置并重新启动 Claude Client。Client 3P 模式会同时接管对话、Cowork 和内置 Code；官方订阅主模型与第三方 Worker 的混合路由没有受支持的安全凭据通道。
 
 ## 开发
 

@@ -32,7 +32,6 @@ pub struct ClaudeDesktopIntegrationStatus {
     pub differences: Vec<String>,
     pub configured_routes: Vec<String>,
     pub supported_model_slots: Vec<&'static str>,
-    pub code_uses_claude_code_configuration: bool,
 }
 
 #[derive(Clone)]
@@ -43,14 +42,17 @@ struct ActiveConfiguration {
 
 pub struct ClaudeDesktopIntegrationService {
     adapter: ClaudeDesktopAdapter,
+    grillforge_root: PathBuf,
     activated_this_session: AtomicBool,
     active: Mutex<Option<ActiveConfiguration>>,
 }
 
 impl ClaudeDesktopIntegrationService {
     pub fn new(paths: ClaudeDesktopPaths, grillforge_root: impl Into<PathBuf>) -> Self {
+        let grillforge_root = grillforge_root.into();
         Self {
-            adapter: ClaudeDesktopAdapter::new(paths, grillforge_root),
+            adapter: ClaudeDesktopAdapter::new(paths, &grillforge_root),
+            grillforge_root,
             activated_this_session: AtomicBool::new(false),
             active: Mutex::new(None),
         }
@@ -103,6 +105,17 @@ impl ClaudeDesktopIntegrationService {
                 .collect::<Vec<_>>()
         };
         let mut worker_routes = HashSet::new();
+        if !worker_model_ids.is_empty()
+            && !self
+                .grillforge_root
+                .join("claude-code.snapshot.json")
+                .is_file()
+        {
+            return Err(
+                "Claude Client Code 的外部 SubAgent 尚未应用；请先在 Claude Code 页面应用配置"
+                    .into(),
+            );
+        }
         for model_id in worker_model_ids {
             if !worker_routes.insert(model_id.clone()) {
                 continue;
@@ -196,7 +209,6 @@ impl ClaudeDesktopIntegrationService {
             differences: adapter.differences,
             configured_routes,
             supported_model_slots: DESKTOP_MODEL_SLOTS.iter().map(|(slot, _)| *slot).collect(),
-            code_uses_claude_code_configuration: true,
         })
     }
 

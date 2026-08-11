@@ -4,6 +4,28 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.6] - 2026-08-11
+
+### Fixed
+
+- Claude Client Code now rejects an external GrillForge Worker before
+  delegation while the Client is still using its official 1P route, instead of
+  sending the `grillforge/*` alias to Anthropic and reporting a misleading
+  model-access error.
+- The selector validates that Claude Client Code is running an active
+  GrillForge 3P profile before returning external Workers.
+- The Claude Client page now describes the real boundary: it shares Claude Code
+  SubAgent definitions, but its host-managed network route must be applied
+  separately and then loaded by restarting Claude Client.
+- Applying a Claude Client profile with external Workers now fails fast unless
+  their Claude Code Agent definitions have already been applied.
+
+### Verification
+
+- Added a loopback-only end-to-end test using Claude Client's bundled Code
+  runtime. It verifies `Client main -> named GrillForge Worker -> Client main`
+  without reading account credentials or contacting Anthropic.
+
 ## [0.1.5] - 2026-08-11
 
 ### Fixed
@@ -25,8 +47,8 @@ The project follows [Semantic Versioning](https://semver.org/).
   model without requiring an explicit selector Skill invocation.
 - The forced default remains available as a named GrillForge Agent, so explicit
   selector-driven delegation and automatic delegation use the same route.
-- Claude Client Code is covered by an isolated end-to-end test using its bundled
-  Claude Code binary and a loopback-only API server.
+- The automatic standalone Claude Code path is covered by an isolated
+  end-to-end test using a loopback-only API server.
 
 ### Changed
 
@@ -60,8 +82,6 @@ The project follows [Semantic Versioning](https://semver.org/).
   sends a legal empty `tools` list to a bridged model route.
 - OpenAI Responses, OpenAI Chat, Gemini Native, and Codex-to-Anthropic bridges
   now omit empty tool arrays while still rejecting a dangling tool choice.
-- Applying Claude Code configuration now tells users to restart an already-open
-  Claude Client Code session so it reloads the shared route environment.
 
 ### Changed
 
@@ -130,6 +150,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Claude Code and Claude Client Code now resolve the installed selector binary
   even when the GUI application is not on the login-shell PATH.
 
+[0.1.6]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.6
 [0.1.5]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.5
 [0.1.4]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.4
 [0.1.3]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.3

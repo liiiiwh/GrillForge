@@ -29,9 +29,13 @@ def resolve_executable() -> str:
 
 def main() -> int:
     executable = resolve_executable()
+    arguments = [executable, "selector", *sys.argv[1:]]
+    entrypoint = os.environ.get("CLAUDE_CODE_ENTRYPOINT")
+    if entrypoint:
+        arguments.extend(("--claude-entrypoint", entrypoint))
     try:
         return subprocess.run(
-            [executable, "selector", *sys.argv[1:]],
+            arguments,
             check=False,
         ).returncode
     except OSError as error:

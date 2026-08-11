@@ -292,7 +292,7 @@ Restoration must not delete unrelated user changes. If the current file has
 diverged since GrillForge applied it, the adapter must merge only owned fields or
 stop with a recoverable conflict instead of overwriting the file wholesale.
 
-## Effective Integration Matrix
+## Claude Code CLI Effective Integration Matrix
 
 | Main selection | Effective Workers | Claude Adapter behavior |
 |---|---:|---|
@@ -301,10 +301,18 @@ stop with a recoverable conflict instead of overwriting the file wholesale.
 | Native/Default | 1+ | Preserve native main route; route Worker aliases through gateway |
 | Managed model | 1+ | Route main and Worker aliases independently through gateway |
 
-The mixed Native/Default-main plus external-Worker case is a release-critical
-integration path. Claude account authentication must be forwarded without
-being persisted or exposed, while external Provider credentials replace it
-only on the external route.
+The mixed Native/Default-main plus external-Worker case applies to the
+standalone Claude Code CLI. Claude account authentication must be forwarded
+without being persisted or exposed, while external Provider credentials
+replace it only on the external route.
+
+Claude Client is a separate host boundary. Its bundled Code runtime ignores the
+standalone CLI network setting because Claude Client injects host-managed
+authentication and `ANTHROPIC_BASE_URL`. External Workers are therefore
+selectable only while the Client is running GrillForge's 3P profile. That
+profile routes conversation, Cowork, and bundled Code through the same gateway;
+it cannot safely mix an official subscription main route with a third-party
+Worker. In official Client mode the selector must fail before delegation.
 
 ## GUI Behavior
 
@@ -320,10 +328,10 @@ Shows:
 ### Coding Agent 客户端
 
 For MVP, Claude Code and Claude Client are configurable. Claude Client Code and
-background development tasks reuse Claude Code's Agent, Skill, Slot, and
-SubAgent configuration; only Claude Client conversation/Cowork safe-role
-routing is stored separately. Future Client cards are never presented as
-working toggles.
+background development tasks reuse Claude Code's Agent definitions, selector
+Skill, Slots, and SubAgent records, but not its network environment. The Client
+page owns the separate 3P profile needed to route conversation, Cowork, and
+bundled Code. Future Client cards are never presented as working toggles.
 
 ### Claude Code Slots and SubAgents
 

@@ -11,4 +11,6 @@ description: Query GrillForge's credential-free effective Claude Code Worker poo
 4. If the command fails, surface its error immediately. Do not fall back to native behavior or another model.
 5. If delegating, choose one returned Worker and invoke its exact `agentName` as the native Claude Code `subagent_type`.
 
+Claude Client's Code view can use an external Worker only while Claude Client is running the GrillForge 3P profile. The selector checks that host context before returning a Worker, so never bypass a Claude Client routing error or invoke the Agent anyway.
+
 Never invoke this selector from a delegated SubAgent. Never parse GrillForge YAML, read Provider credentials, call model APIs, or invent routes.

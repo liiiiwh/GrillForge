@@ -191,7 +191,6 @@ type ClaudeDesktopStatus = {
   differences: string[];
   configuredRoutes: string[];
   supportedModelSlots: string[];
-  codeUsesClaudeCodeConfiguration: boolean;
 };
 
 type PiStatus = {
@@ -1957,7 +1956,7 @@ function App() {
                           onClick={() =>
                             runIntegration(
                               "apply_claude_code",
-                              "Claude Code 配置已应用。Claude Client 中已打开的 Code 会话需要重新启动后使用新路由。",
+                              "Claude Code CLI 配置已应用。Claude Client Code 如需使用外部 SubAgent，还需在 Claude Client 页面应用配置。",
                             )
                           }
                         >
@@ -2411,8 +2410,7 @@ function App() {
                         <p className="kicker">Claude Client</p>
                         <h2>模型配置</h2>
                         <p>
-                          配置对话与 Cowork 模型；Code 使用 Claude Code 的模型与
-                          SubAgent 配置。
+                          配置对话、Cowork 与内置 Code 使用的第三方网关。
                         </p>
                       </div>
                       <Badge tone={desktopTone}>
@@ -2441,20 +2439,28 @@ function App() {
                       </article>
                       <article>
                         <small>Code / 后台任务</small>
-                        <strong>{takeoverLabel(integration.takeover)}</strong>
+                        <strong>
+                          {claudeDesktop.takeover === "active" &&
+                          claudeDesktop.configuredRoutes.some((route) =>
+                            route.startsWith("grillforge/"),
+                          )
+                            ? "外部 SubAgent 可用"
+                            : "未接入 Client 网关"}
+                        </strong>
                         <span>
-                          可用 {effectiveSubAgentCount} 个 Claude Code
-                          SubAgent
+                          {claudeDesktop.takeover === "active"
+                            ? `共享 ${effectiveSubAgentCount} 个 Claude Code SubAgent`
+                            : "应用本页配置并重启 Claude Client 后生效"}
                         </span>
                       </article>
                     </section>
                     <section className="reuse-card">
                       <div>
                         <p className="kicker">Code SubAgent</p>
-                        <h2>复用 Claude Code 配置</h2>
+                        <h2>共享 Claude Code SubAgent 列表</h2>
                         <p>
-                          在 Claude Code 页面应用一次即可，无需为 Client Code
-                          重复配置。
+                          Worker 定义无需重复配置；Claude Client 会覆盖 CLI
+                          的网络入口，因此仍需在本页应用 Client 网关并重新启动。
                         </p>
                       </div>
                       <button
@@ -2469,7 +2475,9 @@ function App() {
                         <div>
                           <p className="kicker">Client 对话 / Cowork</p>
                           <h2>对话角色模型</h2>
-                          <p>先选择供应商，再选择该供应商下的模型。</p>
+                          <p>
+                            先选择供应商，再选择模型；至少配置一个角色后才能应用。
+                          </p>
                         </div>
                       </div>
                       <section className="slot-grid">
@@ -2508,7 +2516,7 @@ function App() {
                                       );
                                   }}
                                 >
-                                  <option value="">跟随原生</option>
+                                  <option value="">不配置</option>
                                   {gatewayProviders.map((provider) => (
                                     <option
                                       key={provider.id}
@@ -2566,14 +2574,17 @@ function App() {
                         <p>
                           {claudeDesktop.takeover === "drifted"
                             ? `${takeoverDetail(claudeDesktop.takeover, claudeDesktop.differences)}。重新应用将覆盖这些受管文件。`
-                            : "保存模型后应用配置，并重新启动 Claude Client。"}
+                            : "应用后 Claude Client 的对话、Cowork 和内置 Code 都会使用该第三方网关；重新启动 Client 后生效。"}
                         </p>
                       </div>
                       <div className="agent-actions">
                         <button
                           className="button"
                           disabled={
-                            Boolean(pending) || !claudeDesktop.installed
+                            Boolean(pending) ||
+                            !claudeDesktop.installed ||
+                            Object.keys(state.claudeDesktopModelSlots).length ===
+                              0
                           }
                           onClick={() =>
                             runDesktopIntegration(
