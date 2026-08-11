@@ -67,7 +67,7 @@ fn selectable_workers_generate_stable_native_agent_definitions() {
 }
 
 #[test]
-fn forced_worker_uses_only_the_global_subagent_override() {
+fn forced_worker_is_both_the_global_default_and_an_explicit_agent() {
     let claude_dir = tempdir().expect("temporary Claude config");
     let adapter = adapter(&claude_dir);
 
@@ -85,16 +85,16 @@ fn forced_worker_uses_only_the_global_subagent_override() {
             if key == "CLAUDE_CODE_SUBAGENT_MODEL"
                 && value == "grillforge/worker-review"
     )));
-    assert!(
-        !plan
-            .operations()
-            .iter()
-            .any(|operation| matches!(operation, ClaudeCodeOperation::WriteFile { .. }))
-    );
+    assert!(plan.operations().iter().any(|operation| matches!(
+        operation,
+        ClaudeCodeOperation::WriteFile { path, contents }
+            if path.ends_with("agents/grillforge-worker-review.md")
+                && contents.contains("model: grillforge/worker-review")
+    )));
 }
 
 #[test]
-fn forced_worker_removes_selectable_agent_definitions_from_the_active_plan() {
+fn forced_worker_replaces_stale_agent_definitions_with_its_explicit_agent() {
     let claude_dir = tempdir().expect("temporary Claude config");
     let old_agent = claude_dir.path().join("agents/grillforge-worker-old.md");
     fs::create_dir_all(old_agent.parent().expect("agent directory")).expect("create agents");
@@ -117,12 +117,12 @@ fn forced_worker_removes_selectable_agent_definitions_from_the_active_plan() {
         operation,
         ClaudeCodeOperation::RemoveFile { path } if path == &old_agent
     )));
-    assert!(
-        !plan
-            .operations()
-            .iter()
-            .any(|operation| matches!(operation, ClaudeCodeOperation::WriteFile { .. }))
-    );
+    assert!(plan.operations().iter().any(|operation| matches!(
+        operation,
+        ClaudeCodeOperation::WriteFile { path, contents }
+            if path.ends_with("agents/grillforge-worker-review.md")
+                && contents.contains("model: grillforge/worker-review")
+    )));
 }
 
 #[test]
@@ -666,7 +666,7 @@ fn status_reports_only_managed_aliases_and_agent_names() {
         status.forced_worker_alias.as_deref(),
         Some("grillforge/worker-review")
     );
-    assert!(status.generated_agent_names.is_empty());
+    assert_eq!(status.generated_agent_names, ["grillforge-worker-review"]);
     assert!(!format!("{status:?}").contains("must-not-leak"));
 }
 
@@ -775,7 +775,7 @@ fn cli_inspection_has_a_hard_timeout() {
 
 #[test]
 #[ignore = "requires an installed Claude Code CLI; uses only loopback and dummy credentials"]
-fn installed_claude_cli_routes_main_agent_worker_and_back() {
+fn installed_claude_cli_routes_automatic_subagent_through_forced_worker() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback mock");
     listener
         .set_nonblocking(true)
@@ -817,7 +817,7 @@ fn installed_claude_cli_routes_main_agent_worker_and_back() {
                                 "input": {
                                     "description": "Run loopback Worker",
                                     "prompt": "Return the loopback result",
-                                    "subagent_type": "grillforge-worker-reviewer",
+                                    "subagent_type": "general-purpose",
                                     "run_in_background": false
                                 }
                             }]),
@@ -844,24 +844,22 @@ fn installed_claude_cli_routes_main_agent_worker_and_back() {
     });
 
     let claude_dir = tempdir().expect("temporary Claude config");
+    fs::write(
+        claude_dir.path().join("settings.json"),
+        r#"{"env":{"ANTHROPIC_MODEL":"main-loopback"}}"#,
+    )
+    .expect("seed isolated main model");
     let adapter = adapter(&claude_dir);
-    let plan = adapter
-        .plan_enable(EnableRequest::native_main(
+    adapter
+        .enable(EnableRequest::native_main(
             &endpoint,
-            vec![
-                worker("reviewer", "grillforge/worker-loopback"),
-                worker("spare", "grillforge/worker-spare"),
-            ],
-            WorkerStrategy::SelectablePool,
+            vec![worker("reviewer", "grillforge/worker-loopback")],
+            WorkerStrategy::ForcedSingle,
         ))
-        .expect("plan loopback agents");
-    for operation in plan.operations() {
-        if let ClaudeCodeOperation::WriteFile { path, contents } = operation {
-            fs::create_dir_all(path.parent().expect("agent directory")).expect("create agents");
-            fs::write(path, contents).expect("install temporary Agent definition");
-        }
-    }
-    let mut child = Command::new("claude")
+        .expect("apply forced loopback Worker");
+    let claude_binary =
+        std::env::var_os("GRILLFORGE_CLAUDE_E2E_BIN").unwrap_or_else(|| "claude".into());
+    let mut child = Command::new(claude_binary)
         .args([
             "--print",
             "--no-session-persistence",
@@ -871,10 +869,11 @@ fn installed_claude_cli_routes_main_agent_worker_and_back() {
         ])
         .current_dir(claude_dir.path())
         .env("CLAUDE_CONFIG_DIR", claude_dir.path())
-        .env("ANTHROPIC_BASE_URL", &endpoint)
-        .env("ANTHROPIC_MODEL", "main-loopback")
         .env("ANTHROPIC_API_KEY", "local-dummy-key")
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+        .env_remove("ANTHROPIC_BASE_URL")
+        .env_remove("ANTHROPIC_MODEL")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
         .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
         .stdin(Stdio::null())

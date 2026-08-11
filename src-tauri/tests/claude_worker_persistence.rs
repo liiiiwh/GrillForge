@@ -87,6 +87,11 @@ fn enabled_claude_workers_restore_on_exit_and_reapply_for_cli_and_client_code() 
     let agent_path = claude_root.join("agents/grillforge-worker-security-review.md");
     let agent_definition = fs::read_to_string(&agent_path).expect("generated Agent definition");
     assert!(agent_definition.contains("model: grillforge/review-model"));
+    let active_settings =
+        fs::read_to_string(claude_root.join("settings.json")).expect("active settings");
+    assert!(
+        active_settings.contains("\"CLAUDE_CODE_SUBAGENT_MODEL\": \"grillforge/review-model\"")
+    );
 
     let before_restart = selector::select(&grillforge_root).expect("selector after apply");
     assert_eq!(before_restart.workers.len(), 1);
@@ -159,6 +164,11 @@ fn enabled_claude_workers_restore_on_exit_and_reapply_for_cli_and_client_code() 
     assert_eq!(
         fs::read_to_string(&agent_path).expect("re-applied Agent definition"),
         agent_definition
+    );
+    assert!(
+        fs::read_to_string(claude_root.join("settings.json"))
+            .expect("re-applied settings")
+            .contains("\"CLAUDE_CODE_SUBAGENT_MODEL\": \"grillforge/review-model\"")
     );
 
     restarted_gui

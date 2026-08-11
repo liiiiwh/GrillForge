@@ -169,7 +169,7 @@ impl ActiveConfiguration {
                 .map(|worker| worker.route_alias.clone()),
             _ => None,
         };
-        let agents = if request.worker_strategy == Some(WorkerStrategy::SelectablePool) {
+        let agents = if request.worker_strategy.is_some() {
             request
                 .workers
                 .iter()
@@ -689,11 +689,22 @@ impl ClaudeCodeAdapter {
                     key: "CLAUDE_CODE_SUBAGENT_MODEL".to_string(),
                     value: request.workers[0].route_alias.clone(),
                 });
+                let worker = &request.workers[0];
+                let desired_path = self.agent_path(worker);
+                let file_snapshot = snapshot_file(&desired_path)?;
+                validate_agent_ownership(&file_snapshot)?;
+                capture_agent(&mut snapshot, &file_snapshot)?;
+                operations.push(ClaudeCodeOperation::WriteFile {
+                    path: desired_path.clone(),
+                    contents: render_agent(worker),
+                });
                 for agent in existing_agents {
-                    operations.push(ClaudeCodeOperation::RemoveFile {
-                        path: agent.path.clone(),
-                    });
-                    capture_agent(&mut snapshot, &agent)?;
+                    if agent.path != desired_path {
+                        operations.push(ClaudeCodeOperation::RemoveFile {
+                            path: agent.path.clone(),
+                        });
+                        capture_agent(&mut snapshot, &agent)?;
+                    }
                 }
             }
             Some(WorkerStrategy::SelectablePool) => {

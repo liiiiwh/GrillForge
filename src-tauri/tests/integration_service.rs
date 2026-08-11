@@ -116,7 +116,7 @@ fn apply_and_disable_restore_claude_code_and_install_selector_skill() {
 }
 
 #[test]
-fn one_worker_stays_selectable_through_its_generated_agent() {
+fn one_external_worker_without_native_fallback_becomes_the_default_and_stays_selectable() {
     let directory = tempfile::tempdir().expect("temp directory");
     let grillforge_root = directory.path().join("grillforge");
     let claude_root = directory.path().join("claude");
@@ -125,13 +125,16 @@ fn one_worker_stays_selectable_through_its_generated_agent() {
     control.save_model(model("coder")).expect("model");
     control.set_worker("coder".into(), true).expect("worker");
     control.set_worker_mode(true).expect("worker mode");
+    control
+        .set_native_subagent_enabled(false)
+        .expect("disable native fallback");
 
     IntegrationService::new(&claude_root, &grillforge_root)
         .apply(&control.state().expect("state"), "http://127.0.0.1:15721")
         .expect("apply");
 
     let settings = fs::read_to_string(claude_root.join("settings.json")).expect("settings");
-    assert!(!settings.contains("CLAUDE_CODE_SUBAGENT_MODEL"));
+    assert!(settings.contains("\"CLAUDE_CODE_SUBAGENT_MODEL\": \"grillforge/coder\""));
     assert!(settings.contains("GRILLFORGE_BIN"));
     let agent = fs::read_to_string(claude_root.join("agents/grillforge-worker-coder.md"))
         .expect("generated Agent");

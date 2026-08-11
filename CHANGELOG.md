@@ -4,6 +4,24 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.4] - 2026-08-11
+
+### Fixed
+
+- When the native Claude model candidate is disabled and exactly one external
+  SubAgent is enabled, automatic Claude delegation now uses that external
+  model without requiring an explicit selector Skill invocation.
+- The forced default remains available as a named GrillForge Agent, so explicit
+  selector-driven delegation and automatic delegation use the same route.
+- Claude Client Code is covered by an isolated end-to-end test using its bundled
+  Claude Code binary and a loopback-only API server.
+
+### Changed
+
+- The Claude native SubAgent switch now describes its actual role as a native
+  model candidate; disabling it does not claim to remove Claude's built-in
+  Agent runtime.
+
 ## [0.1.3] - 2026-08-11
 
 ### Fixed
@@ -100,6 +118,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Claude Code and Claude Client Code now resolve the installed selector binary
   even when the GUI application is not on the login-shell PATH.
 
+[0.1.4]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.4
 [0.1.3]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.3
 [0.1.2]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.2
 [0.1.1]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.1

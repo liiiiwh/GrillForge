@@ -1986,23 +1986,24 @@ function App() {
                         <span className="subagent-icon">C</span>
                         <div className="subagent-main">
                           <div>
-                            <h3>Claude 原生 SubAgent</h3>
+                            <h3>Claude 原生模型候选</h3>
                             <Badge tone="good">内置</Badge>
                           </div>
                           <p>
-                            跟随当前 Claude 默认模型，可与自定义 SubAgent
-                            同时使用。
+                            加入候选池时跟随 Claude 默认模型。关闭不会删除
+                            Claude 内置 Agent；只启用一个外部 SubAgent
+                            时，自动委派默认使用该外部模型。
                           </p>
                         </div>
                         <Toggle
                           checked={state.nativeSubagentEnabled}
                           disabled={Boolean(pending)}
-                          label="切换 Claude 原生 SubAgent"
+                          label="切换 Claude 原生模型候选"
                           onChange={() =>
                             commit(
                               "set_native_subagent_enabled",
                               { enabled: !state.nativeSubagentEnabled },
-                              `Claude 原生 SubAgent 已${state.nativeSubagentEnabled ? "停用" : "启用"}。`,
+                              `Claude 原生模型已${state.nativeSubagentEnabled ? "从候选池移除" : "加入候选池"}。`,
                             )
                           }
                         />

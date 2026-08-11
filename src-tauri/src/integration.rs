@@ -113,21 +113,19 @@ impl IntegrationService {
                     .to_string(),
             )
         };
+        let worker_strategy = if !state.native_subagent_enabled && workers.len() == 1 {
+            WorkerStrategy::ForcedSingle
+        } else {
+            WorkerStrategy::SelectablePool
+        };
 
         let request = match (main, workers.len()) {
             (None, 0) => EnableRequest::native_main_without_workers(),
             (Some(main), 0) => EnableRequest::managed_main_only(gateway_base_url, main),
-            (None, _) => EnableRequest::native_main(
-                gateway_base_url,
-                workers,
-                WorkerStrategy::SelectablePool,
-            ),
-            (Some(main), _) => EnableRequest::managed_main(
-                gateway_base_url,
-                main,
-                workers,
-                WorkerStrategy::SelectablePool,
-            ),
+            (None, _) => EnableRequest::native_main(gateway_base_url, workers, worker_strategy),
+            (Some(main), _) => {
+                EnableRequest::managed_main(gateway_base_url, main, workers, worker_strategy)
+            }
         };
         let request = request.with_model_routes(gateway_base_url, model_routes);
         let request = match selector_binary {
