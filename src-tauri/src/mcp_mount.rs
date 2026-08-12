@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use url::Url;
 
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpClientFormat {
@@ -70,6 +70,7 @@ impl McpMountTarget {
 #[derive(Debug, Serialize, Deserialize)]
 struct MountSnapshot {
     version: u8,
+    mounted_url: String,
     entry: MountEntrySnapshot,
 }
 
@@ -121,7 +122,7 @@ impl McpMountManager {
         let current = read_optional(&target.config_path)?;
         let snapshot = match read_optional(&snapshot_path)? {
             Some(bytes) => parse_snapshot(&snapshot_path, &bytes)?,
-            None => capture_mount_snapshot(target, current.as_deref())?,
+            None => capture_mount_snapshot(target, current.as_deref(), url)?,
         };
         let updated = match target.format {
             McpClientFormat::ClaudeJson => update_claude_json(
@@ -212,12 +213,16 @@ impl McpMountManager {
             return Ok(());
         };
         let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
+        let current = read_optional(&target.config_path)?;
         let expected = remove_mount(
             target,
-            read_optional(&target.config_path)?.as_deref(),
+            current.as_deref(),
             &snapshot.entry,
+            &snapshot.mounted_url,
         )?;
-        restore_optional(&target.config_path, expected.as_deref())?;
+        if current != expected {
+            restore_optional(&target.config_path, expected.as_deref())?;
+        }
         if read_optional(&target.config_path)? != expected {
             return Err(format!(
                 "MCP unmount verification failed: {}",
@@ -286,6 +291,7 @@ fn update_claude_json(
         json!({
             "type": "http",
             "url": url,
+            "alwaysLoad": true,
             "headers": {"Authorization": format!("Bearer {token}")}
         }),
     );
@@ -330,6 +336,7 @@ fn update_claude_desktop_json(
 fn capture_mount_snapshot(
     target: &McpMountTarget,
     current: Option<&[u8]>,
+    mounted_url: &str,
 ) -> Result<MountSnapshot, String> {
     let name = server_name(&target.client_id);
     let entry = if target.format == McpClientFormat::CodexToml {
@@ -357,6 +364,7 @@ fn capture_mount_snapshot(
     };
     Ok(MountSnapshot {
         version: SNAPSHOT_VERSION,
+        mounted_url: mounted_url.to_string(),
         entry,
     })
 }
@@ -365,18 +373,34 @@ fn remove_mount(
     target: &McpMountTarget,
     current: Option<&[u8]>,
     snapshot: &MountEntrySnapshot,
+    mounted_url: &str,
 ) -> Result<Option<Vec<u8>>, String> {
     if target.format == McpClientFormat::CodexToml {
-        return remove_codex_mount(current, &target.config_path, &target.client_id, snapshot);
+        return remove_codex_mount(
+            current,
+            &target.config_path,
+            &target.client_id,
+            snapshot,
+            mounted_url,
+        );
     }
     let path = &target.config_path;
     let mut root = parse_json_object(current, path)?;
     let section = json_section(target.format);
-    let servers = root
-        .get_mut(section)
-        .and_then(Value::as_object_mut)
+    let Some(section_value) = root.get_mut(section) else {
+        return Ok(current.map(<[u8]>::to_vec));
+    };
+    let servers = section_value
+        .as_object_mut()
         .ok_or_else(|| format!("{section} must be an object: {}", path.display()))?;
     let name = server_name(&target.client_id);
+    let owned = servers
+        .get(&name)
+        .and_then(|entry| mounted_json_url(target.format, entry))
+        == Some(mounted_url);
+    if !owned {
+        return Ok(current.map(<[u8]>::to_vec));
+    }
     match &snapshot.original_json {
         Some(original) => {
             servers.insert(name, original.clone());
@@ -401,13 +425,24 @@ fn remove_codex_mount(
     path: &Path,
     client_id: &str,
     snapshot: &MountEntrySnapshot,
+    mounted_url: &str,
 ) -> Result<Option<Vec<u8>>, String> {
     let mut document = parse_toml(current, path)?;
     let name = server_name(client_id);
-    let servers = document
-        .get_mut("mcp_servers")
-        .and_then(toml_edit::Item::as_table_like_mut)
+    let Some(section) = document.get_mut("mcp_servers") else {
+        return Ok(current.map(<[u8]>::to_vec));
+    };
+    let servers = section
+        .as_table_like_mut()
         .ok_or_else(|| format!("mcp_servers must be a table: {}", path.display()))?;
+    let owned = servers
+        .get(&name)
+        .and_then(|entry| entry.get("url"))
+        .and_then(toml_edit::Item::as_str)
+        == Some(mounted_url);
+    if !owned {
+        return Ok(current.map(<[u8]>::to_vec));
+    }
     match snapshot.original_toml.as_deref() {
         Some(bytes) => {
             let text = std::str::from_utf8(bytes)
@@ -428,6 +463,19 @@ fn remove_codex_mount(
         return Ok(None);
     }
     Ok(Some(document.to_string().into_bytes()))
+}
+
+fn mounted_json_url(format: McpClientFormat, entry: &Value) -> Option<&str> {
+    let key = match format {
+        McpClientFormat::GeminiJson => "httpUrl",
+        McpClientFormat::ClaudeJson
+        | McpClientFormat::ClaudeDesktopJson
+        | McpClientFormat::OpenCodeJson
+        | McpClientFormat::KimiJson
+        | McpClientFormat::PiExtensionJson => "url",
+        McpClientFormat::CodexToml | McpClientFormat::Unsupported => return None,
+    };
+    entry.get(key).and_then(Value::as_str)
 }
 
 fn json_section(format: McpClientFormat) -> &'static str {

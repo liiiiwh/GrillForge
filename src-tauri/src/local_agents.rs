@@ -52,6 +52,122 @@ pub fn discover_claude_code_agents_for_project(
     Ok(agents.into_values().collect())
 }
 
+pub fn discover_codex_agents(codex_root: &Path) -> Result<Vec<LocalAgent>, String> {
+    let mut agents = codex_builtin_agents()
+        .into_iter()
+        .map(|agent| (agent.agent_id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    for (agent, _) in discover_codex_agents_in(&codex_root.join("agents"))? {
+        agents.insert(agent.agent_id.clone(), agent);
+    }
+    Ok(agents.into_values().collect())
+}
+
+pub fn discover_codex_agents_for_project(
+    codex_root: &Path,
+    project_root: &Path,
+) -> Result<Vec<LocalAgent>, String> {
+    let mut agents = discover_codex_agents(codex_root)?
+        .into_iter()
+        .map(|agent| (agent.agent_id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    for (agent, _) in discover_codex_agents_in(&project_root.join(".codex/agents"))? {
+        agents.insert(agent.agent_id.clone(), agent);
+    }
+    Ok(agents.into_values().collect())
+}
+
+pub fn resolve_codex_custom_agent_file(
+    codex_root: &Path,
+    project_root: &Path,
+    agent_id: &str,
+) -> Result<Option<PathBuf>, String> {
+    for directory in [
+        project_root.join(".codex/agents"),
+        codex_root.join("agents"),
+    ] {
+        if let Some((_, path)) = discover_codex_agents_in(&directory)?
+            .into_iter()
+            .find(|(agent, _)| agent.agent_id == agent_id)
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn is_codex_builtin_agent(agent_id: &str) -> bool {
+    matches!(agent_id, "default" | "worker" | "explorer")
+}
+
+fn codex_builtin_agents() -> Vec<LocalAgent> {
+    [
+        ("default", "Codex 内建通用 Agent"),
+        ("worker", "Codex 内建执行 Agent"),
+        ("explorer", "Codex 内建探索 Agent"),
+    ]
+    .into_iter()
+    .map(|(agent_id, description)| LocalAgent {
+        runtime: "codex",
+        agent_id: agent_id.into(),
+        description: description.into(),
+    })
+    .collect()
+}
+
+fn discover_codex_agents_in(directory: &Path) -> Result<Vec<(LocalAgent, PathBuf)>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", directory.display())),
+    };
+    let mut agents = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("could not read Codex Agent entry: {error}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("toml") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let Ok(value) = contents.parse::<toml_edit::DocumentMut>() else {
+            continue;
+        };
+        let Some(name) = value.get("name").and_then(toml_edit::Item::as_str) else {
+            continue;
+        };
+        let Some(description) = value.get("description").and_then(toml_edit::Item::as_str) else {
+            continue;
+        };
+        if value
+            .get("developer_instructions")
+            .and_then(toml_edit::Item::as_str)
+            .is_none()
+            || !valid_codex_agent_name(name)
+            || description.trim().is_empty()
+        {
+            continue;
+        }
+        agents.push((
+            LocalAgent {
+                runtime: "codex",
+                agent_id: name.into(),
+                description: description.into(),
+            },
+            path,
+        ));
+    }
+    agents.sort_by(|left, right| left.0.agent_id.cmp(&right.0.agent_id));
+    Ok(agents)
+}
+
+fn valid_codex_agent_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
 pub fn discover_claude_builtin_agents(runtime: &Path) -> Result<Vec<LocalAgent>, String> {
     const PROBE: &str = "grillforge-discovery-probe";
     let mut command = crate::cli_discovery::version_command(runtime)
@@ -273,8 +389,8 @@ pub async fn discover_local_agents(
         .filter(|project_root| !project_root.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    let discovered = match project_root {
-        Some(project_root) => discover_claude_code_agents_for_project(&claude_root, &project_root)?,
+    let discovered = match &project_root {
+        Some(project_root) => discover_claude_code_agents_for_project(&claude_root, project_root)?,
         None => discover_claude_code_agents(&claude_root)?,
     };
     let mut agents = BTreeMap::new();
@@ -282,11 +398,24 @@ pub async fn discover_local_agents(
         crate::adapters::claude_code::detect_claude_cli().map_err(|error| error.to_string())?
     {
         for agent in discover_claude_builtin_agents(&runtime.path)? {
-            agents.insert(agent.agent_id.clone(), agent);
+            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
         }
     }
     for agent in discovered {
-        agents.insert(agent.agent_id.clone(), agent);
+        agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+    }
+    if crate::adapters::codex::detect_codex_cli()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        let codex_root = home.join(".codex");
+        let codex_agents = match &project_root {
+            Some(project_root) => discover_codex_agents_for_project(&codex_root, project_root)?,
+            None => discover_codex_agents(&codex_root)?,
+        };
+        for agent in codex_agents {
+            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+        }
     }
     Ok(agents.into_values().collect())
 }

@@ -99,6 +99,57 @@ fn binding_changes_mount_update_and_unmount_the_client_mcp_transactionally() {
 }
 
 #[test]
+fn codex_source_binding_activates_the_codex_runtime_without_requiring_claude_agents() {
+    let root = tempfile::tempdir().expect("root");
+    let grillforge = root.path().join(".grillforge");
+    let claude = root.path().join(".claude");
+    fs::create_dir_all(&claude).expect("claude root");
+    let codex = root.path().join(".codex");
+    fs::create_dir_all(codex.join("agents")).expect("codex agents");
+    fs::write(
+        codex.join("agents/reviewer.toml"),
+        "name = \"reviewer\"\ndescription = \"Reviews code\"\ndeveloper_instructions = \"Review.\"\n",
+    )
+    .expect("agent");
+    let codex_runtime = root.path().join("codex");
+    fs::write(&codex_runtime, "runtime").expect("runtime");
+    let claude_json = root.path().join(".claude.json");
+    let control = ControlPlaneService::new(&grillforge);
+    control
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "codex-reviewer".into(),
+            name: "Codex Reviewer".into(),
+            source_client_id: "codex".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: None,
+            capabilities: vec!["review".into()],
+        })
+        .expect("extension");
+    let mounts = McpMountManager::new(
+        grillforge.join("mcp-snapshots"),
+        [McpMountTarget::new(
+            "claude_code",
+            &claude_json,
+            McpClientFormat::ClaudeJson,
+        )],
+    )
+    .expect("mounts");
+    let integration = ExtensionIntegrationService::new(mounts, &claude, None, None)
+        .with_codex(&codex, Some(codex_runtime));
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+
+    integration
+        .set_binding(&control, &gateway, "claude_code", "codex-reviewer", true)
+        .expect("bind Codex source");
+
+    let routes = gateway
+        .agent_broker_routes_for_client("claude_code")
+        .expect("routes");
+    assert_eq!(routes[0].source_client_id, "codex");
+    assert_eq!(routes[0].source_agent_id, "reviewer");
+}
+
+#[test]
 fn editing_a_bound_extension_updates_the_live_broker_route_immediately() {
     let root = tempfile::tempdir().expect("root");
     let grillforge = root.path().join(".grillforge");
@@ -526,4 +577,185 @@ fn pi_requires_the_installed_extension_then_mounts_without_restarting_grillforge
             .extension_id,
         "reviewer"
     );
+}
+
+#[test]
+fn failed_multi_client_update_restores_the_record_and_every_changed_mount() {
+    let root = tempfile::tempdir().expect("root");
+    let grillforge = root.path().join(".grillforge");
+    let claude = root.path().join(".claude");
+    fs::create_dir_all(claude.join("agents")).expect("agents");
+    fs::write(
+        claude.join("agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: Reviews code\n---\nReview.\n",
+    )
+    .expect("agent");
+    let runtime = root.path().join("claude");
+    fs::write(&runtime, "runtime").expect("runtime");
+    let pi_settings = root.path().join(".pi/agent/settings.json");
+    fs::create_dir_all(pi_settings.parent().unwrap()).expect("pi root");
+    fs::write(&pi_settings, r#"{"packages":["npm:pi-mcp-extension"]}"#).expect("Pi extension");
+    let control = ControlPlaneService::new(&grillforge);
+    control
+        .save_provider(ProviderInput {
+            id: "local".into(),
+            name: "Local".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: "http://127.0.0.1:18080/v1".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .expect("provider");
+    for id in ["first", "second"] {
+        control
+            .save_model(ModelInput {
+                id: id.into(),
+                name: id.into(),
+                upstream_id: id.into(),
+                provider_id: "local".into(),
+                capabilities: vec![],
+                protocol_capabilities: vec![],
+            })
+            .expect("model");
+    }
+    control
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            source_client_id: "claude_code".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: Some("first".into()),
+            capabilities: vec![],
+        })
+        .expect("extension");
+    let claude_json = root.path().join(".claude.json");
+    let pi_mcp = root.path().join(".pi/agent/mcp.json");
+    let mounts = McpMountManager::new(
+        grillforge.join("mcp-snapshots"),
+        [
+            McpMountTarget::new("claude_code", &claude_json, McpClientFormat::ClaudeJson),
+            McpMountTarget::new("pi", &pi_mcp, McpClientFormat::PiExtensionJson),
+        ],
+    )
+    .expect("mounts");
+    let integration =
+        ExtensionIntegrationService::new(mounts, &claude, Some(runtime), Some(pi_settings.clone()));
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+    integration
+        .set_binding(&control, &gateway, "claude_code", "reviewer", true)
+        .expect("bind Claude Code");
+    integration
+        .set_binding(&control, &gateway, "pi", "reviewer", true)
+        .expect("bind Pi");
+    let claude_mount = fs::read(&claude_json).expect("Claude mount");
+    let pi_mount = fs::read(&pi_mcp).expect("Pi mount");
+
+    fs::write(&pi_settings, r#"{"packages":[]}"#).expect("remove Pi extension");
+    let error = integration
+        .update_extension(
+            &control,
+            &gateway,
+            ExtensionSubAgentInput {
+                id: "reviewer".into(),
+                name: "Reviewer".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "reviewer".into(),
+                model_id: Some("second".into()),
+                capabilities: vec![],
+            },
+        )
+        .expect_err("Pi reconcile must fail");
+
+    assert_eq!(
+        error,
+        "Pi needs pi-mcp-extension before it can use extension SubAgents"
+    );
+    assert_eq!(
+        control
+            .state()
+            .expect("rolled back state")
+            .extension_subagents[0]
+            .model_id
+            .as_deref(),
+        Some("first")
+    );
+    assert_eq!(
+        fs::read(&claude_json).expect("Claude restored"),
+        claude_mount
+    );
+    assert_eq!(fs::read(&pi_mcp).expect("Pi preserved"), pi_mount);
+    for client_id in ["claude_code", "pi"] {
+        assert_eq!(
+            gateway
+                .agent_broker_routes_for_client(client_id)
+                .expect("old route")[0]
+                .model_id
+                .as_deref(),
+            Some("first")
+        );
+    }
+}
+
+#[test]
+fn startup_reconcile_remounts_extensions_after_a_model_restore_failure() {
+    let root = tempfile::tempdir().expect("root");
+    let grillforge = root.path().join(".grillforge");
+    let claude = root.path().join(".claude");
+    fs::create_dir_all(claude.join("agents")).expect("agents");
+    fs::write(
+        claude.join("agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: Reviews code\n---\nReview.\n",
+    )
+    .expect("agent");
+    let runtime = root.path().join("claude");
+    fs::write(&runtime, "runtime").expect("runtime");
+    let config = root.path().join(".claude.json");
+    fs::write(&config, r#"{"modelLayer":"old"}"#).expect("config");
+    let control = ControlPlaneService::new(&grillforge);
+    control
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            source_client_id: "claude_code".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: None,
+            capabilities: vec![],
+        })
+        .expect("extension");
+    let manager = || {
+        McpMountManager::new(
+            grillforge.join("mcp-snapshots"),
+            [McpMountTarget::new(
+                "claude_code",
+                &config,
+                McpClientFormat::ClaudeJson,
+            )],
+        )
+        .expect("mounts")
+    };
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+    ExtensionIntegrationService::new(manager(), &claude, Some(runtime.clone()), None)
+        .set_binding(&control, &gateway, "claude_code", "reviewer", true)
+        .expect("initial mount");
+
+    let restarted = ExtensionIntegrationService::new(manager(), &claude, Some(runtime), None);
+    let error = restarted
+        .restore_clients_then_reconcile(&control, &gateway, || {
+            let lower: serde_json::Value =
+                serde_json::from_slice(&fs::read(&config).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            assert!(lower.get("mcpServers").is_none());
+            fs::write(&config, r#"{"modelLayer":"new"}"#).map_err(|error| error.to_string())?;
+            Err::<(), _>("model restore failed".to_string())
+        })
+        .expect_err("model restore failure is preserved");
+
+    assert_eq!(error, "model restore failed");
+    let live: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config).expect("remounted config")).expect("JSON");
+    assert_eq!(live["modelLayer"], "new");
+    assert!(live["mcpServers"].get("grillforge-claude-code").is_some());
 }

@@ -105,9 +105,9 @@ flowchart LR
 
 ## Download
 
-Download `GrillForge-v0.2.0-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel, is signed with Developer ID Application, and is notarized by Apple. A SHA-256 checksum file is included with the Release.
+Download `GrillForge-v0.2.0-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel and is signed with Developer ID Application. A SHA-256 checksum file is included, and the Release states the notarization status until Apple Notarization is complete.
 
-Unzip it and move `GrillForge.app` to Applications. No Gatekeeper bypass is required.
+Unzip it and move `GrillForge.app` to Applications. Notarized Releases require no Gatekeeper bypass; follow the matching Release notes for builds whose notarization is still pending.
 
 ## Quick Start
 
@@ -140,7 +140,7 @@ pnpm tauri dev
 
 ### Extension SubAgents
 
-1. On Extension SubAgents, choose an Agent discovered from a local runtime. The current executable source is limited to real, verified Claude Code Agents.
+1. On Extension SubAgents, choose an Agent discovered from a local runtime. Verified Claude Code and Codex Agents are currently available as executable sources.
 2. Keep the source Agent's native model or bind a GrillForge model.
 3. Enable that extension for a destination client. The first binding automatically mounts a client-scoped MCP endpoint; removing the last binding unmounts it and restores the original file.
 4. Pi has no native MCP. GrillForge detects community `pi-mcp-extension` and, after explicit confirmation, can install pinned version `1.5.0` with the valid detected Pi CLI. A new Pi session loads the mounted configuration.
@@ -224,7 +224,7 @@ The bundle is written to:
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
 ```
 
-The macOS Universal (`arm64` + `x86_64`) release has passed Developer ID Application signing, Apple notarization, ticket stapling, and Gatekeeper verification. Windows paths and configuration behavior are covered by automated tests, but a native Windows installer must still be built and verified in a Windows/MSVC environment.
+The macOS Universal (`arm64` + `x86_64`) release has passed Developer ID Application signing and Hardened Runtime verification. Apple Notarization and ticket stapling require separate notarytool credentials; the project does not claim Gatekeeper notarization until that step succeeds. Windows paths and configuration behavior are covered by automated tests, but a native Windows installer must still be built and verified in a Windows/MSVC environment.
 
 ## Roadmap
 

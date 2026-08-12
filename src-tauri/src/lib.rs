@@ -111,12 +111,15 @@ pub fn run() {
                     ),
                 ],
             )?;
-            app.manage(extension_integration::ExtensionIntegrationService::new(
-                mounts,
-                home.join(".claude"),
-                None,
-                Some(home.join(".pi/agent/settings.json")),
-            ));
+            app.manage(
+                extension_integration::ExtensionIntegrationService::new(
+                    mounts,
+                    home.join(".claude"),
+                    None,
+                    Some(home.join(".pi/agent/settings.json")),
+                )
+                .with_codex(home.join(".codex"), None),
+            );
 
             let listener = std::net::TcpListener::bind(gateway::DEFAULT_GATEWAY_ADDRESS)?;
             listener.set_nonblocking(true)?;

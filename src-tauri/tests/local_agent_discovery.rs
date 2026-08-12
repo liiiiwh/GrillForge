@@ -1,6 +1,7 @@
 use grillforge_lib::local_agents::{
     discover_claude_builtin_agents, discover_claude_code_agents,
-    discover_claude_code_agents_for_project,
+    discover_claude_code_agents_for_project, discover_codex_agents,
+    discover_codex_agents_for_project, resolve_codex_custom_agent_file,
 };
 use std::fs;
 
@@ -181,4 +182,73 @@ fn installed_claude_cli_reports_callable_builtin_agents_without_network_access()
     let discovered = discover_claude_builtin_agents(&runtime.path).unwrap();
 
     assert!(!discovered.is_empty());
+}
+
+#[test]
+fn codex_discovers_builtins_and_valid_user_agents_by_their_toml_name() {
+    let codex_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(codex_root.path().join("agents")).unwrap();
+    fs::write(
+        codex_root
+            .path()
+            .join("agents/file-name-does-not-matter.toml"),
+        r#"name = "reviewer"
+description = "Reviews changes"
+developer_instructions = "Private instructions"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        codex_root.path().join("agents/broken.toml"),
+        "name = \"broken\"\n",
+    )
+    .unwrap();
+
+    let discovered = discover_codex_agents(codex_root.path()).unwrap();
+
+    assert_eq!(
+        discovered
+            .iter()
+            .map(|agent| (agent.runtime, agent.agent_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("codex", "default"),
+            ("codex", "explorer"),
+            ("codex", "reviewer"),
+            ("codex", "worker"),
+        ]
+    );
+    assert!(!format!("{discovered:?}").contains("Private instructions"));
+}
+
+#[test]
+fn codex_project_agent_overrides_user_agent_and_resolves_the_effective_file() {
+    let codex_root = tempfile::tempdir().unwrap();
+    let project_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(codex_root.path().join("agents")).unwrap();
+    fs::create_dir_all(project_root.path().join(".codex/agents")).unwrap();
+    fs::write(
+        codex_root.path().join("agents/reviewer.toml"),
+        "name = \"reviewer\"\ndescription = \"User reviewer\"\ndeveloper_instructions = \"User\"\n",
+    )
+    .unwrap();
+    let project_agent = project_root.path().join(".codex/agents/project.toml");
+    fs::write(
+        &project_agent,
+        "name = \"reviewer\"\ndescription = \"Project reviewer\"\ndeveloper_instructions = \"Project\"\n",
+    )
+    .unwrap();
+
+    let discovered =
+        discover_codex_agents_for_project(codex_root.path(), project_root.path()).unwrap();
+    let reviewer = discovered
+        .iter()
+        .find(|agent| agent.agent_id == "reviewer")
+        .unwrap();
+    assert_eq!(reviewer.description, "Project reviewer");
+    assert_eq!(
+        resolve_codex_custom_agent_file(codex_root.path(), project_root.path(), "reviewer")
+            .unwrap(),
+        Some(project_agent)
+    );
 }

@@ -3,7 +3,7 @@
 use axum::http::StatusCode;
 use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput};
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
-use grillforge_lib::gateway::{AgentRuntimeRoute, Gateway};
+use grillforge_lib::gateway::{AgentRuntimeRoute, AgentSourceRuntime, Gateway};
 use serde_json::{Value, json};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -84,12 +84,52 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
         .expect("unauthorized response");
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
+    let initialized: Value = client
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-secret")
+        .json(&json!({
+            "jsonrpc":"2.0",
+            "id":1,
+            "method":"initialize",
+            "params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"Claude","version":"1"}}
+        }))
+        .send()
+        .await
+        .expect("initialize response")
+        .json()
+        .await
+        .expect("initialize JSON");
+    let instructions = initialized["result"]["instructions"]
+        .as_str()
+        .expect("server instructions");
+    assert!(instructions.contains("默认先调用 list_agents"));
+    assert!(instructions.contains("run_agent"));
+    assert!(instructions.contains("用户明确要求使用原生 Agent"));
+
+    let tools: Value = client
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-secret")
+        .json(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+        .send()
+        .await
+        .expect("tools response")
+        .json()
+        .await
+        .expect("tools JSON");
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .all(|tool| tool["_meta"]["anthropic/alwaysLoad"] == true)
+    );
+
     let response = client
         .post(format!("{base_url}/mcp/claude_code"))
         .bearer_auth("broker-secret")
         .json(&json!({
             "jsonrpc":"2.0",
-            "id":2,
+            "id":3,
             "method":"tools/call",
             "params": {
                 "name":"run_agent",
@@ -230,6 +270,138 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
             .unwrap()
             .contains("does not accept")
     );
+}
+
+#[tokio::test]
+async fn codex_extension_uses_the_selected_role_config_and_managed_model_route() {
+    let directory = tempfile::tempdir().unwrap();
+    let codex_root = directory.path().join("home/.codex");
+    fs::create_dir_all(codex_root.join("agents")).unwrap();
+    fs::write(
+        codex_root.join("agents/reviewer.toml"),
+        "name = \"reviewer\"\ndescription = \"Reviews\"\ndeveloper_instructions = \"USER_ROLE_MARKER\"\nmodel = \"native-model\"\n",
+    )
+    .unwrap();
+    let project = directory.path().join("project");
+    fs::create_dir_all(project.join(".codex/agents")).unwrap();
+    fs::write(
+        project.join(".codex/agents/reviewer.toml"),
+        "name = \"reviewer\"\ndescription = \"Project reviews\"\ndeveloper_instructions = \"PROJECT_ROLE_MARKER\"\nmodel = \"project-native-model\"\nmodel_provider = \"openai\"\n",
+    )
+    .unwrap();
+    let argv_log = directory.path().join("codex-argv");
+    let runtime = directory.path().join("codex");
+    fs::write(
+        &runtime,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$@" > {argv}
+case "$*" in *"agents.reviewer.config_file="*) ;; *) exit 31 ;; esac
+case "$*" in *"agents.default_subagent_model=grillforge/worker"*) ;; *) exit 32 ;; esac
+case "$*" in *"agent_type reviewer"*"fork_turns none"*) ;; *) exit 33 ;; esac
+case "$*" in *"model_providers.grillforge_agent.base_url="*) ;; *) exit 34 ;; esac
+test -n "$GRILLFORGE_AGENT_TOKEN" || exit 35
+for argument in "$@"; do
+  case "$argument" in
+    agents.reviewer.config_file=*)
+      config=${{argument#*=}}
+      config=${{config#\"}}
+      config=${{config%\"}}
+      grep -q 'PROJECT_ROLE_MARKER' "$config" || exit 36
+      grep -q 'USER_ROLE_MARKER' "$config" && exit 38
+      grep -q 'model = "grillforge/worker"' "$config" || exit 37
+      grep -q 'model_provider = "grillforge_agent"' "$config" || exit 39
+      cp "$config" {argv}.effective
+      ;;
+  esac
+done
+printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"codex child completed"}}}}' '{{"type":"turn.completed"}}'
+"#,
+            argv = argv_log.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    service
+        .save_provider(ProviderInput {
+            id: "local".into(),
+            name: "Local".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: "http://127.0.0.1:9".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "worker".into(),
+            name: "Worker".into(),
+            upstream_id: "worker-upstream".into(),
+            provider_id: "local".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "claude_code",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "codex".into(),
+                runtime: runtime.clone(),
+                config_root: codex_root,
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "codex-reviewer".into(),
+                source_client_id: "codex".into(),
+                source_agent_id: "reviewer".into(),
+                model_id: Some("worker".into()),
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"codex-reviewer","cwd":project,"prompt":"Review this"
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["content"][0]["text"],
+        "codex child completed"
+    );
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(argv.contains("agents.reviewer.config_file="));
+    assert!(argv.contains("agents.default_subagent_model=grillforge/worker"));
+    let effective = fs::read_to_string(format!("{}.effective", argv_log.display())).unwrap();
+    assert!(effective.contains("PROJECT_ROLE_MARKER"));
+    assert!(!effective.contains("USER_ROLE_MARKER"));
+    assert!(effective.contains("model = \"grillforge/worker\""));
+    assert!(effective.contains("model_provider = \"grillforge_agent\""));
 }
 
 #[tokio::test]

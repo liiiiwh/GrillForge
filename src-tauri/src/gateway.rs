@@ -44,6 +44,13 @@ pub struct AgentRuntimeRoute {
     pub model_id: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSourceRuntime {
+    pub source_client_id: String,
+    pub runtime: PathBuf,
+    pub config_root: PathBuf,
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayStatus {
@@ -124,6 +131,27 @@ impl GatewayStatus {
         runtime_config_root: &Path,
         routes: Vec<AgentRuntimeRoute>,
     ) -> Result<(), String> {
+        self.activate_client_agent_broker_with_sources(
+            client_id,
+            state,
+            token,
+            vec![AgentSourceRuntime {
+                source_client_id: "claude_code".into(),
+                runtime: runtime.to_path_buf(),
+                config_root: runtime_config_root.to_path_buf(),
+            }],
+            routes,
+        )
+    }
+
+    pub fn activate_client_agent_broker_with_sources(
+        &self,
+        client_id: &str,
+        state: &ControlPlaneState,
+        token: &str,
+        source_runtimes: Vec<AgentSourceRuntime>,
+        routes: Vec<AgentRuntimeRoute>,
+    ) -> Result<(), String> {
         validate_agent_client_id(client_id)?;
         if token.is_empty() || token.trim() != token || token.chars().any(char::is_control) {
             return Err(
@@ -131,17 +159,34 @@ impl GatewayStatus {
                     .into(),
             );
         }
-        if !runtime.is_absolute() || !runtime.is_file() {
-            return Err(format!(
-                "Claude Code runtime does not exist: {}",
-                runtime.display()
-            ));
-        }
-        if !runtime_config_root.is_absolute() || !runtime_config_root.is_dir() {
-            return Err(format!(
-                "Claude Code configuration root does not exist: {}",
-                runtime_config_root.display()
-            ));
+        let mut runtimes = HashMap::new();
+        for source in source_runtimes {
+            if !matches!(source.source_client_id.as_str(), "claude_code" | "codex") {
+                return Err(format!(
+                    "unsupported Agent source client: {}",
+                    source.source_client_id
+                ));
+            }
+            if !source.runtime.is_absolute() || !source.runtime.is_file() {
+                return Err(format!(
+                    "{} runtime does not exist: {}",
+                    source.source_client_id,
+                    source.runtime.display()
+                ));
+            }
+            if !source.config_root.is_absolute() || !source.config_root.is_dir() {
+                return Err(format!(
+                    "{} configuration root does not exist: {}",
+                    source.source_client_id,
+                    source.config_root.display()
+                ));
+            }
+            if runtimes
+                .insert(source.source_client_id.clone(), source)
+                .is_some()
+            {
+                return Err("duplicate Agent source runtime".into());
+            }
         }
         if routes.is_empty() {
             return Err("Agent broker requires at least one configured Agent".into());
@@ -156,9 +201,9 @@ impl GatewayStatus {
                     route.extension_id
                 ));
             }
-            if route.source_client_id != "claude_code" {
+            if !runtimes.contains_key(&route.source_client_id) {
                 return Err(format!(
-                    "unsupported Agent source client: {}",
+                    "Agent source runtime is unavailable: {}",
                     route.source_client_id
                 ));
             }
@@ -214,8 +259,7 @@ impl GatewayStatus {
                     documents,
                     routes,
                     token: token.to_string(),
-                    runtime: runtime.to_path_buf(),
-                    runtime_config_root: runtime_config_root.to_path_buf(),
+                    source_runtimes: runtimes,
                     base_url: self.base_url.clone(),
                     runtime_routes: Arc::clone(&self.active_agent_runtime_routes),
                 },
@@ -603,8 +647,7 @@ struct ActiveAgentBroker {
     documents: ConfigurationDocuments,
     routes: Vec<AgentRuntimeRoute>,
     token: String,
-    runtime: PathBuf,
-    runtime_config_root: PathBuf,
+    source_runtimes: HashMap<String, AgentSourceRuntime>,
     base_url: String,
     runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
 }
@@ -672,6 +715,7 @@ impl Gateway {
             .route("/clients/{client}/v1/messages", post(client_messages))
             .route("/mcp/{client}", post(agent_broker_mcp))
             .route("/agent-runtime/v1/messages", post(agent_runtime_messages))
+            .route("/agent-runtime/v1/responses", post(agent_runtime_responses))
             .with_state(self.clone())
     }
 
@@ -1666,7 +1710,8 @@ async fn agent_broker_mcp_for_client(
                 .and_then(Value::as_str)
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
-            "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")}
+            "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
+            "instructions": "当用户要求使用 subagent、Agent、委派、并行或后台执行任务时，默认先调用 list_agents 检查本客户端获准使用的扩展 SubAgent；有合适结果时调用 run_agent，而不是内置 Agent。仅当列表为空、没有匹配能力，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。不要自行替换 extensionId、模型或 Provider；run_agent 失败时直接报告错误。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -1675,6 +1720,7 @@ async fn agent_broker_mcp_for_client(
                     "name": "list_agents",
                     "title": "列出扩展 SubAgent",
                     "description": "列出当前客户端可调用的扩展 SubAgent。需要委派任务时先调用本工具，再从结果中选择与任务能力匹配的 extensionId；列表为空时不要调用 run_agent。",
+                    "_meta": {"anthropic/alwaysLoad": true},
                     "inputSchema": {
                         "type": "object",
                         "additionalProperties": false,
@@ -1685,6 +1731,7 @@ async fn agent_broker_mcp_for_client(
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
                     "description": "用 list_agents 返回的 extensionId 委派一项任务。cwd 是任务工作目录，prompt 必须包含完整任务和约束。服务端使用用户电脑上已有的 Coding Agent、Agent 定义及所选模型运行；不要提交运行时、模型或 Provider 参数，也不要在失败后静默换 Agent。",
+                    "_meta": {"anthropic/alwaysLoad": true},
                     "inputSchema": {
                         "type": "object",
                         "additionalProperties": false,
@@ -1798,14 +1845,16 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
         .iter()
         .find(|route| route.extension_id == extension_id)
         .ok_or_else(|| format!("unknown configured extension SubAgent: {extension_id}"))?;
-    if route.source_client_id != "claude_code" {
-        return Err(format!(
-            "unsupported Agent source client: {}",
-            route.source_client_id
-        ));
-    }
-    let runtime = active.runtime.clone();
-    let runtime_config_root = active.runtime_config_root.clone();
+    let source_runtime = active
+        .source_runtimes
+        .get(&route.source_client_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Agent source runtime is unavailable: {}",
+                route.source_client_id
+            )
+        })?;
     let managed_route = route.model_id.as_ref().map(|model_id| {
         (
             format!("grillforge/{model_id}"),
@@ -1831,55 +1880,30 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
     let cleanup_token = managed_route
         .as_ref()
         .map(|(_, runtime_token, _)| runtime_token.clone());
-    let output = {
-        let mut command = tokio::process::Command::new(runtime);
-        command
-            .current_dir(cwd)
-            .args(["--agent", &route.source_agent_id]);
-        if let Some((model_route, _, _)) = &managed_route {
-            command.args(["--model", model_route]);
-        }
-        command.args([
-            "-p",
-            "--output-format",
-            "json",
-            "--no-session-persistence",
-            &prompt,
-        ]);
-        for key in [
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_DEFAULT_FABLE_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-        ] {
-            command.env_remove(key);
-        }
-        command.env("CLAUDE_CONFIG_DIR", runtime_config_root);
-        if let Some((model_route, runtime_token, _)) = &managed_route {
-            command
-                .env(
-                    "ANTHROPIC_BASE_URL",
-                    format!("{}/agent-runtime", active.base_url.trim_end_matches('/')),
-                )
-                .env("ANTHROPIC_API_KEY", runtime_token)
-                .env("ANTHROPIC_MODEL", model_route)
-                .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-                .env("GRILLFORGE_AGENT_CHILD", "1");
-        }
-        command.kill_on_drop(true);
-        tokio::time::timeout(Duration::from_secs(30 * 60), command.output())
+    let output = match route.source_client_id.as_str() {
+        "claude_code" => {
+            run_claude_agent_runtime(
+                &source_runtime,
+                &cwd,
+                &route.source_agent_id,
+                &prompt,
+                managed_route.as_ref(),
+                &active.base_url,
+            )
             .await
-            .map_err(|_| "Claude Code Agent runtime exceeded 30 minutes".to_string())
-            .and_then(|output| {
-                output
-                    .map_err(|error| format!("could not start Claude Code Agent runtime: {error}"))
-            })
+        }
+        "codex" => {
+            run_codex_agent_runtime(
+                &source_runtime,
+                &cwd,
+                &route.source_agent_id,
+                &prompt,
+                managed_route.as_ref(),
+                &active.base_url,
+            )
+            .await
+        }
+        source => Err(format!("unsupported Agent source client: {source}")),
     };
     if let (Some(cleanup_token), Ok(mut routes)) = (cleanup_token, runtime_routes.lock()) {
         routes.remove(&cleanup_token);
@@ -1888,10 +1912,14 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "Claude Code Agent runtime exited with {}: {}",
+            "{} Agent runtime exited with {}: {}",
+            route.source_client_id,
             output.status,
             safe_single_line(&message)
         ));
+    }
+    if route.source_client_id == "codex" {
+        return codex_last_agent_message(&output.stdout);
     }
     let response: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| "Claude Code Agent runtime returned invalid JSON".to_string())?;
@@ -1901,6 +1929,231 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
         .filter(|result| !result.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "Claude Code Agent runtime returned no result".to_string())
+}
+
+async fn run_claude_agent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    managed_route: Option<&(String, String, String)>,
+    base_url: &str,
+) -> Result<std::process::Output, String> {
+    let mut command = tokio::process::Command::new(&source.runtime);
+    command.current_dir(cwd).args(["--agent", agent_id]);
+    if let Some((model_route, _, _)) = managed_route {
+        command.args(["--model", model_route]);
+    }
+    command.args([
+        "-p",
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        prompt,
+    ]);
+    for key in [
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+    ] {
+        command.env_remove(key);
+    }
+    command.env("CLAUDE_CONFIG_DIR", &source.config_root);
+    if let Some((model_route, runtime_token, _)) = managed_route {
+        command
+            .env(
+                "ANTHROPIC_BASE_URL",
+                format!("{}/agent-runtime", base_url.trim_end_matches('/')),
+            )
+            .env("ANTHROPIC_API_KEY", runtime_token)
+            .env("ANTHROPIC_MODEL", model_route)
+            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+            .env("GRILLFORGE_AGENT_CHILD", "1");
+    }
+    run_agent_command(command, "Claude Code").await
+}
+
+async fn run_codex_agent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    managed_route: Option<&(String, String, String)>,
+    base_url: &str,
+) -> Result<std::process::Output, String> {
+    let custom_agent_file =
+        crate::local_agents::resolve_codex_custom_agent_file(&source.config_root, cwd, agent_id)?;
+    if custom_agent_file.is_none() && !crate::local_agents::is_codex_builtin_agent(agent_id) {
+        return Err(format!(
+            "Codex Agent does not exist in the user or project configuration: {agent_id}"
+        ));
+    }
+    let scratch = if managed_route.is_some() && custom_agent_file.is_some() {
+        Some(CodexAgentScratch::new()?)
+    } else {
+        None
+    };
+    let mut command = tokio::process::Command::new(&source.runtime);
+    command
+        .current_dir(cwd)
+        .env("CODEX_HOME", &source.config_root)
+        .args([
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "-C",
+        ])
+        .arg(cwd)
+        .args(["--enable", "multi_agent"]);
+    if let Some((model_route, runtime_token, _)) = managed_route {
+        command
+            .args(["-c", &format!("model={model_route}")])
+            .args(["-c", "model_provider=grillforge_agent"])
+            .args([
+                "-c",
+                &format!(
+                    "model_providers.grillforge_agent.base_url={}/agent-runtime/v1",
+                    base_url.trim_end_matches('/')
+                ),
+            ])
+            .args([
+                "-c",
+                "model_providers.grillforge_agent.env_key=GRILLFORGE_AGENT_TOKEN",
+            ])
+            .args(["-c", "model_providers.grillforge_agent.wire_api=responses"])
+            .args(["-c", "model_providers.grillforge_agent.name=GrillForge"])
+            .args([
+                "-c",
+                &format!("agents.default_subagent_model={model_route}"),
+            ])
+            .env("GRILLFORGE_AGENT_TOKEN", runtime_token)
+            .env("GRILLFORGE_AGENT_CHILD", "1");
+        if let Some(source_file) = custom_agent_file {
+            let effective = scratch
+                .as_ref()
+                .ok_or_else(|| "Codex Agent scratch storage is unavailable".to_string())?
+                .managed_agent_config(&source_file, model_route)?;
+            let description = codex_agent_description(&source_file)?;
+            command
+                .args([
+                    "-c",
+                    &format!(
+                        "agents.{agent_id}.description={}",
+                        toml_edit::Value::from(description)
+                    ),
+                ])
+                .args([
+                    "-c",
+                    &format!("agents.{agent_id}.config_file=\"{}\"", effective.display()),
+                ]);
+        }
+    }
+    command.arg(format!(
+        "Use the Codex collaboration spawn_agent tool exactly once with agent_type {agent_id} and fork_turns none. Do not perform the task in the parent. Send the child this complete task:\n\n{prompt}\n\nWait for that child and return its final answer verbatim. If that exact agent_type cannot be selected, return an error instead of spawning a generic Agent."
+    ));
+    let output = run_agent_command(command, "Codex").await;
+    drop(scratch);
+    output
+}
+
+async fn run_agent_command(
+    mut command: tokio::process::Command,
+    runtime_name: &str,
+) -> Result<std::process::Output, String> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(Duration::from_secs(30 * 60), command.output())
+        .await
+        .map_err(|_| format!("{runtime_name} Agent runtime exceeded 30 minutes"))?
+        .map_err(|error| format!("could not start {runtime_name} Agent runtime: {error}"))
+}
+
+struct CodexAgentScratch {
+    root: PathBuf,
+}
+
+impl CodexAgentScratch {
+    fn new() -> Result<Self, String> {
+        let root =
+            std::env::temp_dir().join(format!("grillforge-codex-agent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)
+            .map_err(|error| format!("could not create Codex Agent scratch directory: {error}"))?;
+        Ok(Self { root })
+    }
+
+    fn managed_agent_config(&self, source: &Path, model: &str) -> Result<PathBuf, String> {
+        let contents = std::fs::read_to_string(source)
+            .map_err(|error| format!("could not read {}: {error}", source.display()))?;
+        let mut document = contents
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| format!("invalid Codex Agent TOML {}: {error}", source.display()))?;
+        document["model"] = toml_edit::value(model);
+        document["model_provider"] = toml_edit::value("grillforge_agent");
+        let path = self.root.join("agent.toml");
+        crate::storage::atomic_replace(&path, document.to_string().as_bytes())
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+        Ok(path)
+    }
+}
+
+impl Drop for CodexAgentScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn codex_agent_description(path: &Path) -> Result<String, String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    contents
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|document| {
+            document
+                .get("description")
+                .and_then(toml_edit::Item::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| {
+            format!(
+                "Codex Agent does not define description: {}",
+                path.display()
+            )
+        })
+}
+
+fn codex_last_agent_message(stdout: &[u8]) -> Result<String, String> {
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|_| "Codex Agent runtime returned non-UTF-8 output".to_string())?;
+    let mut last_message = None;
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = serde_json::from_str(line)
+            .map_err(|_| "Codex Agent runtime returned invalid JSONL".to_string())?;
+        if event.get("type").and_then(Value::as_str) != Some("item.completed") {
+            continue;
+        }
+        let Some(item) = event.get("item") else {
+            return Err("Codex Agent runtime returned an item without content".into());
+        };
+        if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+            last_message = Some(
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "Codex Agent runtime returned an Agent message without text".to_string()
+                    })?
+                    .to_string(),
+            );
+        }
+    }
+    last_message.ok_or_else(|| "Codex Agent runtime returned no final Agent message".to_string())
 }
 
 fn required_mcp_string(
@@ -1982,6 +2235,69 @@ async fn agent_runtime_messages(
     }
     match gateway
         .complete_configured_model(parts.headers, request, active.documents, &model_id)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => error_response(error),
+    }
+}
+
+async fn agent_runtime_responses(
+    State(gateway): State<Gateway>,
+    request: Request<Body>,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let token = match local_runtime_token(&parts.headers) {
+        Some(token) => token,
+        None => return error_response(GatewayError::Unauthorized("Agent broker".into())),
+    };
+    let active = match gateway.active_agent_runtime_routes.lock() {
+        Ok(routes) => routes.get(token).cloned(),
+        Err(_) => {
+            return error_response(GatewayError::Configuration(
+                "active Agent runtime route lock is poisoned".into(),
+            ));
+        }
+    };
+    let Some(active) = active else {
+        return error_response(GatewayError::Unauthorized("Agent broker".into()));
+    };
+    let bytes = match to_bytes(body, 64 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body could not be read".into(),
+            ));
+        }
+    };
+    let request: Value = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body must be valid JSON".into(),
+            ));
+        }
+    };
+    let alias = match request.get("model").and_then(Value::as_str) {
+        Some(alias) => alias.to_string(),
+        None => {
+            return error_response(GatewayError::InvalidRequest(
+                "model must be a string".into(),
+            ));
+        }
+    };
+    let Some(model_id) = alias.strip_prefix("grillforge/") else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unknown GrillForge route alias: {alias}"
+        )));
+    };
+    if active.model_id != model_id {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "inactive Agent runtime route alias: {alias}"
+        )));
+    }
+    match gateway
+        .complete_codex_model(request, active.documents, model_id)
         .await
     {
         Ok(response) => response,

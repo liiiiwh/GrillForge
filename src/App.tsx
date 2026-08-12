@@ -295,7 +295,6 @@ type ModelDraft = {
 };
 
 type ExtensionSubAgentDraft = {
-  id: string;
   name: string;
   sourceClientId: string;
   sourceAgentId: string;
@@ -353,7 +352,6 @@ const EMPTY_MODEL: ModelDraft = {
 };
 
 const EMPTY_EXTENSION_SUBAGENT: ExtensionSubAgentDraft = {
-  id: "",
   name: "",
   sourceClientId: "",
   sourceAgentId: "",
@@ -393,14 +391,76 @@ const modelSlotLabels: Record<string, string> = {
 const claudeNativeModels = ["default", "sonnet", "opus", "fable", "haiku"];
 
 function claudeNativeModelOptions(current?: string) {
+  const labels: Record<string, string> = {
+    default: "默认",
+    sonnet: "Sonnet",
+    opus: "Opus",
+    fable: "Fable",
+    haiku: "Haiku",
+  };
   return Array.from(new Set([current, ...claudeNativeModels].filter(Boolean))).map(
     (model) => ({
       id: model as string,
       label:
         model === current && !claudeNativeModels.includes(model as string)
           ? `${model} · 当前配置`
-          : (model as string),
+          : (labels[model as string] ?? (model as string)),
     }),
+  );
+}
+
+export function ClaudeClientCodeSubagentSlot({
+  disabled,
+  value,
+  onChange,
+  onApply,
+}: {
+  disabled: boolean;
+  value?: string;
+  onChange: (model: string) => unknown | Promise<unknown>;
+  onApply: () => unknown | Promise<unknown>;
+}) {
+  return (
+    <section className="client-config-section">
+      <div className="config-heading">
+        <div>
+          <p className="kicker">内置 Code</p>
+          <h2>原生 SubAgent 默认模型</h2>
+          <p>与 Claude Code 共用本机 Code 配置；扩展模型请在“扩展 SubAgent”中绑定。</p>
+        </div>
+        <button
+          className="button button--secondary"
+          disabled={disabled}
+          onClick={() => void onApply()}
+        >
+          应用 Code 设置
+        </button>
+      </div>
+      <div className="slot-card slot-card--cascade">
+        <span>SubAgent 默认模型</span>
+        <label>
+          <small>供应商</small>
+          <select aria-label="原生 SubAgent 供应商" disabled value="native">
+            <option value="native">跟随原生</option>
+          </select>
+        </label>
+        <label>
+          <small>模型</small>
+          <select
+            aria-label="原生 SubAgent 模型"
+            disabled={disabled}
+            value={value ?? "default"}
+            onChange={(event) => void onChange(event.target.value)}
+          >
+            {claudeNativeModelOptions(value).map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </section>
   );
 }
 
@@ -1558,7 +1618,6 @@ function App() {
   function editExtension(extension: ExtensionSubAgent) {
     setEditingExtensionId(extension.id);
     setExtensionDraft({
-      id: extension.id,
       name: extension.name,
       sourceClientId: extension.sourceClientId,
       sourceAgentId: extension.sourceAgentId,
@@ -1578,18 +1637,12 @@ function App() {
 
   async function saveExtension(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const id = extensionDraft.id.trim();
     const name = extensionDraft.name.trim();
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
-      return reportError(
-        "扩展 SubAgent ID 必须由小写字母、数字和单个连字符组成。",
-      );
-    }
     if (!extensionDraft.sourceClientId || !extensionDraft.sourceAgentId) {
       return reportError("请选择本机 Agent 来源。");
     }
     const input = {
-      id,
+      id: editingExtensionId ?? "",
       name,
       sourceClientId: extensionDraft.sourceClientId,
       sourceAgentId: extensionDraft.sourceAgentId,
@@ -1667,7 +1720,12 @@ function App() {
                       <h3>{extension.name}</h3>
                       <code>{extension.sourceAgentId}</code>
                     </div>
-                    <p>{model?.name ?? "跟随来源原生"}</p>
+                    <p>
+                      {clientLabels[extension.sourceClientId] ??
+                        extension.sourceClientId}
+                      {" · "}
+                      {model?.name ?? "跟随来源原生"}
+                    </p>
                   </div>
                   <Toggle
                     checked={enabled}
@@ -2059,21 +2117,6 @@ function App() {
                 {showExtensionForm && (
                   <form className="subagent-form extension-form" onSubmit={saveExtension}>
                     <label>
-                      标识
-                      <input
-                        required
-                        readOnly={Boolean(editingExtensionId)}
-                        value={extensionDraft.id}
-                        onChange={(event) =>
-                          setExtensionDraft((current) => ({
-                            ...current,
-                            id: event.target.value,
-                          }))
-                        }
-                        placeholder="claude-code-reviewer"
-                      />
-                    </label>
-                    <label>
                       名称
                       <input
                         required
@@ -2271,7 +2314,6 @@ function App() {
                           <div className="subagent-main">
                             <div>
                               <h3>{extension.name}</h3>
-                              <code>{extension.id}</code>
                               {extension.capabilities.map((capability) => (
                                 <Badge key={capability}>{capability}</Badge>
                               ))}
@@ -2995,6 +3037,26 @@ function App() {
                           );
                         })}
                       </section>
+                      <ClaudeClientCodeSubagentSlot
+                        disabled={Boolean(pending) || !claudeCli.installed}
+                        value={
+                          state.claudeNativeModelSlots.subagent_default ??
+                          integration.nativeModelSlots.subagent_default
+                        }
+                        onChange={(model) =>
+                          commit(
+                            "set_claude_native_model",
+                            { slot: "subagent_default", model },
+                            "Claude Client Code 的原生 SubAgent 默认模型已保存。",
+                          )
+                        }
+                        onApply={() =>
+                          runIntegration(
+                            "apply_claude_code",
+                            "Claude Client Code 的 SubAgent 模型设置已应用。",
+                          )
+                        }
+                      />
                     </section>
                     <section className="agent-card">
                       <div className="agent-monogram">D</div>
@@ -3317,7 +3379,12 @@ function App() {
                                     <h3>{extension.name}</h3>
                                     <code>{extension.sourceAgentId}</code>
                                   </div>
-                                  <p>{model?.name ?? "跟随来源原生"}</p>
+                                  <p>
+                                    {clientLabels[extension.sourceClientId] ??
+                                      extension.sourceClientId}
+                                    {" · "}
+                                    {model?.name ?? "跟随来源原生"}
+                                  </p>
                                 </div>
                                 <Toggle
                                   checked={enabled}

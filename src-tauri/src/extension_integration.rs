@@ -1,8 +1,10 @@
 use crate::application::{
     ControlPlaneService, ControlPlaneState, ExtensionSubAgentInput, PublicExtensionSubAgent,
 };
-use crate::gateway::{AgentRuntimeRoute, GatewayStatus};
-use crate::local_agents::{discover_claude_builtin_agents, discover_claude_code_agents};
+use crate::gateway::{AgentRuntimeRoute, AgentSourceRuntime, GatewayStatus};
+use crate::local_agents::{
+    discover_claude_builtin_agents, discover_claude_code_agents, discover_codex_agents,
+};
 use crate::mcp_mount::McpMountManager;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -13,6 +15,8 @@ pub struct ExtensionIntegrationService {
     mounts: McpMountManager,
     claude_root: PathBuf,
     claude_runtime: Option<PathBuf>,
+    codex_root: Option<PathBuf>,
+    codex_runtime: Option<PathBuf>,
     pi_settings_path: Option<PathBuf>,
     tokens: Mutex<HashMap<String, String>>,
     operation_lock: Mutex<()>,
@@ -29,10 +33,22 @@ impl ExtensionIntegrationService {
             mounts,
             claude_root: claude_root.into(),
             claude_runtime,
+            codex_root: None,
+            codex_runtime: None,
             pi_settings_path,
             tokens: Mutex::new(HashMap::new()),
             operation_lock: Mutex::new(()),
         }
+    }
+
+    pub fn with_codex(
+        mut self,
+        codex_root: impl Into<PathBuf>,
+        codex_runtime: Option<PathBuf>,
+    ) -> Self {
+        self.codex_root = Some(codex_root.into());
+        self.codex_runtime = codex_runtime;
+        self
     }
 
     pub fn set_binding(
@@ -94,11 +110,16 @@ impl ExtensionIntegrationService {
             .ok_or_else(|| format!("unknown extension SubAgent: {}", input.id))?;
         let bound_clients = bound_clients(&previous, &input.id);
         let updated = control.update_extension_subagent(input)?;
-        if let Err(error) = self.reconcile_clients(&updated, gateway, &bound_clients) {
+        let mut reconciled_clients = Vec::new();
+        for client_id in &bound_clients {
+            let Err(error) = self.reconcile_client(&updated, gateway, client_id) else {
+                reconciled_clients.push(client_id.clone());
+                continue;
+            };
             let rollback = control
                 .update_extension_subagent(extension_input(original))
                 .and_then(|restored| {
-                    self.reconcile_clients(&restored, gateway, &bound_clients)?;
+                    self.reconcile_clients(&restored, gateway, &reconciled_clients)?;
                     Ok(restored)
                 });
             return Err(match rollback {
@@ -289,10 +310,6 @@ impl ExtensionIntegrationService {
                 );
             }
         }
-        let mut discovered = discover_claude_code_agents(&self.claude_root)?
-            .into_iter()
-            .map(|agent| agent.agent_id)
-            .collect::<HashSet<_>>();
         let mut routes = Vec::with_capacity(ids.len());
         for id in ids {
             let extension = state
@@ -300,37 +317,11 @@ impl ExtensionIntegrationService {
                 .iter()
                 .find(|extension| extension.id == id)
                 .ok_or_else(|| format!("unknown extension SubAgent: {id}"))?;
-            if extension.source_client_id != "claude_code" {
+            if !matches!(extension.source_client_id.as_str(), "claude_code" | "codex") {
                 return Err(format!(
                     "extension SubAgent {} uses an unsupported source client: {}",
                     extension.id, extension.source_client_id
                 ));
-            }
-            if !discovered.contains(&extension.source_agent_id) {
-                let runtime = self.claude_runtime.clone().or_else(|| {
-                    crate::adapters::claude_code::detect_claude_cli()
-                        .ok()
-                        .flatten()
-                        .map(|detection| detection.path)
-                });
-                let builtins = runtime
-                    .as_deref()
-                    .map(discover_claude_builtin_agents)
-                    .transpose()
-                    .map_err(|error| {
-                        format!(
-                            "extension SubAgent {} source Agent does not exist or could not be verified: {}; {error}",
-                            extension.id, extension.source_agent_id
-                        )
-                    })?
-                    .unwrap_or_default();
-                discovered.extend(builtins.into_iter().map(|agent| agent.agent_id));
-                if !discovered.contains(&extension.source_agent_id) {
-                    return Err(format!(
-                        "extension SubAgent {} source Agent does not exist: {}",
-                        extension.id, extension.source_agent_id
-                    ));
-                }
             }
             routes.push(AgentRuntimeRoute {
                 extension_id: extension.id.clone(),
@@ -351,24 +342,135 @@ impl ExtensionIntegrationService {
         };
         let url = format!("{}/mcp/{client_id}", gateway.base_url.trim_end_matches('/'));
         self.mounts.mount(client_id, &url, &token)?;
-        let runtime = match &self.claude_runtime {
-            Some(runtime) => runtime.clone(),
-            None => crate::adapters::claude_code::detect_claude_cli()
-                .map_err(|error| error.to_string())?
-                .map(|detection| detection.path)
-                .ok_or_else(|| {
-                    "Claude Code CLI is required to run extension SubAgents".to_string()
-                })?,
-        };
-        gateway.activate_client_agent_broker(
+        let source_ids = routes
+            .iter()
+            .map(|route| route.source_client_id.as_str())
+            .collect::<HashSet<_>>();
+        let mut source_runtimes = Vec::with_capacity(source_ids.len());
+        if source_ids.contains("claude_code") {
+            let runtime = self.resolve_claude_runtime()?;
+            let mut discovered = discover_claude_code_agents(&self.claude_root)?
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>();
+            let needs_builtin_probe = routes.iter().any(|route| {
+                route.source_client_id == "claude_code"
+                    && !discovered.contains(&route.source_agent_id)
+            });
+            if needs_builtin_probe {
+                discovered.extend(
+                    discover_claude_builtin_agents(&runtime)
+                        .map_err(|error| {
+                            "extension SubAgent source Agent does not exist or could not be verified: "
+                                .to_string()
+                                + &error
+                        })?
+                        .into_iter()
+                        .map(|agent| agent.agent_id),
+                );
+            }
+            validate_source_agents(&routes, "claude_code", &discovered)?;
+            source_runtimes.push(AgentSourceRuntime {
+                source_client_id: "claude_code".into(),
+                runtime,
+                config_root: self.claude_root.clone(),
+            });
+        }
+        if source_ids.contains("codex") {
+            let codex_root = self
+                .codex_root
+                .clone()
+                .ok_or_else(|| "Codex configuration root is not configured".to_string())?;
+            let runtime = self.resolve_codex_runtime()?;
+            let discovered = discover_codex_agents(&codex_root)?
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>();
+            validate_codex_source_agents(&routes, &discovered)?;
+            source_runtimes.push(AgentSourceRuntime {
+                source_client_id: "codex".into(),
+                runtime,
+                config_root: codex_root,
+            });
+        }
+        gateway.activate_client_agent_broker_with_sources(
             client_id,
             state,
             &token,
-            &runtime,
-            &self.claude_root,
+            source_runtimes,
             routes,
         )
     }
+
+    fn resolve_claude_runtime(&self) -> Result<PathBuf, String> {
+        self.claude_runtime.clone().map_or_else(
+            || {
+                crate::adapters::claude_code::detect_claude_cli()
+                    .map_err(|error| error.to_string())?
+                    .map(|detection| detection.path)
+                    .ok_or_else(|| {
+                        "Claude Code CLI is required to run extension SubAgents".to_string()
+                    })
+            },
+            Ok,
+        )
+    }
+
+    fn resolve_codex_runtime(&self) -> Result<PathBuf, String> {
+        self.codex_runtime.clone().map_or_else(
+            || {
+                crate::adapters::codex::detect_codex_cli()
+                    .map_err(|error| error.to_string())?
+                    .map(|detection| detection.path)
+                    .ok_or_else(|| "Codex CLI is required to run Codex SubAgents".to_string())
+            },
+            Ok,
+        )
+    }
+}
+
+fn validate_source_agents(
+    routes: &[AgentRuntimeRoute],
+    source_client_id: &str,
+    discovered: &HashSet<String>,
+) -> Result<(), String> {
+    for route in routes
+        .iter()
+        .filter(|route| route.source_client_id == source_client_id)
+    {
+        if !discovered.contains(&route.source_agent_id) {
+            return Err(format!(
+                "extension SubAgent {} source Agent does not exist: {}",
+                route.extension_id, route.source_agent_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_codex_source_agents(
+    routes: &[AgentRuntimeRoute],
+    discovered: &HashSet<String>,
+) -> Result<(), String> {
+    for route in routes
+        .iter()
+        .filter(|route| route.source_client_id == "codex")
+    {
+        if discovered.contains(&route.source_agent_id) {
+            continue;
+        }
+        if route.source_agent_id.is_empty()
+            || !route.source_agent_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            })
+        {
+            return Err(format!(
+                "extension SubAgent {} has an invalid Codex Agent name: {}",
+                route.extension_id, route.source_agent_id
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn bound_clients(state: &ControlPlaneState, extension_id: &str) -> Vec<String> {

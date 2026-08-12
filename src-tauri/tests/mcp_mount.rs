@@ -48,6 +48,10 @@ fn claude_mount_is_isolated_updated_and_removed_without_touching_other_servers()
         active["mcpServers"]["grillforge-claude-code"]["headers"]["Authorization"],
         "Bearer second-token"
     );
+    assert_eq!(
+        active["mcpServers"]["grillforge-claude-code"]["alwaysLoad"],
+        true
+    );
     let mut changed = active;
     changed["theme"] = "light".into();
     changed["mcpServers"]["later"] = serde_json::json!({"command":"later"});
@@ -243,6 +247,157 @@ fn json_mcp_clients_use_their_native_remote_server_shapes() {
                 .is_none()
         );
     }
+}
+
+#[test]
+fn unmount_preserves_user_removal_of_the_mcp_section_for_every_client_format() {
+    let json_cases = [
+        ("claude_code", McpClientFormat::ClaudeJson),
+        ("claude_desktop", McpClientFormat::ClaudeDesktopJson),
+        ("gemini", McpClientFormat::GeminiJson),
+        ("opencode", McpClientFormat::OpenCodeJson),
+        ("kimi_code", McpClientFormat::KimiJson),
+        ("pi", McpClientFormat::PiExtensionJson),
+    ];
+    for (client, format) in json_cases {
+        let root = tempfile::tempdir().expect("root");
+        let config = root.path().join("config.json");
+        fs::write(&config, r#"{"model":"before"}"#).expect("fixture");
+        let manager = McpMountManager::new(
+            root.path().join("snapshots"),
+            [McpMountTarget::new(client, &config, format)],
+        )
+        .expect("manager");
+        manager
+            .mount(
+                client,
+                &format!("http://127.0.0.1:15721/mcp/{client}"),
+                "token",
+            )
+            .expect("mount");
+        fs::write(&config, r#"{"model":"after"}"#).expect("user edit");
+
+        manager.unmount(client).expect("unmount");
+
+        let restored: Value =
+            serde_json::from_slice(&fs::read(&config).expect("config")).expect("JSON");
+        assert_eq!(restored, serde_json::json!({"model":"after"}));
+    }
+
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join("config.toml");
+    fs::write(&config, "model = \"before\"\n").expect("fixture");
+    let manager = McpMountManager::new(
+        root.path().join("snapshots"),
+        [McpMountTarget::new(
+            "codex",
+            &config,
+            McpClientFormat::CodexToml,
+        )],
+    )
+    .expect("manager");
+    manager
+        .mount("codex", "http://127.0.0.1:15721/mcp/codex", "token")
+        .expect("mount");
+    fs::write(&config, "model = \"after\"\n").expect("user edit");
+
+    manager.unmount("codex").expect("unmount");
+
+    assert_eq!(
+        fs::read_to_string(&config).expect("config"),
+        "model = \"after\"\n"
+    );
+}
+
+#[test]
+fn unmount_preserves_a_user_replacement_of_the_reserved_server_name() {
+    let json_cases = [
+        (
+            "claude_code",
+            McpClientFormat::ClaudeJson,
+            "mcpServers",
+            "url",
+        ),
+        (
+            "claude_desktop",
+            McpClientFormat::ClaudeDesktopJson,
+            "mcpServers",
+            "url",
+        ),
+        (
+            "gemini",
+            McpClientFormat::GeminiJson,
+            "mcpServers",
+            "httpUrl",
+        ),
+        ("opencode", McpClientFormat::OpenCodeJson, "mcp", "url"),
+        ("kimi_code", McpClientFormat::KimiJson, "mcpServers", "url"),
+        ("pi", McpClientFormat::PiExtensionJson, "mcpServers", "url"),
+    ];
+    for (client, format, section, url_key) in json_cases {
+        let root = tempfile::tempdir().expect("root");
+        let config = root.path().join("config.json");
+        fs::write(&config, r#"{"setting":"before"}"#).expect("fixture");
+        let manager = McpMountManager::new(
+            root.path().join("snapshots"),
+            [McpMountTarget::new(client, &config, format)],
+        )
+        .expect("manager");
+        manager
+            .mount(
+                client,
+                &format!("http://127.0.0.1:15721/mcp/{client}"),
+                "token",
+            )
+            .expect("mount");
+        let mut changed: Value =
+            serde_json::from_slice(&fs::read(&config).expect("config")).expect("JSON");
+        changed["setting"] = "after".into();
+        changed[section][format!("grillforge-{}", client.replace('_', "-"))] =
+            serde_json::json!({url_key: "http://127.0.0.1:9999/user-owned"});
+        fs::write(&config, serde_json::to_vec_pretty(&changed).unwrap()).expect("user edit");
+
+        manager.unmount(client).expect("unmount");
+
+        let restored: Value =
+            serde_json::from_slice(&fs::read(&config).expect("config")).expect("JSON");
+        assert_eq!(restored["setting"], "after");
+        assert_eq!(
+            restored[section][format!("grillforge-{}", client.replace('_', "-"))][url_key],
+            "http://127.0.0.1:9999/user-owned"
+        );
+    }
+
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join("config.toml");
+    fs::write(&config, "model = \"before\"\n").expect("fixture");
+    let manager = McpMountManager::new(
+        root.path().join("snapshots"),
+        [McpMountTarget::new(
+            "codex",
+            &config,
+            McpClientFormat::CodexToml,
+        )],
+    )
+    .expect("manager");
+    manager
+        .mount("codex", "http://127.0.0.1:15721/mcp/codex", "token")
+        .expect("mount");
+    fs::write(
+        &config,
+        "model = \"after\"\n\n[mcp_servers.grillforge-codex]\nurl = \"http://127.0.0.1:9999/user-owned\"\n",
+    )
+    .expect("user edit");
+
+    manager.unmount("codex").expect("unmount");
+
+    let restored = fs::read_to_string(&config).expect("config");
+    let restored = restored.parse::<toml_edit::DocumentMut>().expect("TOML");
+    assert_eq!(restored["model"].as_str(), Some("after"));
+    assert_eq!(
+        restored["mcp_servers"]["grillforge-codex"]["url"].as_str(),
+        Some("http://127.0.0.1:9999/user-owned")
+    );
 }
 
 #[test]

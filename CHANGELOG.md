@@ -10,6 +10,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - A client-scoped MCP broker exposes global extension SubAgents to each bound
   Coding Agent without implementing an Agent Runtime or tool loop.
+- Extension SubAgents can use discovered Claude Code or Codex Agents as their
+  local runtime source; managed routes preserve the source Agent instructions.
 - Pi can detect and install the reviewed `pi-mcp-extension` package with one
   click before mounting its MCP configuration.
 - Extension bindings update the mounted MCP tool list immediately and are
@@ -30,6 +32,14 @@ The project follows [Semantic Versioning](https://semver.org/).
   share one client configuration file.
 - Claude Code now reads and writes the actual native default, model-family,
   and native SubAgent-default slots while preserving a native-only route.
+- Claude Client exposes the shared Claude Code native SubAgent-default slot for
+  its built-in Code environment, while its MCP bindings remain independent.
+- MCP initialize instructions and always-load metadata make the extension
+  Agent list the default delegation path for compatible clients.
+- Extension IDs are generated internally; the UI shows the source client and
+  source Agent instead of asking users to maintain a slug.
+- MCP unmount removes only GrillForge's own server entry and preserves model,
+  theme, and other MCP edits made while mounted.
 
 ### Verification
 

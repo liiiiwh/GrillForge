@@ -105,9 +105,9 @@ flowchart LR
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.2.0-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.2.0-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，并使用 Developer ID Application 正式签名；Release 同时提供 SHA-256 校验文件。Apple Notarization 完成前，Release 会明确标注公证状态。
 
-解压后将 `GrillForge.app` 移入“应用程序”即可。首次运行不需要绕过 Gatekeeper。
+解压后将 `GrillForge.app` 移入“应用程序”即可。已公证的 Release 不需要绕过 Gatekeeper；未公证构建请以对应 Release 的说明为准。
 
 ## 快速开始
 
@@ -140,7 +140,7 @@ pnpm tauri dev
 
 ### 扩展 SubAgent
 
-1. 在“扩展 SubAgent”页面选择 GrillForge 已发现的本机 Agent。目前执行源只开放经过真实验证的 Claude Code Agent。
+1. 在“扩展 SubAgent”页面选择 GrillForge 已发现的本机 Agent。目前执行源开放经过验证的 Claude Code 与 Codex Agent。
 2. 可选择跟随来源 Agent 原生模型，或绑定一个 GrillForge 模型。
 3. 在目标客户端页面开启该扩展 SubAgent。该客户端从零个绑定变为一个时，GrillForge 自动挂载客户端专属 MCP；关闭最后一个绑定时自动卸载并恢复原文件。
 4. Pi 本身没有原生 MCP。GrillForge 会检测社区 `pi-mcp-extension`；缺失时可在 Pi 页面确认后，一键安装固定版本 `1.5.0`。新 Pi 会话会加载挂载配置。
@@ -224,7 +224,7 @@ pnpm tauri build --target universal-apple-darwin --bundles app
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
 ```
 
-macOS Universal（`arm64` + `x86_64`）发布包已通过 Developer ID Application 正式签名、Apple Notarization、ticket stapling 与 Gatekeeper 验证。Windows 路径和配置逻辑有自动化测试，但原生 Windows 安装包仍需在 Windows/MSVC 环境构建验证。
+macOS Universal（`arm64` + `x86_64`）发布包已通过 Developer ID Application 正式签名与 Hardened Runtime 校验。Apple Notarization 与 ticket stapling 需要独立的 notarytool 凭据；未完成时不会宣称已通过 Gatekeeper 公证。Windows 路径和配置逻辑有自动化测试，但原生 Windows 安装包仍需在 Windows/MSVC 环境构建验证。
 
 ## 后续计划
 

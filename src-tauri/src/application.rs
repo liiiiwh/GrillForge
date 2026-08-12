@@ -11,7 +11,7 @@ use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use crate::gateway::GatewayStatus;
 use crate::model_discovery::{self, DiscoveredModel};
 use crate::usage_query::{UsageQueryCredentials, UsageQueryPreset, UsageSnapshot};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -150,12 +150,20 @@ pub struct ModelInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionSubAgentInput {
+    #[serde(default, deserialize_with = "deserialize_optional_id")]
     pub id: String,
     pub name: String,
     pub source_client_id: String,
     pub source_agent_id: String,
     pub model_id: Option<String>,
     pub capabilities: Vec<String>,
+}
+
+fn deserialize_optional_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1020,9 +1028,12 @@ impl ControlPlaneService {
 
     pub fn save_extension_subagent(
         &self,
-        input: ExtensionSubAgentInput,
+        mut input: ExtensionSubAgentInput,
     ) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
+        if input.id.is_empty() {
+            input.id = generated_extension_subagent_id(&input);
+        }
         validate_extension_subagent_input(&documents, &input)?;
         if documents
             .agents
@@ -1047,6 +1058,9 @@ impl ControlPlaneService {
         &self,
         input: ExtensionSubAgentInput,
     ) -> Result<ControlPlaneState, String> {
+        if input.id.is_empty() {
+            return Err("extension SubAgent update requires an id".into());
+        }
         let mut documents = self.documents()?;
         validate_extension_subagent_input(&documents, &input)?;
         let record = documents
@@ -1340,6 +1354,52 @@ fn extension_subagent_record(input: ExtensionSubAgentInput) -> ExtensionSubAgent
         model_id: input.model_id,
         capabilities: input.capabilities,
     }
+}
+
+fn generated_extension_subagent_id(input: &ExtensionSubAgentInput) -> String {
+    let source_client = extension_id_segment(&input.source_client_id);
+    let source_agent = extension_id_segment(&input.source_agent_id);
+    let name = extension_id_segment(&input.name);
+    let mut prefix = [source_client, source_agent, name]
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    prefix.truncate(prefix.len().min(48));
+    while prefix.ends_with('-') {
+        prefix.pop();
+    }
+    if prefix.is_empty() {
+        prefix.push_str("extension-subagent");
+    }
+    let identity = format!(
+        "{}\0{}\0{}",
+        input.name, input.source_client_id, input.source_agent_id
+    );
+    format!("{prefix}-{:016x}", stable_hash(identity.as_bytes()))
+}
+
+fn extension_id_segment(value: &str) -> String {
+    let mut segment = String::new();
+    let mut separator = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !segment.is_empty() {
+                segment.push('-');
+            }
+            segment.push(character.to_ascii_lowercase());
+            separator = false;
+        } else if !segment.is_empty() {
+            separator = true;
+        }
+    }
+    segment
+}
+
+fn stable_hash(value: &[u8]) -> u64 {
+    value.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
 fn validate_extension_subagent_input(
