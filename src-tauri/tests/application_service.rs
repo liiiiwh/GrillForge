@@ -1,6 +1,8 @@
 use axum::{Json, Router, routing::post};
 use grillforge_lib::adapters::codex::{CodexAdapter, CodexPaths};
-use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput};
+use grillforge_lib::application::{
+    ControlPlaneService, ExtensionSubAgentInput, ModelInput, ProviderInput,
+};
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -44,30 +46,6 @@ fn public_state_never_contains_provider_secrets() {
 }
 
 #[test]
-fn worker_invariant_failure_preserves_persisted_state() {
-    let directory = tempfile::tempdir().expect("temp directory");
-    let service = ControlPlaneService::new(directory.path());
-    service.save_provider(provider()).expect("valid provider");
-    service.save_model(model()).expect("valid model");
-    service
-        .set_worker("local-coder".into(), true)
-        .expect("saved worker");
-    service.set_worker_mode(true).expect("worker mode on");
-
-    let error = service
-        .set_worker("local-coder".into(), false)
-        .expect_err("last effective worker must be retained");
-
-    assert_eq!(
-        error,
-        "worker mode requires at least one valid enabled model"
-    );
-    let state = service.state().expect("last valid state");
-    assert!(state.worker_mode);
-    assert!(state.models[0].worker_enabled);
-}
-
-#[test]
 fn creating_the_same_provider_slug_twice_is_rejected() {
     let directory = tempfile::tempdir().expect("temp directory");
     let service = ControlPlaneService::new(directory.path());
@@ -94,28 +72,6 @@ fn explicit_provider_update_can_rotate_a_key_without_exposing_it() {
     assert_eq!(state.providers[0].name, "Updated Local");
     let serialized = serde_json::to_string(&state).expect("public state");
     assert!(!serialized.contains("rotated-secret"));
-}
-
-#[test]
-fn saved_workers_do_not_block_provider_disable_while_worker_mode_is_off() {
-    let directory = tempfile::tempdir().expect("temp directory");
-    let service = ControlPlaneService::new(directory.path());
-    service.save_provider(provider()).expect("provider");
-    service.save_model(model()).expect("model");
-    service
-        .set_worker("local-coder".into(), true)
-        .expect("saved worker");
-
-    let mut disabled = provider();
-    disabled.enabled = false;
-    disabled.api_key = None;
-    let state = service
-        .save_provider(disabled)
-        .expect("inactive saved worker is not effective");
-
-    assert!(!state.providers[0].enabled);
-    assert!(state.models[0].worker_enabled);
-    assert!(!state.worker_mode);
 }
 
 #[test]
@@ -219,16 +175,12 @@ fn claude_and_pi_accept_gemini_native_registry_models() {
     service
         .set_main_model(Some("gemini-pro".into()))
         .expect("Claude main selection");
-    service
-        .set_worker("gemini-pro".into(), true)
-        .expect("Claude Worker selection");
     let state = service
         .set_pi_main_model(Some("gemini-pro".into()))
         .expect("Pi main selection");
 
     assert_eq!(state.main_model_id.as_deref(), Some("gemini-pro"));
     assert_eq!(state.pi_main_model_id.as_deref(), Some("gemini-pro"));
-    assert!(state.models[0].worker_enabled);
 }
 
 #[test]
@@ -255,6 +207,36 @@ fn client_integration_state_is_persisted_separately_from_model_selection() {
         .set_client_integration_enabled("opencode", true)
         .expect("enabled integration");
     assert!(service.client_integration_enabled("opencode").unwrap());
+}
+
+#[test]
+fn extension_bindings_do_not_turn_on_the_client_model_configuration() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let service = ControlPlaneService::new(directory.path());
+    service
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            source_client_id: "claude_code".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: None,
+            capabilities: vec![],
+        })
+        .expect("extension");
+    service
+        .set_client_extension_subagent_enabled("opencode", "reviewer", true)
+        .expect("binding");
+
+    assert!(!service.client_integration_enabled("opencode").unwrap());
+    assert!(
+        !service
+            .client_has_managed_configuration("opencode")
+            .unwrap()
+    );
+    assert_eq!(
+        service.state().unwrap().client_extension_subagent_ids["opencode"],
+        ["reviewer"]
+    );
 }
 
 #[tokio::test]

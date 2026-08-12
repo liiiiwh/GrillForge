@@ -22,6 +22,7 @@ use crate::adapters::opencode::{
     detect_opencode_cli,
 };
 use crate::application::ControlPlaneService;
+use crate::extension_integration::ExtensionIntegrationService;
 use crate::gateway::GatewayStatus;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -882,10 +883,16 @@ pub async fn gemini_status(
 pub fn apply_gemini(
     service: State<'_, GeminiIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
+    gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
-    let status = service.apply(&control)?;
+    let state = control.state()?;
+    let status =
+        extensions.with_suspended_client(&state, &gateway, "gemini", || service.apply(&control))?;
     if let Err(error) = control.set_client_integration_enabled("gemini", true) {
-        let _ = service.disable(&control);
+        let _ = extensions.with_suspended_client(&control.state()?, &gateway, "gemini", || {
+            service.disable(&control)
+        });
         return Err(error);
     }
     Ok(status)
@@ -895,8 +902,12 @@ pub fn apply_gemini(
 pub fn disable_gemini(
     service: State<'_, GeminiIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
+    gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
-    let status = service.disable(&control)?;
+    let state = control.state()?;
+    let status = extensions
+        .with_suspended_client(&state, &gateway, "gemini", || service.disable(&control))?;
     control.set_client_integration_enabled("gemini", false)?;
     Ok(status)
 }
@@ -944,11 +955,17 @@ pub async fn opencode_status(
 pub fn apply_opencode(
     service: State<'_, OpenCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
     gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
-    let status = service.apply(&control, &gateway)?;
+    let state = control.state()?;
+    let status = extensions.with_suspended_client(&state, &gateway, "opencode", || {
+        service.apply(&control, &gateway)
+    })?;
     if let Err(error) = control.set_client_integration_enabled("opencode", true) {
-        let _ = service.disable(&control, &gateway);
+        let _ = extensions.with_suspended_client(&control.state()?, &gateway, "opencode", || {
+            service.disable(&control, &gateway)
+        });
         return Err(error);
     }
     Ok(status)
@@ -958,9 +975,13 @@ pub fn apply_opencode(
 pub fn disable_opencode(
     service: State<'_, OpenCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
     gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
-    let status = service.disable(&control, &gateway)?;
+    let state = control.state()?;
+    let status = extensions.with_suspended_client(&state, &gateway, "opencode", || {
+        service.disable(&control, &gateway)
+    })?;
     control.set_client_integration_enabled("opencode", false)?;
     Ok(status)
 }

@@ -8,7 +8,7 @@ use std::fs;
 fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
     (
         ConfigDocument {
-            version: 1,
+            version: 2,
             providers: vec![ProviderRecord {
                 id: "local".into(),
                 name: "Local".into(),
@@ -22,7 +22,7 @@ fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
             }],
         },
         ModelsDocument {
-            version: 1,
+            version: 2,
             models: vec![ModelRecord {
                 id: "local-coder".into(),
                 provider_id: "local".into(),
@@ -33,7 +33,8 @@ fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
             }],
         },
         AgentsDocument {
-            version: 1,
+            version: 2,
+            extension_subagents: Vec::new(),
             agents: vec![AgentRecord {
                 id: "test-agent".into(),
                 adapter: "test".into(),
@@ -41,10 +42,9 @@ fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
                 main: MainRecord::Managed("local-coder".into()),
                 model_slots: Default::default(),
                 native_model_slots: Default::default(),
-                worker_mode: true,
-                enabled_workers: vec!["local-coder".into()],
-                native_subagent_enabled: true,
-                subagents: vec![],
+                model_pool: vec!["local-coder".into()],
+                codex_agent_models: vec![],
+                extension_subagent_ids: Vec::new(),
             }],
         },
     )
@@ -137,7 +137,7 @@ fn partial_configuration_is_not_silently_repaired() {
     let directory = tempfile::tempdir().expect("temp directory");
     fs::write(
         directory.path().join("config.yaml"),
-        "version: 1\nproviders: []\n",
+        "version: 2\nproviders: []\n",
     )
     .expect("partial state");
     let files = ConfigurationFiles::new(directory.path());

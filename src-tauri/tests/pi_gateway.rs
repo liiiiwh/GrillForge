@@ -158,8 +158,10 @@ async fn claude_and_pi_routes_reach_gemini_native_through_the_shared_gateway() {
             protocol_capabilities: vec![],
         })
         .unwrap();
-    service.set_worker("gemini-pro".into(), true).unwrap();
-    let state = service.set_worker_mode(true).unwrap();
+    service.set_main_model(Some("gemini-pro".into())).unwrap();
+    let state = service
+        .set_pi_model_enabled("gemini-pro".into(), true)
+        .unwrap();
 
     let gateway = Gateway::new(temp.path());
     let status = gateway.status("http://127.0.0.1:1".into());

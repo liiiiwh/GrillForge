@@ -12,30 +12,22 @@ pub enum MainSelection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentConfiguration {
     main: MainSelection,
-    worker_mode: bool,
-    enabled_workers: Vec<String>,
+    model_pool: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentConfigurationError {
     UnknownMainModel(String),
-    UnknownWorkerModel(String),
-    DuplicateWorkerModel(String),
-    EmptyWorkerPool,
+    UnknownPoolModel(String),
+    DuplicatePoolModel(String),
 }
 
 impl Display for AgentConfigurationError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownMainModel(id) => write!(formatter, "unknown main model: {id}"),
-            Self::UnknownWorkerModel(id) => write!(formatter, "unknown worker model: {id}"),
-            Self::DuplicateWorkerModel(id) => write!(formatter, "duplicate worker model: {id}"),
-            Self::EmptyWorkerPool => {
-                write!(
-                    formatter,
-                    "worker mode requires at least one valid enabled model"
-                )
-            }
+            Self::UnknownPoolModel(id) => write!(formatter, "unknown model-pool model: {id}"),
+            Self::DuplicatePoolModel(id) => write!(formatter, "duplicate model-pool model: {id}"),
         }
     }
 }
@@ -45,8 +37,7 @@ impl Error for AgentConfigurationError {}
 impl AgentConfiguration {
     pub fn new(
         main: MainSelection,
-        worker_mode: bool,
-        enabled_workers: impl IntoIterator<Item = impl Into<String>>,
+        model_pool: impl IntoIterator<Item = impl Into<String>>,
         models: &ModelRegistry,
     ) -> Result<Self, AgentConfigurationError> {
         if let MainSelection::Managed(id) = &main {
@@ -55,43 +46,30 @@ impl AgentConfiguration {
             }
         }
 
-        let mut workers = Vec::new();
+        let mut pool = Vec::new();
         let mut seen = HashSet::new();
-        for worker in enabled_workers {
-            let worker = worker.into();
-            if models.get(&worker).is_none() {
-                return Err(AgentConfigurationError::UnknownWorkerModel(worker));
+        for model in model_pool {
+            let model = model.into();
+            if models.get(&model).is_none() {
+                return Err(AgentConfigurationError::UnknownPoolModel(model));
             }
-            if !seen.insert(worker.clone()) {
-                return Err(AgentConfigurationError::DuplicateWorkerModel(worker));
+            if !seen.insert(model.clone()) {
+                return Err(AgentConfigurationError::DuplicatePoolModel(model));
             }
-            workers.push(worker);
-        }
-
-        if worker_mode && workers.is_empty() {
-            return Err(AgentConfigurationError::EmptyWorkerPool);
+            pool.push(model);
         }
 
         Ok(Self {
             main,
-            worker_mode,
-            enabled_workers: workers,
+            model_pool: pool,
         })
-    }
-
-    pub fn effective_workers(&self) -> &[String] {
-        if self.worker_mode {
-            &self.enabled_workers
-        } else {
-            &[]
-        }
     }
 
     pub fn main(&self) -> &MainSelection {
         &self.main
     }
 
-    pub fn enabled_workers(&self) -> &[String] {
-        &self.enabled_workers
+    pub fn model_pool(&self) -> &[String] {
+        &self.model_pool
     }
 }

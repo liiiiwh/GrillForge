@@ -10,7 +10,7 @@ Status: Canonical architecture
                              |
               +--------------+--------------+
               |                             |
-      Main Model Manager          Worker Model Manager
+      Native Slot Manager       Extension SubAgent Library
               |                             |
               +--------------+--------------+
                              |
@@ -54,7 +54,7 @@ An Agent Adapter knows how to connect GrillForge to one coding agent. It owns:
 - Agent installation detection
 - Agent-specific configuration locations and formats
 - Configuration backup, application, verification, and restoration
-- Skill or plugin installation for that agent
+- Required client extension installation after explicit user confirmation
 - Agent integration and health status
 - Translation between neutral GrillForge model references and agent-facing model
   identifiers
@@ -121,7 +121,7 @@ The Model Registry owns neutral model metadata:
 - Display name
 - Capability tags
 - Context/output capability metadata where known
-- Global availability and Worker enablement
+- Global availability and transport capability metadata
 
 It does not contain agent configuration paths or API protocol conversion code.
 Native agent defaults are not forced into the registry. `Native/Default` is an
@@ -138,10 +138,10 @@ Agent + route alias -> GrillForge model -> Provider -> Protocol bridge
 Routing is neutral core behavior. Protocol conversion is delegated to the
 Provider Layer, and live agent configuration is delegated to the Agent Adapter.
 
-cc-switch currently selects a provider globally per application. GrillForge adds
-only the thin model-to-provider selection needed to keep the main model and
-Worker models independent. All underlying provider protocol behavior remains
-cc-switch-derived.
+cc-switch currently selects a provider globally per application. GrillForge
+adds only the thin model-to-provider selection needed for independent native
+Slots and extension Agent routes. All underlying provider protocol behavior
+remains cc-switch-derived.
 
 ## Source Layout
 
@@ -166,6 +166,10 @@ src-tauri/src/
     hermes/
   bridge/
   application.rs
+  extension_integration.rs
+  mcp_mount.rs
+  local_agents.rs
+  pi_mcp_extension.rs
   configuration.rs
   gateway.rs
   integration.rs
@@ -189,28 +193,40 @@ The MVP `ClaudeCodeAdapter` is responsible for:
 
 - Detecting Claude Code and supported configuration locations
 - Reading current integration status without changing it
-- Installing/updating the GrillForge model-selection Skill
 - Taking a recoverable snapshot before managed configuration changes
 - Applying Claude Code settings atomically
 - Exposing the local Anthropic-compatible gateway when routing is needed
 - Mapping GrillForge route aliases to model IDs understood by the gateway
-- Mapping the single-model `main`, `sonnet`, `opus`, `fable`, and `haiku`
+- Mapping the single-model `main`, `sonnet`, `opus`, `fable`, `haiku`, and
+  `subagent_default`
   Slots to Claude Code configuration keys derived from the pinned cc-switch
   implementation
-- Exposing the SubAgent Worker Pool as the MVP multi-model Slot
-- Generating one GrillForge-owned native Claude Agent definition per effective
-  Worker so multiple arbitrary model aliases remain selectable by
-  `subagent_type`
 - Restoring the exact pre-GrillForge configuration on disable
 
-Claude Code CLI uses its settings and `ANTHROPIC_BASE_URL` gateway mechanism.
-Claude Client is a second, narrow MVP Adapter for its conversation/Cowork 3P
-profile and Claude-safe role routes. Its Code and background development tasks
-reuse the same user/project/local Agent definitions, Skill, model Slots, and
-SubAgent records, but Claude Client overrides the bundled runtime's network and
-authentication environment. External Workers become routable only after the
-Client 3P profile is applied; GrillForge must not create a duplicate Worker
-configuration store on the Claude Client page.
+Claude Code CLI uses its settings and `ANTHROPIC_BASE_URL` gateway mechanism
+only when a native model Slot needs managed routing. Extension SubAgents use a
+separate client-scoped MCP and child-only route; they do not take over the
+parent Claude session. Claude Client remains a separate narrow Adapter for its
+conversation/Cowork 3P profile and Claude-safe role routes.
+
+## Extension SubAgent Broker
+
+The broker is an MCP control boundary, not an Agent Runtime. It owns:
+
+- Per-destination-client bearer authentication and allowed extension IDs
+- `list_agents` and `run_agent` request validation
+- Resolution from an extension ID to a discovered local Agent and optional model
+- Launching the already-installed source Coding Agent runtime
+- A short-lived child-only gateway credential for managed models
+- Cancellation, exit status, and safe result forwarding
+
+The source Coding Agent runtime owns its Agent Loop, prompt processing, tools,
+permissions, and context. GrillForge never parses model output to implement an
+Agent loop and never executes Agent tools.
+
+Mount configuration is client-specific and transactional. Pi uses community
+`pi-mcp-extension`; detection reads Pi's real package registry and installation
+requires explicit confirmation before running the valid detected Pi CLI.
 
 ## Local Gateway
 
@@ -220,37 +236,15 @@ Responsibilities:
 
 - Accept Anthropic Messages-compatible requests from the Claude adapter
 - Resolve the request's model route
-- Select the main or Worker provider/model
+- Select the configured Slot or extension provider/model
 - Replace external-provider authentication at the forwarding boundary
 - Apply the configured protocol bridge
 - Return Anthropic-compatible JSON or SSE
 - Avoid logging credentials or sensitive request bodies by default
 
-It does not create agents, execute tools, schedule tasks, or manage context.
-
-For the standalone Claude Code CLI, when the main model is Native/Default and no
-Worker model is active, the adapter restores native configuration and the
-gateway is not involved.
-
-For the standalone CLI, when Native/Default main and external Workers are both active, main-model
-requests pass through the gateway to the native Anthropic route while Worker
-aliases are sent to their configured Providers. Preservation of Claude account
-authentication on this mixed route must be verified by an integration test
-before release.
-
-For this mixed route the adapter changes `ANTHROPIC_BASE_URL` but does not set a
-placeholder `ANTHROPIC_AUTH_TOKEN`: Claude Code gives that variable precedence
-over subscription OAuth. The gateway forwards inbound OAuth only to the native
-Anthropic route and replaces it only for external Provider routes.
-
-Claude Client's bundled Code runtime is different: the Client host injects the
-official API host and authentication after reading the standalone CLI config.
-The supported external route is the Client's 3P inference profile, which sends
-conversation, Cowork, and bundled Code to one authenticated local gateway. The
-Client gateway never reads or proxies a subscription OAuth token. Consequently,
-official-subscription main plus third-party Worker is not advertised for Client
-Code, and the selector rejects external Workers while the Client remains in 1P
-mode.
+It does not create Agent definitions, execute tools, schedule tasks, or manage
+context. Following native for every Slot and extension avoids parent-session
+gateway takeover.
 
 A custom base URL disables some Claude first-party additions, including Remote
 Control and default optimistic Tool Search behavior. The MVP does not emulate
@@ -269,7 +263,8 @@ Target user-visible configuration:
 
 - `config.yaml`: application and Provider configuration
 - `models.yaml`: neutral model registry and capability metadata
-- `agents.yaml`: Agent Adapter enablement, fixed model Slots, and named SubAgent definitions
+- `agents.yaml`: Agent Adapter enablement, native model Slots, extension
+  definitions, and per-client extension bindings
 
 Secrets must never be copied into a coding agent's live configuration. The MVP
 secret persistence mechanism should follow the selected cc-switch-derived
@@ -290,19 +285,16 @@ The GUI is client-first rather than model-first. Its v0.6 primary navigation is:
 - Routing
 
 Selecting a Client opens the configuration described by that Client Adapter.
-The Claude Code page contains its status, four fixed single-model Slots, named
-SubAgent definitions, and Apply/Disable actions. Every SubAgent has its own
-stable ID, display name, Model reference, capability tags, and enabled state;
-multiple SubAgents may intentionally share one Model. The Claude Client page
-links back to the shared Worker definitions and exposes its independent 3P
-conversation/Cowork role routes, which are also the network entry for bundled
-Code. Provider credentials are never copied into a Client page; Slots and
-SubAgents reference the global Model Registry.
+The Claude Code page contains its status, six verified single-model Slots,
+extension bindings, and Apply/Disable actions. A separate Extension SubAgent
+page owns the global definitions sourced from discovered local Agents. Provider
+credentials are never copied into a Client page; Slots and extensions reference
+the global Model Registry.
 
 The Routing page is read-only. It renders the persisted
-`Client -> Slot or SubAgent -> Model` relationship and must never imply a
-runtime route decision. Model details use only registry fields that actually
-exist; pricing, context limits, and recommendation claims are not invented.
+`Client -> Slot -> Model` and `Client -> extension -> source Agent -> Model`
+relationships and must never imply an invented runtime decision. Model details
+use only registry fields that actually exist.
 
 The first screen must immediately show:
 

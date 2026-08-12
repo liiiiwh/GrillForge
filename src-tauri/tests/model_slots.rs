@@ -63,3 +63,53 @@ fn unsupported_or_unknown_slot_selection_fails_without_mutation() {
     );
     assert!(service.state().expect("state").model_slots.is_empty());
 }
+
+#[test]
+fn native_claude_models_are_persisted_without_a_provider() {
+    let root = tempfile::tempdir().expect("config root");
+    let service = ControlPlaneService::new(root.path());
+
+    let state = service
+        .set_claude_native_model("main".into(), Some("fable".into()))
+        .expect("native main");
+    assert_eq!(state.main_model_id, None);
+    assert_eq!(
+        state
+            .claude_native_model_slots
+            .get("main")
+            .map(String::as_str),
+        Some("fable")
+    );
+    assert!(state.providers.is_empty());
+
+    let state = service
+        .set_claude_native_model("subagent_default".into(), Some("haiku".into()))
+        .expect("native subagent");
+    assert_eq!(
+        state
+            .claude_native_model_slots
+            .get("subagent_default")
+            .map(String::as_str),
+        Some("haiku")
+    );
+}
+
+#[test]
+fn unsupported_native_claude_model_fails_without_mutation() {
+    let root = tempfile::tempdir().expect("config root");
+    let service = ControlPlaneService::new(root.path());
+
+    assert!(
+        service
+            .set_claude_native_model("main".into(), Some("made-up".into()))
+            .expect_err("unsupported native model")
+            .contains("unsupported Claude Code native model")
+    );
+    assert!(
+        service
+            .state()
+            .expect("state")
+            .claude_native_model_slots
+            .is_empty()
+    );
+}

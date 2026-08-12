@@ -3,6 +3,7 @@ use crate::adapters::codex::{
     CodexTakeoverStatus, detect_codex_cli, inspect_codex_native_models,
 };
 use crate::application::ControlPlaneService;
+use crate::extension_integration::ExtensionIntegrationService;
 use crate::gateway::GatewayStatus;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -186,11 +187,18 @@ pub async fn codex_status(
 pub fn apply_codex(
     integration: State<'_, CodexIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
     gateway: State<'_, GatewayStatus>,
 ) -> Result<CodexIntegrationStatus, String> {
-    let status = integration.apply(&control, &gateway)?;
+    let state = control.state()?;
+    let status = extensions.with_suspended_client(&state, &gateway, "codex", || {
+        integration.apply(&control, &gateway)
+    })?;
     if let Err(error) = control.set_client_integration_enabled("codex", true) {
-        let restore = integration.disable(&control, &gateway);
+        let restore =
+            extensions.with_suspended_client(&control.state()?, &gateway, "codex", || {
+                integration.disable(&control, &gateway)
+            });
         return Err(match restore {
             Ok(_) => error,
             Err(restore_error) => format!("{error}; Codex restore also failed: {restore_error}"),
@@ -203,9 +211,13 @@ pub fn apply_codex(
 pub fn disable_codex(
     integration: State<'_, CodexIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
     gateway: State<'_, GatewayStatus>,
 ) -> Result<CodexIntegrationStatus, String> {
-    let status = integration.disable(&control, &gateway)?;
+    let state = control.state()?;
+    let status = extensions.with_suspended_client(&state, &gateway, "codex", || {
+        integration.disable(&control, &gateway)
+    })?;
     control.set_client_integration_enabled("codex", false)?;
     Ok(status)
 }

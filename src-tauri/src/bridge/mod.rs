@@ -618,7 +618,12 @@ fn convert_message_content(
                         "{block_field} tool_use requires assistant role"
                     )));
                 }
-                reject_unknown_fields(block, &["type", "id", "name", "input"], Some(&block_field))?;
+                reject_unknown_fields(
+                    block,
+                    &["type", "id", "name", "input", "cache_control"],
+                    Some(&block_field),
+                )?;
+                validate_cache_control(block.get("cache_control"), &block_field)?;
                 flush_message_content(&mut input, role, &mut message_content);
                 let id = required_non_empty_string(block.get("id"), &format!("{block_field}.id"))?;
                 let name =
@@ -650,9 +655,16 @@ fn convert_message_content(
                 }
                 reject_unknown_fields(
                     block,
-                    &["type", "tool_use_id", "content", "is_error"],
+                    &[
+                        "type",
+                        "tool_use_id",
+                        "content",
+                        "is_error",
+                        "cache_control",
+                    ],
                     Some(&block_field),
                 )?;
+                validate_cache_control(block.get("cache_control"), &block_field)?;
                 flush_message_content(&mut input, role, &mut message_content);
                 let call_id = required_non_empty_string(
                     block.get("tool_use_id"),

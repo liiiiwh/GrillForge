@@ -7,13 +7,15 @@ pub mod client_integrations;
 pub mod codex_integration;
 pub mod configuration;
 pub mod core;
+pub mod extension_integration;
 pub mod gateway;
 pub mod integration;
+pub mod local_agents;
+pub mod mcp_mount;
 pub mod model_discovery;
 pub mod pi_integration;
+pub mod pi_mcp_extension;
 pub mod presets;
-pub mod selector;
-pub mod skills;
 pub mod storage;
 pub mod usage_query;
 
@@ -68,6 +70,53 @@ pub fn run() {
                 adapters::kimi_code::paths_from_home(&home),
                 &root,
             ));
+            let mounts = mcp_mount::McpMountManager::new(
+                root.join("mcp-snapshots"),
+                [
+                    mcp_mount::McpMountTarget::new(
+                        "claude_code",
+                        home.join(".claude.json"),
+                        mcp_mount::McpClientFormat::ClaudeJson,
+                    ),
+                    mcp_mount::McpMountTarget::new(
+                        "claude_desktop",
+                        claude_desktop_integration::default_claude_desktop_paths(&home)
+                            .normal_config_path,
+                        mcp_mount::McpClientFormat::ClaudeDesktopJson,
+                    ),
+                    mcp_mount::McpMountTarget::new(
+                        "codex",
+                        adapters::codex::paths_from_home(&home).config_path,
+                        mcp_mount::McpClientFormat::CodexToml,
+                    ),
+                    mcp_mount::McpMountTarget::new(
+                        "gemini",
+                        adapters::gemini::paths_from_home(&home).settings_path,
+                        mcp_mount::McpClientFormat::GeminiJson,
+                    ),
+                    mcp_mount::McpMountTarget::new(
+                        "opencode",
+                        adapters::opencode::paths_from_home(&home).config_path,
+                        mcp_mount::McpClientFormat::OpenCodeJson,
+                    ),
+                    mcp_mount::McpMountTarget::new(
+                        "kimi_code",
+                        home.join(".kimi/mcp.json"),
+                        mcp_mount::McpClientFormat::KimiJson,
+                    ),
+                    mcp_mount::McpMountTarget::new(
+                        "pi",
+                        home.join(".pi/agent/mcp.json"),
+                        mcp_mount::McpClientFormat::PiExtensionJson,
+                    ),
+                ],
+            )?;
+            app.manage(extension_integration::ExtensionIntegrationService::new(
+                mounts,
+                home.join(".claude"),
+                None,
+                Some(home.join(".pi/agent/settings.json")),
+            ));
 
             let listener = std::net::TcpListener::bind(gateway::DEFAULT_GATEWAY_ADDRESS)?;
             listener.set_nonblocking(true)?;
@@ -102,6 +151,7 @@ pub fn run() {
             application::update_model,
             application::delete_model,
             application::set_main_model,
+            application::set_claude_native_model,
             application::set_claude_desktop_model_slot,
             application::set_model_slot,
             application::set_pi_main_model,
@@ -115,12 +165,11 @@ pub fn run() {
             application::set_client_main_model,
             application::set_client_model_enabled,
             application::set_client_secondary_model,
-            application::set_worker,
-            application::set_worker_mode,
-            application::set_native_subagent_enabled,
-            application::save_subagent,
-            application::update_subagent,
-            application::delete_subagent,
+            application::save_extension_subagent,
+            extension_integration::update_extension_subagent,
+            application::delete_extension_subagent,
+            extension_integration::set_client_extension_binding,
+            local_agents::discover_local_agents,
             application::test_model_connection,
             application::query_provider_usage,
             gateway::gateway_status,
@@ -135,6 +184,8 @@ pub fn run() {
             pi_integration::pi_status,
             pi_integration::apply_pi,
             pi_integration::disable_pi,
+            pi_mcp_extension::pi_mcp_extension_status,
+            pi_mcp_extension::install_pi_mcp_extension,
             codex_integration::codex_status,
             codex_integration::apply_codex,
             codex_integration::disable_codex,
@@ -205,6 +256,19 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
 
     let control = app.state::<application::ControlPlaneService>();
     let gateway = app.state::<gateway::GatewayStatus>();
+    let extensions = app.state::<extension_integration::ExtensionIntegrationService>();
+    extensions.restore_clients_then_reconcile(&control, &gateway, || {
+        restore_enabled_model_clients(app, &control, &gateway)
+    })
+}
+
+fn restore_enabled_model_clients(
+    app: &tauri::AppHandle,
+    control: &application::ControlPlaneService,
+    gateway: &gateway::GatewayStatus,
+) -> Result<(), String> {
+    use tauri::Manager;
+
     let state = control.state()?;
     let mut failures = Vec::new();
 
@@ -222,7 +286,7 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("claude_code")?,
             control.client_has_managed_configuration("claude_code")?,
             claude.recovery_pending(),
-            || claude.resume_if_applied(&state, &gateway),
+            || claude.resume_if_applied(&state, gateway),
             || {
                 let status = claude.apply(&state, &gateway.base_url)?;
                 if let Err(error) = gateway.activate(&state) {
@@ -243,8 +307,8 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("claude_desktop")?,
             control.client_has_managed_configuration("claude_desktop")?,
             desktop.recovery_pending(),
-            || desktop.resume_if_applied(&state, &gateway),
-            || desktop.apply(&state, &gateway),
+            || desktop.resume_if_applied(&state, gateway),
+            || desktop.apply(&state, gateway),
         ),
     );
 
@@ -257,8 +321,8 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("pi")?,
             control.client_has_managed_configuration("pi")?,
             pi.recovery_pending(),
-            || pi.resume_if_applied(&state, &gateway),
-            || pi.apply(&state, &gateway),
+            || pi.resume_if_applied(&state, gateway),
+            || pi.apply(&state, gateway),
         ),
     );
 
@@ -271,8 +335,8 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("codex")?,
             control.client_has_managed_configuration("codex")?,
             codex.recovery_pending(),
-            || codex.resume_if_applied(&control, &gateway),
-            || codex.apply(&control, &gateway),
+            || codex.resume_if_applied(control, gateway),
+            || codex.apply(control, gateway),
         ),
     );
 
@@ -286,7 +350,7 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_has_managed_configuration("gemini")?,
             gemini.recovery_pending(),
             || gemini.resume_if_applied(),
-            || gemini.apply(&control),
+            || gemini.apply(control),
         ),
     );
 
@@ -300,7 +364,7 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_has_managed_configuration("grok_build")?,
             grok.recovery_pending(),
             || grok.resume_if_applied(),
-            || grok.apply(&control),
+            || grok.apply(control),
         ),
     );
 
@@ -313,8 +377,8 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("opencode")?,
             control.client_has_managed_configuration("opencode")?,
             opencode.recovery_pending(),
-            || opencode.resume_if_applied(&control, &gateway),
-            || opencode.apply(&control, &gateway),
+            || opencode.resume_if_applied(control, gateway),
+            || opencode.apply(control, gateway),
         ),
     );
 
@@ -327,8 +391,8 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("openclaw")?,
             control.client_has_managed_configuration("openclaw")?,
             openclaw.recovery_pending(),
-            || openclaw.resume_if_applied(&control, &gateway),
-            || openclaw.apply(&control, &gateway),
+            || openclaw.resume_if_applied(control, gateway),
+            || openclaw.apply(control, gateway),
         ),
     );
 
@@ -341,8 +405,8 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("hermes")?,
             control.client_has_managed_configuration("hermes")?,
             hermes.recovery_pending(),
-            || hermes.resume_if_applied(&control, &gateway),
-            || hermes.apply(&control, &gateway),
+            || hermes.resume_if_applied(control, gateway),
+            || hermes.apply(control, gateway),
         ),
     );
 
@@ -355,8 +419,8 @@ fn restore_enabled_clients(app: &tauri::AppHandle) -> Result<(), String> {
             control.client_integration_enabled("kimi_code")?,
             control.client_has_managed_configuration("kimi_code")?,
             kimi.recovery_pending(),
-            || kimi.resume_if_applied(&control, &gateway),
-            || kimi.apply(&control, &gateway),
+            || kimi.resume_if_applied(control, gateway),
+            || kimi.apply(control, gateway),
         ),
     );
     if failures.is_empty() {
@@ -376,6 +440,10 @@ fn restore_live_configs_before_exit(app: &tauri::AppHandle) -> Result<(), String
     use tauri::Manager;
 
     let gateway = app.state::<gateway::GatewayStatus>();
+    // MCP is the top configuration layer. Every model mutation temporarily
+    // suspends and then remounts it, so exit restores the layers in reverse.
+    let extensions = app.state::<extension_integration::ExtensionIntegrationService>();
+    extensions.restore_live_mounts(&gateway)?;
     let control = app.state::<application::ControlPlaneService>();
     let state = control.state()?;
     let claude = app.state::<integration::IntegrationService>();

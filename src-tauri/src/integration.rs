@@ -1,11 +1,9 @@
 use crate::adapters::claude_code::{
-    ClaudeCodeAdapter, ClaudeCodeTakeoverStatus, EnableRequest, MODEL_SLOT_IDS, WorkerModel,
-    WorkerStrategy, detect_claude_cli,
+    ClaudeCodeAdapter, ClaudeCodeTakeoverStatus, EnableRequest, MODEL_SLOT_IDS, detect_claude_cli,
 };
 use crate::application::ControlPlaneService;
 use crate::application::ControlPlaneState;
 use crate::gateway::GatewayStatus;
-use crate::skills::SkillInstaller;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,9 +26,7 @@ pub struct IntegrationStatus {
     pub takeover: IntegrationTakeover,
     pub differences: Vec<String>,
     pub managed_main_alias: Option<String>,
-    pub forced_worker_alias: Option<String>,
-    pub generated_agent_names: Vec<String>,
-    pub selector_skill_installed: bool,
+    pub native_model_slots: BTreeMap<String, String>,
     pub supported_model_slots: Vec<&'static str>,
 }
 
@@ -44,7 +40,6 @@ pub struct ClaudeCliStatus {
 
 pub struct IntegrationService {
     adapter: ClaudeCodeAdapter,
-    skill_root: PathBuf,
     activated_this_session: AtomicBool,
 }
 
@@ -54,9 +49,9 @@ impl IntegrationService {
         grillforge_root: impl Into<PathBuf>,
     ) -> Self {
         let claude_config_root = claude_config_root.into();
+        let grillforge_root = grillforge_root.into();
         Self {
-            adapter: ClaudeCodeAdapter::new(&claude_config_root, grillforge_root),
-            skill_root: claude_config_root.join("skills"),
+            adapter: ClaudeCodeAdapter::new(&claude_config_root, &grillforge_root),
             activated_this_session: AtomicBool::new(false),
         }
     }
@@ -76,62 +71,20 @@ impl IntegrationService {
             .iter()
             .map(|(slot, id)| route_for_model(state, id).map(|route| (slot.clone(), route)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let mut workers = if state.subagents.is_empty() && state.worker_mode {
-            state
-                .models
-                .iter()
-                .filter(|model| model.worker_enabled)
-                .map(|model| WorkerModel::new(&model.id, &model.route_alias))
-                .collect::<Vec<_>>()
-        } else {
-            state
-                .subagents
-                .iter()
-                .filter(|subagent| subagent.enabled)
-                .map(|subagent| {
-                    WorkerModel::new(&subagent.id, format!("grillforge/{}", subagent.model_id))
-                        .with_capabilities(subagent.capabilities.clone())
-                })
-                .collect::<Vec<_>>()
+        let request = match main {
+            None => EnableRequest::native(),
+            Some(main) => EnableRequest::managed_main_only(gateway_base_url, main),
         };
-        if state.native_subagent_enabled
-            && (main.is_some() || !model_routes.is_empty() || !workers.is_empty())
-        {
-            workers.push(WorkerModel::native_default());
-        }
-
-        if !workers.is_empty() {
-            SkillInstaller::install(&self.skill_root).map_err(|error| error.to_string())?;
-        }
-        let selector_binary = if workers.is_empty() {
-            None
-        } else {
-            Some(
-                std::env::current_exe()
-                    .map_err(|error| format!("could not locate GrillForge executable: {error}"))?
-                    .display()
-                    .to_string(),
-            )
-        };
-        let worker_strategy = if !state.native_subagent_enabled && workers.len() == 1 {
-            WorkerStrategy::ForcedSingle
-        } else {
-            WorkerStrategy::SelectablePool
-        };
-
-        let request = match (main, workers.len()) {
-            (None, 0) => EnableRequest::native_main_without_workers(),
-            (Some(main), 0) => EnableRequest::managed_main_only(gateway_base_url, main),
-            (None, _) => EnableRequest::native_main(gateway_base_url, workers, worker_strategy),
-            (Some(main), _) => {
-                EnableRequest::managed_main(gateway_base_url, main, workers, worker_strategy)
-            }
-        };
-        let request = request.with_model_routes(gateway_base_url, model_routes);
-        let request = match selector_binary {
-            Some(path) => request.with_selector_binary(path),
-            None => request,
-        };
+        let native_main = state.claude_native_model_slots.get("main").cloned();
+        let native_slots = state
+            .claude_native_model_slots
+            .iter()
+            .filter(|(slot, _)| slot.as_str() != "main")
+            .map(|(slot, model)| (slot.clone(), model.clone()))
+            .collect();
+        let request = request
+            .with_model_routes(gateway_base_url, model_routes)
+            .with_native_models(native_main, native_slots);
         self.adapter
             .enable(request)
             .map_err(|error| error.to_string())?;
@@ -156,12 +109,14 @@ impl IntegrationService {
         {
             ClaudeCodeTakeoverStatus::Inactive | ClaudeCodeTakeoverStatus::Drifted => Ok(false),
             ClaudeCodeTakeoverStatus::Active => {
-                if let Some(native_base_url) = self.native_upstream_base_url()? {
-                    gateway.set_native_base_url(&native_base_url)?;
-                } else {
-                    gateway.use_official_native_base_url();
+                if state_uses_gateway(state) {
+                    if let Some(native_base_url) = self.native_upstream_base_url()? {
+                        gateway.set_native_base_url(&native_base_url)?;
+                    } else {
+                        gateway.use_official_native_base_url();
+                    }
+                    gateway.activate(state)?;
                 }
-                gateway.activate(state)?;
                 self.activated_this_session.store(true, Ordering::Release);
                 Ok(true)
             }
@@ -192,12 +147,7 @@ impl IntegrationService {
             takeover,
             differences: status.differences,
             managed_main_alias: status.managed_main_alias,
-            forced_worker_alias: status.forced_worker_alias,
-            generated_agent_names: status.generated_agent_names,
-            selector_skill_installed: self
-                .skill_root
-                .join("grillforge-model-selector/SKILL.md")
-                .is_file(),
+            native_model_slots: status.native_model_slots,
             supported_model_slots: MODEL_SLOT_IDS.to_vec(),
         })
     }
@@ -236,6 +186,10 @@ fn route_for_model(state: &ControlPlaneState, id: &str) -> Result<String, String
         .ok_or_else(|| format!("selected model does not exist: {id}"))
 }
 
+fn state_uses_gateway(state: &ControlPlaneState) -> bool {
+    state.main_model_id.is_some() || !state.model_slots.is_empty()
+}
+
 pub fn default_claude_config_root(home: &Path) -> PathBuf {
     home.join(".claude")
 }
@@ -270,21 +224,27 @@ pub fn apply_claude_code(
     control_plane: State<'_, ControlPlaneService>,
     gateway: State<'_, GatewayStatus>,
 ) -> Result<IntegrationStatus, String> {
-    if let Some(native_base_url) = integration.native_upstream_base_url()? {
-        gateway.set_native_base_url(&native_base_url)?;
-    } else {
-        gateway.use_official_native_base_url();
-    }
     let state = control_plane.state()?;
+    if state_uses_gateway(&state) {
+        if let Some(native_base_url) = integration.native_upstream_base_url()? {
+            gateway.set_native_base_url(&native_base_url)?;
+        } else {
+            gateway.use_official_native_base_url();
+        }
+    }
     let status = integration.apply(&state, &gateway.base_url)?;
-    if let Err(error) = gateway.activate(&state) {
-        let restore = integration.disable();
-        return Err(match restore {
-            Ok(_) => error,
-            Err(restore_error) => {
-                format!("{error}; Claude Code restore also failed: {restore_error}")
+    if state_uses_gateway(&state) {
+        gateway.activate(&state).map_err(|error| {
+            let restore = integration.disable();
+            match restore {
+                Ok(_) => error,
+                Err(restore_error) => {
+                    format!("{error}; Claude Code restore also failed: {restore_error}")
+                }
             }
-        });
+        })?;
+    } else {
+        gateway.deactivate();
     }
     if let Err(error) = control_plane.set_client_integration_enabled("claude_code", true) {
         gateway.deactivate();

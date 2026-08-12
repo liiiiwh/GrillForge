@@ -78,7 +78,7 @@ async fn parses_every_vetted_coding_plan_response_shape() {
         assert_eq!(zhipu.items[1].utilization_percent, Some(5.0));
     }
 
-    let legacy_zhipu = StubTransport {
+    let alternate_zhipu_shape = StubTransport {
         endpoint: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
         auth: AuthStyle::AuthorizationValue,
         response: UsageHttpResponse {
@@ -93,17 +93,23 @@ async fn parses_every_vetted_coding_plan_response_shape() {
             .to_vec(),
         },
     };
-    let legacy_zhipu = query_usage_with_transport(
-        &legacy_zhipu,
+    let alternate_zhipu_shape = query_usage_with_transport(
+        &alternate_zhipu_shape,
         UsageQueryPreset::ZhipuCnCodingPlan,
         &credentials,
     )
     .await
     .unwrap();
-    assert_eq!(legacy_zhipu.items[0].label, "five_hour");
-    assert_eq!(legacy_zhipu.items[0].utilization_percent, Some(22.0));
-    assert_eq!(legacy_zhipu.items[1].label, "weekly_limit");
-    assert_eq!(legacy_zhipu.items[1].utilization_percent, Some(7.0));
+    assert_eq!(alternate_zhipu_shape.items[0].label, "five_hour");
+    assert_eq!(
+        alternate_zhipu_shape.items[0].utilization_percent,
+        Some(22.0)
+    );
+    assert_eq!(alternate_zhipu_shape.items[1].label, "weekly_limit");
+    assert_eq!(
+        alternate_zhipu_shape.items[1].utilization_percent,
+        Some(7.0)
+    );
 
     for (preset, endpoint) in [
         (

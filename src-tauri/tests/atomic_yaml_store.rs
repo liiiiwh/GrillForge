@@ -4,7 +4,7 @@ use std::fs;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Settings {
-    worker_mode: bool,
+    enabled: bool,
 }
 
 struct BrokenSettings;
@@ -27,7 +27,7 @@ fn failed_write_preserves_the_previous_valid_yaml() {
     let store = YamlStore::new(&path);
 
     store
-        .write(&Settings { worker_mode: true })
+        .write(&Settings { enabled: true })
         .expect("initial write");
     let before = fs::read(&path).expect("stored YAML");
 
@@ -39,6 +39,6 @@ fn failed_write_preserves_the_previous_valid_yaml() {
     assert_eq!(fs::read(&path).expect("preserved YAML"), before);
     assert_eq!(
         store.read::<Settings>().expect("valid state remains"),
-        Settings { worker_mode: true }
+        Settings { enabled: true }
     );
 }

@@ -1,4 +1,0 @@
-interface:
-  display_name: "GrillForge Model Selector"
-  short_description: "Select effective GrillForge Worker models"
-  default_prompt: "Use $grillforge-model-selector to choose an effective Worker for this delegation."

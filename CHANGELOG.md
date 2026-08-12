@@ -4,6 +4,42 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-08-12
+
+### Added
+
+- A client-scoped MCP broker exposes global extension SubAgents to each bound
+  Coding Agent without implementing an Agent Runtime or tool loop.
+- Pi can detect and install the reviewed `pi-mcp-extension` package with one
+  click before mounting its MCP configuration.
+- Extension bindings update the mounted MCP tool list immediately and are
+  restored automatically when GrillForge starts.
+- Claude Client can use its client-scoped MCP in both 1P and 3P inference
+  modes; model routing and extension bindings remain independent.
+
+### Changed
+
+- Removed the selector Skill, generated Claude Worker definitions, Worker-mode
+  configuration, and their compatibility paths. Configuration format v2 is the
+  only supported schema.
+- MCP tool descriptions are the complete usage contract; business workflow
+  Skills no longer contain GrillForge-specific instructions.
+- Claude Code restore snapshots now preserve the original settings file bytes.
+- Client model configuration and extension MCP state are separate. Model
+  Apply/Disable suspends and remounts MCP transactionally when both layers
+  share one client configuration file.
+- Claude Code now reads and writes the actual native default, model-family,
+  and native SubAgent-default slots while preserving a native-only route.
+
+### Verification
+
+- A real installed Claude Code CLI executed its own local Agent and Read-tool
+  loop through the authenticated MCP broker using loopback-only dummy services.
+- Real Pi and ChatGPT-bundled Codex CLI discovery passed on macOS.
+- The reviewed Pi MCP extension was installed successfully with a real Pi CLI
+  in an isolated home directory, and its pending, failure, retry, and timeout
+  paths are covered by tests.
+
 ## [0.1.6] - 2026-08-11
 
 ### Fixed
@@ -147,10 +183,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Client discovery skips stale executable candidates and checks standard
   package-manager, login-shell, and bundled-app locations without assuming a
   specific Node.js version directory.
-- Claude Code and Claude Client Code now resolve the installed selector binary
+- Claude Code and Claude Client Code now resolve installed client executables
   even when the GUI application is not on the login-shell PATH.
 
 [0.1.6]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.6
+[0.2.0]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.2.0
 [0.1.5]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.5
 [0.1.4]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.4
 [0.1.3]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.3

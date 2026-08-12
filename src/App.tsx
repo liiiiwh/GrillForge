@@ -13,8 +13,8 @@ import qwenIcon from "../upstream/cc-switch/src/icons/extracted/qwen.svg";
 
 const t = createTranslator(DEFAULT_LOCALE);
 
-type View = "overview" | "clients" | "providers" | "routes";
-type ClientTab = "slots" | "subagents";
+type View = "overview" | "clients" | "extension_subagents" | "providers" | "routes";
+type ClientTab = "slots" | "extension_subagents";
 type Protocol =
   | "anthropic_messages"
   | "open_ai_responses"
@@ -46,16 +46,22 @@ type Model = {
   providerId: string;
   capabilities: string[];
   protocolCapabilities: ProtocolCapability[];
-  workerEnabled: boolean;
   routeAlias: string;
 };
 
-type SubAgent = {
+type ExtensionSubAgent = {
   id: string;
   name: string;
-  modelId: string;
+  sourceClientId: string;
+  sourceAgentId: string;
+  modelId: string | null;
   capabilities: string[];
-  enabled: boolean;
+};
+
+type LocalAgent = {
+  runtime: string;
+  agentId: string;
+  description: string;
 };
 
 type ControlPlaneState = {
@@ -64,6 +70,7 @@ type ControlPlaneState = {
   agentEnabled: boolean;
   mainModelId: string | null;
   modelSlots: Record<string, string>;
+  claudeNativeModelSlots: Record<string, string>;
   claudeDesktopModelSlots: Record<string, string>;
   piEnabled: boolean;
   piMainModelId: string | null;
@@ -72,9 +79,8 @@ type ControlPlaneState = {
   codexNativeModelSlots: Record<string, string>;
   codexAgentModelIds: Record<string, string>;
   clientConfigurations: Record<string, ClientConfiguration>;
-  workerMode: boolean;
-  nativeSubagentEnabled: boolean;
-  subagents: SubAgent[];
+  extensionSubagents: ExtensionSubAgent[];
+  clientExtensionSubagentIds: Record<string, string[]>;
 };
 
 type ClientConfiguration = {
@@ -171,9 +177,7 @@ type IntegrationStatus = {
   takeover: Takeover;
   differences: string[];
   managedMainAlias: string | null;
-  forcedWorkerAlias: string | null;
-  generatedAgentNames: string[];
-  selectorSkillInstalled: boolean;
+  nativeModelSlots: Record<string, string>;
   supportedModelSlots: string[];
 };
 
@@ -201,6 +205,11 @@ type PiStatus = {
   takeover: Takeover;
   configuredModelIds: string[];
   defaultModelId: string | null;
+};
+
+type PiMcpExtensionStatus = {
+  installed: boolean;
+  packageSource: string;
 };
 
 type CodexStatus = {
@@ -285,13 +294,14 @@ type ModelDraft = {
   protocolCapabilities: ProtocolCapability[];
 };
 
-type SubAgentDraft = {
+type ExtensionSubAgentDraft = {
   id: string;
   name: string;
+  sourceClientId: string;
+  sourceAgentId: string;
   providerId: string;
   modelId: string;
   capabilities: string;
-  enabled: boolean;
 };
 
 type ConnectionResult = {
@@ -342,13 +352,14 @@ const EMPTY_MODEL: ModelDraft = {
   protocolCapabilities: [],
 };
 
-const EMPTY_SUBAGENT: SubAgentDraft = {
+const EMPTY_EXTENSION_SUBAGENT: ExtensionSubAgentDraft = {
   id: "",
   name: "",
+  sourceClientId: "",
+  sourceAgentId: "",
   providerId: "",
   modelId: "",
   capabilities: "",
-  enabled: true,
 };
 
 const protocolFeatures: Array<{ id: ProtocolCapability; label: string }> = [
@@ -360,14 +371,15 @@ const protocolFeatures: Array<{ id: ProtocolCapability; label: string }> = [
 const views: Array<{ id: View; label: string; icon: string }> = [
   { id: "overview", label: t("overview"), icon: "⌂" },
   { id: "clients", label: t("clients"), icon: "◇" },
+  { id: "extension_subagents", label: "扩展 SubAgent", icon: "✦" },
   { id: "providers", label: t("providers"), icon: "◎" },
   { id: "routes", label: "路由策略", icon: "⌘" },
 ];
 
 const clientTabs: Array<{ id: ClientTab; label: string; capability?: string }> =
   [
-    { id: "slots", label: "Claude 模型槽位" },
-    { id: "subagents", label: "SubAgent" },
+    { id: "slots", label: "模型配置" },
+    { id: "extension_subagents", label: "扩展 SubAgent" },
   ];
 
 const modelSlotLabels: Record<string, string> = {
@@ -375,13 +387,41 @@ const modelSlotLabels: Record<string, string> = {
   opus: t("opusSlot"),
   fable: t("fableSlot"),
   haiku: t("haikuSlot"),
+  subagent_default: "原生 SubAgent 默认模型",
 };
+
+const claudeNativeModels = ["default", "sonnet", "opus", "fable", "haiku"];
+
+function claudeNativeModelOptions(current?: string) {
+  return Array.from(new Set([current, ...claudeNativeModels].filter(Boolean))).map(
+    (model) => ({
+      id: model as string,
+      label:
+        model === current && !claudeNativeModels.includes(model as string)
+          ? `${model} · 当前配置`
+          : (model as string),
+    }),
+  );
+}
 
 const protocolLabels: Record<Protocol, string> = {
   anthropic_messages: "Anthropic Messages",
   open_ai_responses: "OpenAI Responses",
   open_ai_chat_completions: "OpenAI Chat",
   gemini_native: "Gemini Native",
+};
+
+const clientLabels: Record<string, string> = {
+  claude_code: "Claude Code",
+  claude_desktop: "Claude Client",
+  codex: "Codex",
+  pi: "Pi",
+  gemini: "Gemini CLI",
+  grok_build: "Grok Build",
+  opencode: "OpenCode",
+  openclaw: "OpenClaw",
+  hermes: "Hermes",
+  kimi_code: "Kimi Code",
 };
 
 function slug(value: string) {
@@ -619,6 +659,99 @@ function SectionTitle({
   );
 }
 
+export function PiMcpInstallControl({
+  disabled,
+  label,
+  buttonClassName = "button",
+  onInstall,
+}: {
+  disabled: boolean;
+  label: string;
+  buttonClassName?: string;
+  onInstall: () => Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState("");
+
+  async function confirmInstall() {
+    if (installing) return;
+    setInstalling(true);
+    setInstallError("");
+    try {
+      await onInstall();
+      setConfirming(false);
+    } catch (cause) {
+      setConfirming(false);
+      setInstallError(errorMessage(cause));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        className={buttonClassName}
+        type="button"
+        disabled={disabled || installing}
+        onClick={() => {
+          setInstallError("");
+          setConfirming(true);
+        }}
+      >
+        {installing ? "正在安装…" : label}
+      </button>
+      {installError && (
+        <span className="pi-mcp-install-error" role="alert">
+          {installError}
+        </span>
+      )}
+      {confirming && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => {
+            if (!installing) setConfirming(false);
+          }}
+        >
+          <section
+            className="pi-mcp-install-confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pi-mcp-install-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <p className="kicker">社区扩展</p>
+            <h2 id="pi-mcp-install-title">安装 Pi MCP 扩展</h2>
+            <p>
+              将通过当前 Pi CLI 安装 pi-mcp-extension 1.5.0。该扩展可访问本机文件和命令。
+            </p>
+            <footer>
+              <button
+                className="button button--secondary"
+                type="button"
+                disabled={installing}
+                onClick={() => setConfirming(false)}
+              >
+                取消
+              </button>
+              <button
+                className="button"
+                type="button"
+                disabled={installing}
+                onClick={() => void confirmInstall()}
+              >
+                {installing ? "正在安装…" : "确认安装"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+    </>
+  );
+}
+
 function App() {
   const [view, setView] = useState<View>("overview");
   const [selectedClient, setSelectedClient] = useState<string | null>(null);
@@ -632,6 +765,8 @@ function App() {
   const [claudeDesktop, setClaudeDesktop] =
     useState<ClaudeDesktopStatus | null>(null);
   const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
+  const [piMcpExtension, setPiMcpExtension] =
+    useState<PiMcpExtensionStatus | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [clientStatuses, setClientStatuses] = useState<Record<
     string,
@@ -661,12 +796,6 @@ function App() {
     Record<string, UsageSnapshot>
   >({});
   const [providerSearch, setProviderSearch] = useState("");
-  const [subAgentDraft, setSubAgentDraft] =
-    useState<SubAgentDraft>(EMPTY_SUBAGENT);
-  const [editingSubAgentId, setEditingSubAgentId] = useState<string | null>(
-    null,
-  );
-  const [showSubAgentForm, setShowSubAgentForm] = useState(false);
   const [managingProviderId, setManagingProviderId] = useState<string | null>(
     null,
   );
@@ -695,6 +824,15 @@ function App() {
     setClientSecondaryProviderSelections,
   ] = useState<Record<string, string>>({});
   const [refreshingClients, setRefreshingClients] = useState(false);
+  const [localAgents, setLocalAgents] = useState<LocalAgent[]>([]);
+  const [discoveringLocalAgents, setDiscoveringLocalAgents] = useState(false);
+  const [localAgentError, setLocalAgentError] = useState("");
+  const [extensionDraft, setExtensionDraft] =
+    useState<ExtensionSubAgentDraft>(EMPTY_EXTENSION_SUBAGENT);
+  const [editingExtensionId, setEditingExtensionId] = useState<string | null>(
+    null,
+  );
+  const [showExtensionForm, setShowExtensionForm] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -705,6 +843,7 @@ function App() {
       invoke<ClaudeCliStatus>("detect_claude_code"),
       invoke<ClaudeDesktopStatus>("claude_desktop_status"),
       invoke<PiStatus>("pi_status"),
+      invoke<PiMcpExtensionStatus>("pi_mcp_extension_status"),
       invoke<CodexStatus>("codex_status"),
       Promise.all(
         additionalClients.map(
@@ -724,6 +863,7 @@ function App() {
           cliStatus,
           desktopStatus,
           loadedPiStatus,
+          loadedPiMcpExtension,
           loadedCodexStatus,
           loadedClientStatuses,
         ]) => {
@@ -734,6 +874,7 @@ function App() {
           setClaudeCli(cliStatus);
           setClaudeDesktop(desktopStatus);
           setPiStatus(loadedPiStatus);
+          setPiMcpExtension(loadedPiMcpExtension);
           setCodexStatus(loadedCodexStatus);
           setClientStatuses(Object.fromEntries(loadedClientStatuses));
         },
@@ -766,17 +907,13 @@ function App() {
   const gatewayProviders = providers.filter(
     (provider) => provider.enabled && provider.protocol !== "gemini_native",
   );
-  const gatewayProviderIds = new Set(
-    gatewayProviders.map((provider) => provider.id),
+  const extensionSubagents = state?.extensionSubagents ?? [];
+  const localAgentRuntimes = Array.from(
+    new Set(localAgents.map((agent) => agent.runtime)),
+  ).sort();
+  const selectedSourceAgents = localAgents.filter(
+    (agent) => agent.runtime === extensionDraft.sourceClientId,
   );
-  const gatewayModels = models.filter((model) =>
-    gatewayProviderIds.has(model.providerId),
-  );
-  const effectiveSubAgents = (state?.subagents ?? []).filter(
-    (subagent) => subagent.enabled,
-  );
-  const effectiveSubAgentCount =
-    effectiveSubAgents.length + (state?.nativeSubagentEnabled ? 1 : 0);
   const selectedPreset = catalog?.presets.find(
     (preset) => preset.id === providerDraft.presetId,
   );
@@ -910,6 +1047,21 @@ function App() {
     }
   }
 
+  async function installPiMcpExtension() {
+    if (!begin("install_pi_mcp_extension")) {
+      throw new Error("另一项操作正在进行，请完成后重试。");
+    }
+    try {
+      const status = await invoke<PiMcpExtensionStatus>(
+        "install_pi_mcp_extension",
+      );
+      setPiMcpExtension(status);
+      setNotice("Pi MCP 扩展已安装，现在可以绑定扩展 SubAgent。");
+    } finally {
+      setPending("");
+    }
+  }
+
   async function runCodexIntegration(
     command: "apply_codex" | "disable_codex",
     success: string,
@@ -983,12 +1135,14 @@ function App() {
         cliStatus,
         desktopStatus,
         loadedPiStatus,
+        loadedPiMcpExtension,
         loadedCodexStatus,
         loadedClientStatuses,
       ] = await Promise.all([
         invoke<ClaudeCliStatus>("detect_claude_code"),
         invoke<ClaudeDesktopStatus>("claude_desktop_status"),
         invoke<PiStatus>("pi_status"),
+        invoke<PiMcpExtensionStatus>("pi_mcp_extension_status"),
         invoke<CodexStatus>("codex_status"),
         Promise.all(
           additionalClients.map(
@@ -1003,12 +1157,27 @@ function App() {
       setClaudeCli(cliStatus);
       setClaudeDesktop(desktopStatus);
       setPiStatus(loadedPiStatus);
+      setPiMcpExtension(loadedPiMcpExtension);
       setCodexStatus(loadedCodexStatus);
       setClientStatuses(Object.fromEntries(loadedClientStatuses));
     } catch (cause) {
       reportError(errorMessage(cause));
     } finally {
       setRefreshingClients(false);
+    }
+  }
+
+  async function refreshLocalAgents() {
+    if (discoveringLocalAgents) return;
+    setDiscoveringLocalAgents(true);
+    setLocalAgentError("");
+    try {
+      const discovered = await invoke<LocalAgent[]>("discover_local_agents");
+      setLocalAgents(discovered);
+    } catch (cause) {
+      setLocalAgentError(errorMessage(cause));
+    } finally {
+      setDiscoveringLocalAgents(false);
     }
   }
 
@@ -1051,11 +1220,17 @@ function App() {
     setNotice("");
     setDeleteTarget(null);
     if (next === "clients") void refreshClients();
+    if (next === "extension_subagents") void refreshLocalAgents();
     requestAnimationFrame(() => {
       document
         .querySelector<HTMLElement>(".workspace")
         ?.scrollTo({ top: 0, left: 0 });
     });
+  }
+
+  function selectClient(clientId: string) {
+    setSelectedClient(clientId);
+    setClientTab("slots");
   }
 
   function closeProviderForm() {
@@ -1373,68 +1548,141 @@ function App() {
     }
   }
 
-  function openNewSubAgent() {
-    setEditingSubAgentId(null);
-    setSubAgentDraft(EMPTY_SUBAGENT);
-    setShowSubAgentForm(true);
+  function openNewExtension() {
+    setEditingExtensionId(null);
+    setExtensionDraft(EMPTY_EXTENSION_SUBAGENT);
+    setShowExtensionForm(true);
+    if (localAgents.length === 0) void refreshLocalAgents();
   }
 
-  function editSubAgent(subagent: SubAgent) {
-    const model = models.find((item) => item.id === subagent.modelId);
-    setEditingSubAgentId(subagent.id);
-    setSubAgentDraft({
-      id: subagent.id,
-      name: subagent.name,
-      providerId: model?.providerId ?? "",
-      modelId: subagent.modelId,
-      capabilities: subagent.capabilities.join(", "),
-      enabled: subagent.enabled,
+  function editExtension(extension: ExtensionSubAgent) {
+    setEditingExtensionId(extension.id);
+    setExtensionDraft({
+      id: extension.id,
+      name: extension.name,
+      sourceClientId: extension.sourceClientId,
+      sourceAgentId: extension.sourceAgentId,
+      providerId: modelProviderId(extension.modelId ?? undefined),
+      modelId: extension.modelId ?? "",
+      capabilities: extension.capabilities.join(", "),
     });
-    setShowSubAgentForm(true);
+    setShowExtensionForm(true);
+    if (localAgents.length === 0) void refreshLocalAgents();
   }
 
-  function closeSubAgentForm() {
-    setEditingSubAgentId(null);
-    setSubAgentDraft(EMPTY_SUBAGENT);
-    setShowSubAgentForm(false);
+  function closeExtensionForm() {
+    setEditingExtensionId(null);
+    setExtensionDraft(EMPTY_EXTENSION_SUBAGENT);
+    setShowExtensionForm(false);
   }
 
-  async function saveSubAgent(event: FormEvent<HTMLFormElement>) {
+  async function saveExtension(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const id = subAgentDraft.id.trim();
-    const name = subAgentDraft.name.trim();
+    const id = extensionDraft.id.trim();
+    const name = extensionDraft.name.trim();
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
       return reportError(
-        "SubAgent ID 必须是小写字母、数字和单个连字符组成的稳定标识。",
+        "扩展 SubAgent ID 必须由小写字母、数字和单个连字符组成。",
       );
+    }
+    if (!extensionDraft.sourceClientId || !extensionDraft.sourceAgentId) {
+      return reportError("请选择本机 Agent 来源。");
     }
     const input = {
       id,
       name,
-      modelId: subAgentDraft.modelId,
-      capabilities: subAgentDraft.capabilities
+      sourceClientId: extensionDraft.sourceClientId,
+      sourceAgentId: extensionDraft.sourceAgentId,
+      modelId: extensionDraft.modelId || null,
+      capabilities: extensionDraft.capabilities
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean),
-      enabled: subAgentDraft.enabled,
     };
-    const command = editingSubAgentId ? "update_subagent" : "save_subagent";
+    const command = editingExtensionId
+      ? "update_extension_subagent"
+      : "save_extension_subagent";
     if (
       await commit(
         command,
         { input },
-        `${name} SubAgent 已${editingSubAgentId ? "更新" : "添加"}。`,
+        `${name} 已${editingExtensionId ? "更新" : "添加"}。`,
       )
     ) {
-      closeSubAgentForm();
+      closeExtensionForm();
     }
   }
 
-  async function toggleSubAgent(subagent: SubAgent) {
+  async function setExtensionBinding(
+    clientId: string,
+    extension: ExtensionSubAgent,
+    enabled: boolean,
+  ) {
     await commit(
-      "update_subagent",
-      { input: { ...subagent, enabled: !subagent.enabled } },
-      `${subagent.name} 已${subagent.enabled ? "停用" : "启用"}。`,
+      "set_client_extension_binding",
+      { clientId, extensionSubagentId: extension.id, enabled },
+      `${extension.name} 已${enabled ? "允许" : "停止"}供该客户端使用。`,
+    );
+  }
+
+  function extensionBindingsFor(clientId: string, clientName: string) {
+    const enabledIds = state?.clientExtensionSubagentIds[clientId] ?? [];
+    return (
+      <section className="subagent-section extension-bindings">
+        <div className="config-heading">
+          <div>
+            <p className="kicker">扩展 SubAgent</p>
+            <h2>{clientName} 可用的扩展 SubAgent</h2>
+            <p>绑定变化会实时同步到该客户端的 GrillForge MCP。</p>
+          </div>
+          <button
+            className="button button--secondary"
+            onClick={() => selectView("extension_subagents")}
+          >
+            管理扩展 SubAgent
+          </button>
+        </div>
+        {extensionSubagents.length === 0 ? (
+          <div className="subagent-empty">
+            <strong>还没有扩展 SubAgent</strong>
+            <button
+              className="text-link"
+              onClick={() => selectView("extension_subagents")}
+            >
+              前往添加 →
+            </button>
+          </div>
+        ) : (
+          <div className="subagent-list">
+            {extensionSubagents.map((extension) => {
+              const enabled = enabledIds.includes(extension.id);
+              const model = models.find((item) => item.id === extension.modelId);
+              return (
+                <article className="subagent-card" key={extension.id}>
+                  <span className="subagent-icon">
+                    {extension.name.slice(0, 1)}
+                  </span>
+                  <div className="subagent-main">
+                    <div>
+                      <h3>{extension.name}</h3>
+                      <code>{extension.sourceAgentId}</code>
+                    </div>
+                    <p>{model?.name ?? "跟随来源原生"}</p>
+                  </div>
+                  <Toggle
+                    checked={enabled}
+                    disabled={Boolean(pending)}
+                    label={`允许 ${clientName} 使用 ${extension.name}`}
+                    onChange={() =>
+                      void setExtensionBinding(clientId, extension, !enabled)
+                    }
+                  />
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
     );
   }
 
@@ -1586,7 +1834,7 @@ function App() {
                       className="button"
                       onClick={() => {
                         selectView("clients");
-                        setSelectedClient("claude_code");
+                        selectClient("claude_code");
                       }}
                     >
                       客户端设置
@@ -1602,7 +1850,7 @@ function App() {
                         <button
                           onClick={() => {
                             selectView("clients");
-                            setSelectedClient("claude_code");
+                            selectClient("claude_code");
                           }}
                         >
                           <span className="client-mark">CC</span>
@@ -1610,7 +1858,7 @@ function App() {
                             <strong>Claude Code</strong>
                             <small>
                               {Object.keys(state.modelSlots).length} 个槽位 ·{" "}
-                              {effectiveSubAgents.length} 个 SubAgent
+                              {(state.clientExtensionSubagentIds.claude_code ?? []).length} 个扩展
                             </small>
                           </div>
                           <Badge tone={integrationTone}>
@@ -1620,7 +1868,7 @@ function App() {
                         <button
                           onClick={() => {
                             selectView("clients");
-                            setSelectedClient("claude_desktop");
+                            selectClient("claude_desktop");
                           }}
                         >
                           <span className="client-mark">CD</span>
@@ -1641,7 +1889,7 @@ function App() {
                         <button
                           onClick={() => {
                             selectView("clients");
-                            setSelectedClient("pi");
+                            selectClient("pi");
                           }}
                         >
                           <span className="client-mark">PI</span>
@@ -1697,9 +1945,9 @@ function App() {
                     <span>已支持</span>
                   </article>
                   <article className="metric-card">
-                    <p>有效 SubAgent</p>
-                    <strong>{effectiveSubAgents.length}</strong>
-                    <span>{state.subagents.length} 个已创建</span>
+                    <p>扩展 SubAgent</p>
+                    <strong>{extensionSubagents.length}</strong>
+                    <span>本机 Agent</span>
                   </article>
                   <article className="metric-card">
                     <p>已同步模型</p>
@@ -1735,7 +1983,7 @@ function App() {
                         <strong>Claude Code CLI</strong>
                         <small>
                           {Object.keys(state.modelSlots).length} 个槽位 ·{" "}
-                          {effectiveSubAgents.length} 个 SubAgent
+                          {(state.clientExtensionSubagentIds.claude_code ?? []).length} 个扩展
                         </small>
                       </div>
                       <Badge tone={integrationTone}>
@@ -1771,6 +2019,311 @@ function App() {
               </>
             )}
 
+            {view === "extension_subagents" && (
+              <>
+                <SectionTitle
+                  kicker="扩展 SubAgent"
+                  title="本机 Agent"
+                  detail="将本机已有的 Agent 保存为扩展 SubAgent，再授权给需要使用它的客户端。"
+                  action={
+                    <div className="section-actions">
+                      <button
+                        className="button button--secondary"
+                        disabled={discoveringLocalAgents}
+                        onClick={() => void refreshLocalAgents()}
+                      >
+                        {discoveringLocalAgents ? "正在同步…" : "同步本机 Agent"}
+                      </button>
+                      <button
+                        className="button"
+                        disabled={localAgents.length === 0}
+                        onClick={showExtensionForm ? closeExtensionForm : openNewExtension}
+                      >
+                        {showExtensionForm ? "取消" : "+ 添加扩展 SubAgent"}
+                      </button>
+                    </div>
+                  }
+                />
+                {localAgentError && (
+                  <div className="inline-error" role="alert">
+                    <strong>无法同步本机 Agent</strong>
+                    <span>{localAgentError}</span>
+                    <button
+                      className="action-button"
+                      onClick={() => void refreshLocalAgents()}
+                    >
+                      重试
+                    </button>
+                  </div>
+                )}
+                {showExtensionForm && (
+                  <form className="subagent-form extension-form" onSubmit={saveExtension}>
+                    <label>
+                      标识
+                      <input
+                        required
+                        readOnly={Boolean(editingExtensionId)}
+                        value={extensionDraft.id}
+                        onChange={(event) =>
+                          setExtensionDraft((current) => ({
+                            ...current,
+                            id: event.target.value,
+                          }))
+                        }
+                        placeholder="claude-code-reviewer"
+                      />
+                    </label>
+                    <label>
+                      名称
+                      <input
+                        required
+                        value={extensionDraft.name}
+                        onChange={(event) =>
+                          setExtensionDraft((current) => ({
+                            ...current,
+                            name: event.target.value,
+                          }))
+                        }
+                        placeholder="代码审查"
+                      />
+                    </label>
+                    <label>
+                      来源客户端
+                      <select
+                        required
+                        value={extensionDraft.sourceClientId}
+                        onChange={(event) =>
+                          setExtensionDraft((current) => ({
+                            ...current,
+                            sourceClientId: event.target.value,
+                            sourceAgentId: "",
+                          }))
+                        }
+                      >
+                        <option value="" disabled>
+                          选择本机客户端
+                        </option>
+                        {extensionDraft.sourceClientId &&
+                          !localAgentRuntimes.includes(extensionDraft.sourceClientId) && (
+                            <option value={extensionDraft.sourceClientId}>
+                              {clientLabels[extensionDraft.sourceClientId] ??
+                                extensionDraft.sourceClientId}（当前未检测到）
+                            </option>
+                          )}
+                        {localAgentRuntimes.map((runtime) => (
+                          <option value={runtime} key={runtime}>
+                            {clientLabels[runtime] ?? runtime}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Agent
+                      <select
+                        required
+                        disabled={!extensionDraft.sourceClientId}
+                        value={extensionDraft.sourceAgentId}
+                        onChange={(event) =>
+                          setExtensionDraft((current) => ({
+                            ...current,
+                            sourceAgentId: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="" disabled>
+                          选择 Agent
+                        </option>
+                        {extensionDraft.sourceAgentId &&
+                          !selectedSourceAgents.some(
+                            (agent) => agent.agentId === extensionDraft.sourceAgentId,
+                          ) && (
+                            <option value={extensionDraft.sourceAgentId}>
+                              {extensionDraft.sourceAgentId}（当前未检测到）
+                            </option>
+                          )}
+                        {selectedSourceAgents.map((agent) => (
+                          <option value={agent.agentId} key={agent.agentId}>
+                            {agent.agentId} · {agent.description}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      模型供应商
+                      <select
+                        value={extensionDraft.providerId}
+                        onChange={(event) =>
+                          setExtensionDraft((current) => ({
+                            ...current,
+                            providerId: event.target.value,
+                            modelId: "",
+                          }))
+                        }
+                      >
+                        <option value="">跟随来源原生</option>
+                        {gatewayProviders.map((provider) => (
+                          <option value={provider.id} key={provider.id}>
+                            {provider.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      模型
+                      <select
+                        required={Boolean(extensionDraft.providerId)}
+                        disabled={!extensionDraft.providerId}
+                        value={extensionDraft.modelId}
+                        onChange={(event) =>
+                          setExtensionDraft((current) => ({
+                            ...current,
+                            modelId: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">
+                          {extensionDraft.providerId ? "选择模型" : "跟随来源原生"}
+                        </option>
+                        {modelsForProvider(extensionDraft.providerId).map((model) => (
+                          <option value={model.id} key={model.id}>
+                            {model.name} · {model.upstreamId}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-wide">
+                      能力标签
+                      <input
+                        value={extensionDraft.capabilities}
+                        onChange={(event) =>
+                          setExtensionDraft((current) => ({
+                            ...current,
+                            capabilities: event.target.value,
+                          }))
+                        }
+                        placeholder="coding, review, testing"
+                      />
+                    </label>
+                    <div className="subagent-form-actions">
+                      <span>能力标签使用英文逗号分隔。</span>
+                      <button className="button" type="submit" disabled={Boolean(pending)}>
+                        {editingExtensionId ? "保存修改" : "添加"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+                <section className="extension-summary">
+                  <article>
+                    <small>本机 Agent</small>
+                    <strong>{localAgents.length}</strong>
+                  </article>
+                  <article>
+                    <small>扩展 SubAgent</small>
+                    <strong>{extensionSubagents.length}</strong>
+                  </article>
+                  <article>
+                    <small>已绑定客户端</small>
+                    <strong>
+                      {
+                        Object.values(state.clientExtensionSubagentIds).filter(
+                          (ids) => ids.length > 0,
+                        ).length
+                      }
+                    </strong>
+                  </article>
+                </section>
+                <div className="subagent-list extension-list">
+                  {extensionSubagents.length === 0 ? (
+                    <div className="subagent-empty">
+                      <span>✦</span>
+                      <strong>还没有扩展 SubAgent</strong>
+                      <p>
+                        {localAgents.length > 0
+                          ? "从已发现的本机 Agent 创建第一个扩展 SubAgent。"
+                          : "先同步本机 Agent。"}
+                      </p>
+                      <button
+                        className="text-link"
+                        disabled={localAgents.length === 0}
+                        onClick={openNewExtension}
+                      >
+                        添加扩展 SubAgent →
+                      </button>
+                    </div>
+                  ) : (
+                    extensionSubagents.map((extension) => {
+                      const model = models.find(
+                        (item) => item.id === extension.modelId,
+                      );
+                      const provider = providers.find(
+                        (item) => item.id === model?.providerId,
+                      );
+                      const boundClients = Object.entries(
+                        state.clientExtensionSubagentIds,
+                      )
+                        .filter(([, ids]) => ids.includes(extension.id))
+                        .map(([clientId]) => clientLabels[clientId] ?? clientId);
+                      return (
+                        <article className="subagent-card" key={extension.id}>
+                          <span className="subagent-icon">
+                            {extension.name.slice(0, 1)}
+                          </span>
+                          <div className="subagent-main">
+                            <div>
+                              <h3>{extension.name}</h3>
+                              <code>{extension.id}</code>
+                              {extension.capabilities.map((capability) => (
+                                <Badge key={capability}>{capability}</Badge>
+                              ))}
+                            </div>
+                            <p>
+                              {clientLabels[extension.sourceClientId] ??
+                                extension.sourceClientId}
+                              {" · "}
+                              {extension.sourceAgentId}
+                              {" · "}
+                              {model && provider
+                                ? `${provider.name} / ${model.name}`
+                                : "跟随来源原生"}
+                            </p>
+                            {boundClients.length > 0 && (
+                              <p>可用于：{boundClients.join("、")}</p>
+                            )}
+                          </div>
+                          <div className="row-actions">
+                            <button
+                              className="action-button"
+                              onClick={() => editExtension(extension)}
+                            >
+                              编辑
+                            </button>
+                            <button
+                              className="action-button action-button--danger"
+                              disabled={boundClients.length > 0 || Boolean(pending)}
+                              title={
+                                boundClients.length > 0
+                                  ? "请先从所有客户端解绑"
+                                  : "删除扩展 SubAgent"
+                              }
+                              onClick={() =>
+                                commit(
+                                  "delete_extension_subagent",
+                                  { id: extension.id },
+                                  `${extension.name} 已删除。`,
+                                )
+                              }
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+
             {view === "clients" && (
               <>
                 <SectionTitle
@@ -1782,7 +2335,10 @@ function App() {
                   <button
                     className={`client-card client-card--available ${selectedClient === "claude_code" ? "client-card--selected" : ""}`}
                     type="button"
-                    onClick={() => setSelectedClient("claude_code")}
+                    onClick={() => {
+                      selectClient("claude_code");
+                      setClientTab("slots");
+                    }}
                   >
                     <span className="client-mark">CC</span>
                     <div>
@@ -1800,7 +2356,7 @@ function App() {
                   <button
                     className={`client-card client-card--available ${selectedClient === "claude_desktop" ? "client-card--selected" : ""}`}
                     type="button"
-                    onClick={() => setSelectedClient("claude_desktop")}
+                    onClick={() => selectClient("claude_desktop")}
                   >
                     <span className="client-mark">CD</span>
                     <div>
@@ -1816,7 +2372,7 @@ function App() {
                   <button
                     className={`client-card client-card--available ${selectedClient === "codex" ? "client-card--selected" : ""}`}
                     type="button"
-                    onClick={() => setSelectedClient("codex")}
+                    onClick={() => selectClient("codex")}
                   >
                     <span className="client-mark">CX</span>
                     <div>
@@ -1834,7 +2390,7 @@ function App() {
                   <button
                     className={`client-card client-card--available ${selectedClient === "pi" ? "client-card--selected" : ""}`}
                     type="button"
-                    onClick={() => setSelectedClient("pi")}
+                    onClick={() => selectClient("pi")}
                   >
                     <span className="client-mark">PI</span>
                     <div>
@@ -1856,7 +2412,7 @@ function App() {
                         className={`client-card client-card--available ${selectedClient === client.id ? "client-card--selected" : ""}`}
                         type="button"
                         key={client.id}
-                        onClick={() => setSelectedClient(client.id)}
+                        onClick={() => selectClient(client.id)}
                       >
                         <span className="client-mark">{client.mark}</span>
                         <div>
@@ -1915,9 +2471,11 @@ function App() {
                         </span>
                       </article>
                       <article>
-                        <small>SubAgent</small>
-                        <strong>{effectiveSubAgentCount} 个可用</strong>
-                        <span>{state.subagents.length} 个自定义</span>
+                        <small>扩展 SubAgent</small>
+                        <strong>
+                          {(state.clientExtensionSubagentIds.claude_code ?? []).length} 个可用
+                        </strong>
+                        <span>{extensionSubagents.length} 个已创建</span>
                       </article>
                     </section>
                     <nav
@@ -1956,7 +2514,7 @@ function App() {
                           onClick={() =>
                             runIntegration(
                               "apply_claude_code",
-                              "Claude Code CLI 配置已应用。Claude Client Code 如需使用外部 SubAgent，还需在 Claude Client 页面应用配置。",
+                              "Claude Code 模型配置已应用。",
                             )
                           }
                         >
@@ -1972,42 +2530,14 @@ function App() {
                           onClick={() =>
                             runIntegration(
                               "disable_claude_code",
-                              "Claude Code 已停用。",
+                              "Claude Code 模型配置已停用；扩展 SubAgent 绑定保持不变。",
                             )
                           }
                         >
-                          停用
+                          停用模型配置
                         </button>
                       </div>
                     </section>
-                    {clientTab === "subagents" && (
-                      <section className="native-subagent-card">
-                        <span className="subagent-icon">C</span>
-                        <div className="subagent-main">
-                          <div>
-                            <h3>Claude 原生模型候选</h3>
-                            <Badge tone="good">内置</Badge>
-                          </div>
-                          <p>
-                            加入候选池时跟随 Claude 默认模型。关闭不会删除
-                            Claude 内置 Agent；只启用一个外部 SubAgent
-                            时，自动委派默认使用该外部模型。
-                          </p>
-                        </div>
-                        <Toggle
-                          checked={state.nativeSubagentEnabled}
-                          disabled={Boolean(pending)}
-                          label="切换 Claude 原生模型候选"
-                          onChange={() =>
-                            commit(
-                              "set_native_subagent_enabled",
-                              { enabled: !state.nativeSubagentEnabled },
-                              `Claude 原生模型已${state.nativeSubagentEnabled ? "从候选池移除" : "加入候选池"}。`,
-                            )
-                          }
-                        />
-                      </section>
-                    )}
                     {clientTab === "slots" && (
                       <div className="client-config-section">
                         <div className="config-heading">
@@ -2052,43 +2582,72 @@ function App() {
                             <label>
                               <small>模型</small>
                               <select
-                                disabled={
-                                  Boolean(pending) ||
-                                  !(
+                                disabled={Boolean(pending)}
+                                value={
+                                  claudeMainProviderSelection ||
+                                  modelProviderId(
+                                    state.mainModelId ?? undefined,
+                                  )
+                                    ? modelProviderId(
+                                          state.mainModelId ?? undefined,
+                                        ) ===
+                                      (claudeMainProviderSelection ||
+                                        modelProviderId(
+                                          state.mainModelId ?? undefined,
+                                        ))
+                                      ? (state.mainModelId ?? "")
+                                      : ""
+                                    : (state.claudeNativeModelSlots.main ??
+                                      integration.nativeModelSlots.main ??
+                                      "default")
+                                }
+                                onChange={(event) => {
+                                  const providerId =
                                     claudeMainProviderSelection ||
                                     modelProviderId(
                                       state.mainModelId ?? undefined,
-                                    )
-                                  )
-                                }
-                                value={
-                                  modelProviderId(
-                                    state.mainModelId ?? undefined,
-                                  ) ===
-                                  (claudeMainProviderSelection ||
-                                    modelProviderId(
-                                      state.mainModelId ?? undefined,
-                                    ))
-                                    ? (state.mainModelId ?? "")
-                                    : ""
-                                }
-                                onChange={(event) =>
-                                  commit(
-                                    "set_main_model",
-                                    { id: event.target.value || null },
-                                    "Claude Code 默认模型已保存。",
-                                  )
-                                }
+                                    );
+                                  return providerId
+                                    ? commit(
+                                        "set_main_model",
+                                        { id: event.target.value || null },
+                                        "Claude Code 默认模型已保存。",
+                                      )
+                                    : commit(
+                                        "set_claude_native_model",
+                                        {
+                                          slot: "main",
+                                          model: event.target.value,
+                                        },
+                                        "Claude Code 原生默认模型已保存。",
+                                      );
+                                }}
                               >
-                                <option value="">选择模型</option>
-                                {modelsForProvider(
+                                {claudeMainProviderSelection ||
+                                modelProviderId(
+                                  state.mainModelId ?? undefined,
+                                ) ? (
+                                  <option value="">选择模型</option>
+                                ) : null}
+                                {(claudeMainProviderSelection ||
+                                modelProviderId(
+                                  state.mainModelId ?? undefined,
+                                )
+                                  ? modelsForProvider(
                                   claudeMainProviderSelection ||
                                     modelProviderId(
                                       state.mainModelId ?? undefined,
                                     ),
-                                ).map((model) => (
+                                    ).map((model) => ({
+                                      id: model.id,
+                                      label: `${model.name} · ${model.upstreamId}`,
+                                    }))
+                                  : claudeNativeModelOptions(
+                                      state.claudeNativeModelSlots.main ??
+                                        integration.nativeModelSlots.main,
+                                    )).map((model) => (
                                   <option key={model.id} value={model.id}>
-                                    {model.name} · {model.upstreamId}
+                                    {model.label}
                                   </option>
                                 ))}
                               </select>
@@ -2139,34 +2698,56 @@ function App() {
                                 <label>
                                   <small>模型</small>
                                   <select
-                                    disabled={
-                                      Boolean(pending) || !selectedProviderId
-                                    }
+                                    disabled={Boolean(pending)}
                                     value={
-                                      modelProviderId(selectedModelId) ===
                                       selectedProviderId
-                                        ? selectedModelId
-                                        : ""
+                                        ? modelProviderId(selectedModelId) ===
+                                          selectedProviderId
+                                          ? selectedModelId
+                                          : ""
+                                        : (state.claudeNativeModelSlots[slot] ??
+                                          integration.nativeModelSlots[slot] ??
+                                          "default")
                                     }
                                     onChange={(event) =>
-                                      commit(
-                                        "set_model_slot",
-                                        {
-                                          slot,
-                                          id: event.target.value || null,
-                                        },
-                                        `${modelSlotLabels[slot] ?? slot}已保存。`,
-                                      )
+                                      selectedProviderId
+                                        ? commit(
+                                            "set_model_slot",
+                                            {
+                                              slot,
+                                              id: event.target.value || null,
+                                            },
+                                            `${modelSlotLabels[slot] ?? slot}已保存。`,
+                                          )
+                                        : commit(
+                                            "set_claude_native_model",
+                                            {
+                                              slot,
+                                              model: event.target.value,
+                                            },
+                                            `${modelSlotLabels[slot] ?? slot}原生模型已保存。`,
+                                          )
                                     }
                                   >
-                                    <option value="">选择模型</option>
-                                    {modelsForProvider(selectedProviderId).map(
-                                      (model) => (
+                                    {selectedProviderId ? (
+                                      <option value="">选择模型</option>
+                                    ) : null}
+                                    {(selectedProviderId
+                                      ? modelsForProvider(selectedProviderId).map(
+                                          (model) => ({
+                                            id: model.id,
+                                            label: `${model.name} · ${model.upstreamId}`,
+                                          }),
+                                        )
+                                      : claudeNativeModelOptions(
+                                          state.claudeNativeModelSlots[slot] ??
+                                            integration.nativeModelSlots[slot],
+                                        )
+                                    ).map((model) => (
                                         <option key={model.id} value={model.id}>
-                                          {model.name} · {model.upstreamId}
+                                          {model.label}
                                         </option>
-                                      ),
-                                    )}
+                                      ))}
                                   </select>
                                 </label>
                               </div>
@@ -2175,214 +2756,74 @@ function App() {
                         </section>
                       </div>
                     )}
-                    {clientTab === "subagents" && (
-                      <section className="subagent-section">
+                    {clientTab === "extension_subagents" && (
+                      <section className="subagent-section extension-bindings">
                         <div className="config-heading">
                           <div>
-                            <p className="kicker">SubAgent</p>
-                            <h2>独立智能体配置</h2>
-                            <p>
-                              每个 SubAgent
-                              独立选择供应商、模型与能力标签，可以按需无限添加。
-                            </p>
+                            <p className="kicker">扩展 SubAgent</p>
+                            <h2>Claude Code 可用的扩展 SubAgent</h2>
+                            <p>选择后即可在 Claude Code 中通过 GrillForge 使用。</p>
                           </div>
                           <button
-                            className="button"
-                            disabled={
-                              Boolean(pending) || gatewayModels.length === 0
-                            }
-                            onClick={
-                              showSubAgentForm
-                                ? closeSubAgentForm
-                                : openNewSubAgent
-                            }
+                            className="button button--secondary"
+                            onClick={() => selectView("extension_subagents")}
                           >
-                            {showSubAgentForm ? "取消" : "+ 添加 SubAgent"}
+                            管理扩展 SubAgent
                           </button>
                         </div>
-                        {showSubAgentForm && (
-                          <form
-                            className="subagent-form"
-                            onSubmit={saveSubAgent}
-                          >
-                            <label>
-                              SubAgent 标识
-                              <input
-                                required
-                                readOnly={Boolean(editingSubAgentId)}
-                                value={subAgentDraft.id}
-                                onChange={(event) =>
-                                  setSubAgentDraft((current) => ({
-                                    ...current,
-                                    id: event.target.value,
-                                  }))
-                                }
-                                placeholder="code-reviewer"
-                              />
-                            </label>
-                            <label>
-                              显示名称
-                              <input
-                                required
-                                value={subAgentDraft.name}
-                                onChange={(event) =>
-                                  setSubAgentDraft((current) => ({
-                                    ...current,
-                                    name: event.target.value,
-                                  }))
-                                }
-                                placeholder="代码审查"
-                              />
-                            </label>
-                            <label>
-                              供应商
-                              <select
-                                required
-                                value={subAgentDraft.providerId}
-                                onChange={(event) =>
-                                  setSubAgentDraft((current) => ({
-                                    ...current,
-                                    providerId: event.target.value,
-                                    modelId: "",
-                                  }))
-                                }
-                              >
-                                <option value="" disabled>
-                                  选择供应商
-                                </option>
-                                {gatewayProviders.map((provider) => (
-                                  <option value={provider.id} key={provider.id}>
-                                    {provider.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              绑定模型
-                              <select
-                                required
-                                disabled={!subAgentDraft.providerId}
-                                value={subAgentDraft.modelId}
-                                onChange={(event) =>
-                                  setSubAgentDraft((current) => ({
-                                    ...current,
-                                    modelId: event.target.value,
-                                  }))
-                                }
-                              >
-                                <option value="" disabled>
-                                  选择模型
-                                </option>
-                                {modelsForProvider(
-                                  subAgentDraft.providerId,
-                                ).map((model) => (
-                                  <option value={model.id} key={model.id}>
-                                    {model.name} · {model.upstreamId}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              能力标签
-                              <input
-                                required
-                                value={subAgentDraft.capabilities}
-                                onChange={(event) =>
-                                  setSubAgentDraft((current) => ({
-                                    ...current,
-                                    capabilities: event.target.value,
-                                  }))
-                                }
-                                placeholder="coding, review, testing"
-                              />
-                            </label>
-                            <div className="subagent-form-actions">
-                              <span>使用英文逗号分隔多个能力标签。</span>
-                              <button
-                                className="button"
-                                type="submit"
-                                disabled={Boolean(pending)}
-                              >
-                                {editingSubAgentId
-                                  ? "保存修改"
-                                  : "创建 SubAgent"}
-                              </button>
-                            </div>
-                          </form>
-                        )}
                         <div className="subagent-list">
-                          {state.subagents.length === 0 ? (
+                          {extensionSubagents.length === 0 ? (
                             <div className="subagent-empty">
-                              <span>◇</span>
-                              <strong>还没有 SubAgent</strong>
-                              <p>添加后即可在 Claude Code 中使用。</p>
+                              <span>✦</span>
+                              <strong>还没有扩展 SubAgent</strong>
+                              <p>先从本机 Agent 创建扩展 SubAgent。</p>
                               <button
                                 className="text-link"
-                                disabled={gatewayModels.length === 0}
-                                onClick={openNewSubAgent}
+                                onClick={() => selectView("extension_subagents")}
                               >
-                                添加第一个 SubAgent →
+                                前往添加 →
                               </button>
                             </div>
                           ) : (
-                            state.subagents.map((subagent) => {
+                            extensionSubagents.map((extension) => {
+                              const enabled = (
+                                state.clientExtensionSubagentIds.claude_code ?? []
+                              ).includes(extension.id);
                               const model = models.find(
-                                (item) => item.id === subagent.modelId,
-                              );
-                              const provider = providers.find(
-                                (item) => item.id === model?.providerId,
+                                (item) => item.id === extension.modelId,
                               );
                               return (
-                                <article
-                                  className={`subagent-card ${subagent.enabled ? "" : "subagent-card--disabled"}`}
-                                  key={subagent.id}
-                                >
+                                <article className="subagent-card" key={extension.id}>
                                   <span className="subagent-icon">
-                                    {subagent.name.slice(0, 1)}
+                                    {extension.name.slice(0, 1)}
                                   </span>
                                   <div className="subagent-main">
                                     <div>
-                                      <h3>{subagent.name}</h3>
-                                      <code>{subagent.id}</code>
-                                      {subagent.capabilities.map(
-                                        (capability) => (
-                                          <Badge key={capability}>
-                                            {capability}
-                                          </Badge>
-                                        ),
-                                      )}
+                                      <h3>{extension.name}</h3>
+                                      <code>{extension.sourceAgentId}</code>
+                                      {extension.capabilities.map((capability) => (
+                                        <Badge key={capability}>{capability}</Badge>
+                                      ))}
                                     </div>
                                     <p>
-                                      {model?.name ?? "模型缺失"} ·{" "}
-                                      {provider?.name ?? "供应商缺失"}
+                                      {clientLabels[extension.sourceClientId] ??
+                                        extension.sourceClientId}
+                                      {" · "}
+                                      {model?.name ?? "跟随来源原生"}
                                     </p>
                                   </div>
                                   <Toggle
-                                    checked={subagent.enabled}
+                                    checked={enabled}
                                     disabled={Boolean(pending)}
-                                    label={`切换 ${subagent.name}`}
-                                    onChange={() => toggleSubAgent(subagent)}
+                                    label={`允许 Claude Code 使用 ${extension.name}`}
+                                    onChange={() =>
+                                      void setExtensionBinding(
+                                        "claude_code",
+                                        extension,
+                                        !enabled,
+                                      )
+                                    }
                                   />
-                                  <div className="row-actions">
-                                    <button
-                                      className="action-button"
-                                      onClick={() => editSubAgent(subagent)}
-                                    >
-                                      编辑
-                                    </button>
-                                    <button
-                                      className="action-button action-button--danger"
-                                      onClick={() =>
-                                        commit(
-                                          "delete_subagent",
-                                          { id: subagent.id },
-                                          `${subagent.name} 已删除。`,
-                                        )
-                                      }
-                                    >
-                                      删除
-                                    </button>
-                                  </div>
                                 </article>
                               );
                             })
@@ -2404,7 +2845,9 @@ function App() {
                   </section>
                 )}
                 {selectedClient === "claude_desktop" && (
-                  <section className="client-detail">
+                  <section
+                    className={`client-detail client-detail--${clientTab}`}
+                  >
                     <div className="client-detail-head">
                       <div>
                         <p className="kicker">Claude Client</p>
@@ -2438,39 +2881,30 @@ function App() {
                         </span>
                       </article>
                       <article>
-                        <small>Code / 后台任务</small>
+                        <small>扩展 SubAgent</small>
                         <strong>
-                          {claudeDesktop.takeover === "active" &&
-                          claudeDesktop.configuredRoutes.some((route) =>
-                            route.startsWith("grillforge/"),
-                          )
-                            ? "外部 SubAgent 可用"
-                            : "未接入 Client 网关"}
+                          {(state.clientExtensionSubagentIds.claude_desktop ?? [])
+                            .length} 个可用
                         </strong>
-                        <span>
-                          {claudeDesktop.takeover === "active"
-                            ? `共享 ${effectiveSubAgentCount} 个 Claude Code SubAgent`
-                            : "应用本页配置并重启 Claude Client 后生效"}
-                        </span>
+                        <span>1P 与 3P 模式均可使用</span>
                       </article>
                     </section>
-                    <section className="reuse-card">
-                      <div>
-                        <p className="kicker">Code SubAgent</p>
-                        <h2>共享 Claude Code SubAgent 列表</h2>
-                        <p>
-                          Worker 定义无需重复配置；Claude Client 会覆盖 CLI
-                          的网络入口，因此仍需在本页应用 Client 网关并重新启动。
-                        </p>
-                      </div>
-                      <button
-                        className="button button--secondary"
-                        onClick={() => setSelectedClient("claude_code")}
-                      >
-                        打开 Claude Code 配置
-                      </button>
-                    </section>
-                    <section className="client-config-section desktop-role-section">
+                    <nav
+                      className="client-tabs"
+                      aria-label="Claude Client 配置"
+                    >
+                      {clientTabs.map((tab) => (
+                        <button
+                          className={clientTab === tab.id ? "active" : ""}
+                          key={tab.id}
+                          onClick={() => setClientTab(tab.id)}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </nav>
+                    {clientTab === "slots" && (
+                    <><section className="client-config-section desktop-role-section">
                       <div className="config-heading">
                         <div>
                           <p className="kicker">Client 对话 / Cowork</p>
@@ -2605,18 +3039,23 @@ function App() {
                           onClick={() =>
                             runDesktopIntegration(
                               "disable_claude_desktop",
-                              "Claude Client 已停用；重新启动 Client 后恢复官方模式。",
+                              "Claude Client 模型配置已停用；扩展 SubAgent 绑定保持不变。重新启动 Client 后恢复官方模式。",
                             )
                           }
                         >
-                          停用
+                          停用模型配置
                         </button>
                       </div>
-                    </section>
+                    </section></>
+                    )}
+                    {clientTab === "extension_subagents" &&
+                      extensionBindingsFor("claude_desktop", "Claude Client")}
                   </section>
                 )}
                 {selectedClient === "pi" && (
-                  <section className="client-detail">
+                  <section
+                    className={`client-detail client-detail--${clientTab}`}
+                  >
                     <div className="client-detail-head">
                       <div>
                         <p className="kicker">Pi</p>
@@ -2654,8 +3093,36 @@ function App() {
                             : "跟随原生"}
                         </span>
                       </article>
+                      <article>
+                        <small>MCP 扩展</small>
+                        <strong>
+                          {piMcpExtension?.installed ? "已安装" : "未安装"}
+                        </strong>
+                        {piMcpExtension?.installed ? (
+                          <span>扩展 SubAgent 可通过 Pi 使用</span>
+                        ) : (
+                          <PiMcpInstallControl
+                            buttonClassName="text-link"
+                            disabled={Boolean(pending) || !piStatus.installed}
+                            label="一键安装"
+                            onInstall={installPiMcpExtension}
+                          />
+                        )}
+                      </article>
                     </section>
-                    <section className="client-config-section">
+                    <nav className="client-tabs" aria-label="Pi 配置">
+                      {clientTabs.map((tab) => (
+                        <button
+                          className={clientTab === tab.id ? "active" : ""}
+                          key={tab.id}
+                          onClick={() => setClientTab(tab.id)}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </nav>
+                    {clientTab === "slots" && (
+                    <><section className="client-config-section">
                       <div className="config-heading">
                         <div>
                           <p className="kicker">默认模型</p>
@@ -2794,6 +3261,84 @@ function App() {
                         )}
                       </div>
                     </section>
+                    </>
+                    )}
+                    {clientTab === "extension_subagents" && (
+                    <section className="subagent-section extension-bindings">
+                      <div className="config-heading">
+                        <div>
+                          <p className="kicker">扩展 SubAgent</p>
+                          <h2>Pi 可用的扩展 SubAgent</h2>
+                          <p>绑定后由 Pi MCP 扩展调用本机 Agent。</p>
+                        </div>
+                        <button
+                          className="button button--secondary"
+                          onClick={() => selectView("extension_subagents")}
+                        >
+                          管理扩展 SubAgent
+                        </button>
+                      </div>
+                      {!piMcpExtension?.installed ? (
+                        <div className="subagent-empty">
+                          <strong>需要 Pi MCP 扩展</strong>
+                          <p>安装后即可绑定扩展 SubAgent。</p>
+                          <PiMcpInstallControl
+                            disabled={Boolean(pending) || !piStatus.installed}
+                            label="一键安装 pi-mcp-extension"
+                            onInstall={installPiMcpExtension}
+                          />
+                        </div>
+                      ) : extensionSubagents.length === 0 ? (
+                        <div className="subagent-empty">
+                          <strong>还没有扩展 SubAgent</strong>
+                          <button
+                            className="text-link"
+                            onClick={() => selectView("extension_subagents")}
+                          >
+                            前往添加 →
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="subagent-list">
+                          {extensionSubagents.map((extension) => {
+                            const enabled = (
+                              state.clientExtensionSubagentIds.pi ?? []
+                            ).includes(extension.id);
+                            const model = models.find(
+                              (item) => item.id === extension.modelId,
+                            );
+                            return (
+                              <article className="subagent-card" key={extension.id}>
+                                <span className="subagent-icon">
+                                  {extension.name.slice(0, 1)}
+                                </span>
+                                <div className="subagent-main">
+                                  <div>
+                                    <h3>{extension.name}</h3>
+                                    <code>{extension.sourceAgentId}</code>
+                                  </div>
+                                  <p>{model?.name ?? "跟随来源原生"}</p>
+                                </div>
+                                <Toggle
+                                  checked={enabled}
+                                  disabled={Boolean(pending)}
+                                  label={`允许 Pi 使用 ${extension.name}`}
+                                  onChange={() =>
+                                    void setExtensionBinding(
+                                      "pi",
+                                      extension,
+                                      !enabled,
+                                    )
+                                  }
+                                />
+                              </article>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                    )}
+                    {clientTab === "slots" && (
                     <section className="agent-card">
                       <div className="agent-monogram">π</div>
                       <div className="agent-copy">
@@ -2831,13 +3376,17 @@ function App() {
                               !piStatus.snapshotPresent)
                           }
                           onClick={() =>
-                            runPiIntegration("disable_pi", "Pi 已停用。")
+                            runPiIntegration(
+                              "disable_pi",
+                              "Pi 模型配置已停用；扩展 SubAgent 绑定保持不变。",
+                            )
                           }
                         >
-                          停用
+                          停用模型配置
                         </button>
                       </div>
                     </section>
+                    )}
                   </section>
                 )}
                 {selectedClient === "codex" &&
@@ -2880,7 +3429,9 @@ function App() {
                         codexStatus.currentConfigModel,
                     );
                     return (
-                      <section className="client-detail">
+                      <section
+                        className={`client-detail client-detail--${clientTab}`}
+                      >
                         <div className="client-detail-head">
                           <div>
                             <p className="kicker">Codex</p>
@@ -2954,7 +3505,26 @@ function App() {
                                     : "跟随 Codex 原生配置"}
                             </span>
                           </article>
+                          <article>
+                            <small>扩展 SubAgent</small>
+                            <strong>
+                              {(state.clientExtensionSubagentIds.codex ?? [])
+                                .length} 个可用
+                            </strong>
+                            <span>{extensionSubagents.length} 个已创建</span>
+                          </article>
                         </section>
+                        <nav className="client-tabs" aria-label="Codex 配置">
+                          {clientTabs.map((tab) => (
+                            <button
+                              className={clientTab === tab.id ? "active" : ""}
+                              key={tab.id}
+                              onClick={() => setClientTab(tab.id)}
+                            >
+                              {tab.label}
+                            </button>
+                          ))}
+                        </nav>
                         <section className="client-config-section">
                           <div className="config-heading">
                             <div>
@@ -3286,6 +3856,7 @@ function App() {
                             </div>
                           </section>
                         )}
+                        {extensionBindingsFor("codex", "Codex")}
                         <section className="agent-card">
                           <div className="agent-monogram">CX</div>
                           <div className="agent-copy">
@@ -3328,11 +3899,11 @@ function App() {
                               onClick={() =>
                                 runCodexIntegration(
                                   "disable_codex",
-                                  "Codex 已停用。",
+                                  "Codex 模型配置已停用；扩展 SubAgent 绑定保持不变。",
                                 )
                               }
                             >
-                              停用
+                              停用模型配置
                             </button>
                           </div>
                         </section>
@@ -3361,7 +3932,9 @@ function App() {
                         selectedAdditionalClient.id
                       ] ?? configuredSecondaryProviderId;
                     return (
-                      <section className="client-detail">
+                      <section
+                        className={`client-detail client-detail--${clientTab}`}
+                      >
                         <div className="client-detail-head">
                           <div>
                             <p className="kicker">
@@ -3417,7 +3990,38 @@ function App() {
                                 : "默认模型"}
                             </span>
                           </article>
+                          {["gemini", "opencode", "kimi_code"].includes(
+                            selectedAdditionalClient.id,
+                          ) && (
+                            <article>
+                              <small>扩展 SubAgent</small>
+                              <strong>
+                                {(state.clientExtensionSubagentIds[
+                                  selectedAdditionalClient.id
+                                ] ?? []).length} 个可用
+                              </strong>
+                              <span>{extensionSubagents.length} 个已创建</span>
+                            </article>
+                          )}
                         </section>
+                        {["gemini", "opencode", "kimi_code"].includes(
+                          selectedAdditionalClient.id,
+                        ) && (
+                          <nav
+                            className="client-tabs"
+                            aria-label={`${selectedAdditionalClient.name} 配置`}
+                          >
+                            {clientTabs.map((tab) => (
+                              <button
+                                className={clientTab === tab.id ? "active" : ""}
+                                key={tab.id}
+                                onClick={() => setClientTab(tab.id)}
+                              >
+                                {tab.label}
+                              </button>
+                            ))}
+                          </nav>
+                        )}
                         <section className="client-config-section">
                           <div className="config-heading">
                             <div>
@@ -3705,6 +4309,13 @@ function App() {
                             </div>
                           </section>
                         )}
+                        {["gemini", "opencode", "kimi_code"].includes(
+                          selectedAdditionalClient.id,
+                        ) &&
+                          extensionBindingsFor(
+                            selectedAdditionalClient.id,
+                            selectedAdditionalClient.name,
+                          )}
                         <section className="agent-card">
                           <div className="agent-monogram">
                             {selectedAdditionalClient.mark}
@@ -3756,11 +4367,11 @@ function App() {
                                 runClientIntegration(
                                   selectedAdditionalClient.id,
                                   selectedAdditionalClient.disable,
-                                  `${selectedAdditionalClient.name} 已停用。`,
+                                  `${selectedAdditionalClient.name} 模型配置已停用；扩展 SubAgent 绑定保持不变。`,
                                 )
                               }
                             >
-                              停用
+                              停用模型配置
                             </button>
                           </div>
                         </section>
@@ -4230,7 +4841,7 @@ function App() {
                       <strong>Claude Code</strong>
                       <small>
                         {Object.keys(state.modelSlots).length} 个槽位 ·{" "}
-                        {effectiveSubAgentCount} 个 SubAgent
+                        {(state.clientExtensionSubagentIds.claude_code ?? []).length} 个扩展
                       </small>
                     </div>
                     <Badge tone={integrationTone}>
@@ -4334,7 +4945,7 @@ function App() {
                         <small>Claude Code</small>
                       </article>
                     ))}
-                    {state.subagents.map((subagent) => (
+                    {extensionSubagents.map((subagent) => (
                       <article className="relation-node" key={subagent.id}>
                         <strong>{subagent.name}</strong>
                         <small>
@@ -4374,7 +4985,7 @@ function App() {
                         </article>
                       );
                     })}
-                    {state.subagents.map((subagent) => {
+                    {extensionSubagents.map((subagent) => {
                       const model = models.find(
                         (item) => item.id === subagent.modelId,
                       );
@@ -4385,8 +4996,7 @@ function App() {
                         <article className="relation-node" key={subagent.id}>
                           <strong>{model?.name ?? "模型缺失"}</strong>
                           <small>
-                            {subagent.enabled ? "已启用" : "已停用"} ·{" "}
-                            {provider?.name ?? "供应商缺失"}
+                            {provider?.name ?? "跟随来源原生"}
                           </small>
                         </article>
                       );
@@ -4662,7 +5272,7 @@ function App() {
                     );
                   })
                   .map((model) => {
-                    const referenceCount = state.subagents.filter(
+                    const referenceCount = extensionSubagents.filter(
                       (subagent) => subagent.modelId === model.id,
                     ).length;
                     const deleting =
@@ -4898,12 +5508,12 @@ function App() {
                       {protocolLabels[selectedModelProvider.protocol]}
                     </Badge>
                   )}
-                  {(state?.subagents ?? []).filter(
+                  {extensionSubagents.filter(
                     (subagent) => subagent.modelId === selectedModel.id,
                   ).length > 0 && (
                     <Badge tone="good">
                       {
-                        (state?.subagents ?? []).filter(
+                        extensionSubagents.filter(
                           (subagent) => subagent.modelId === selectedModel.id,
                         ).length
                       }{" "}

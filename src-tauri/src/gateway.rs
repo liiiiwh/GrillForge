@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use url::Url;
@@ -34,6 +34,14 @@ pub struct RouteSpec {
     pub model_id: String,
     pub label_override: Option<String>,
     pub supports_1m: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentRuntimeRoute {
+    pub extension_id: String,
+    pub source_client_id: String,
+    pub source_agent_id: String,
+    pub model_id: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -55,6 +63,10 @@ pub struct GatewayStatus {
     #[serde(skip)]
     active_client_routes: Arc<RwLock<HashMap<String, ActiveClientRoutes>>>,
     #[serde(skip)]
+    active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
+    #[serde(skip)]
+    active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
+    #[serde(skip)]
     connection_tests: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -69,6 +81,8 @@ impl GatewayStatus {
             active_pi_routes: Arc::clone(&gateway.active_pi_routes),
             active_codex_routes: Arc::clone(&gateway.active_codex_routes),
             active_client_routes: Arc::clone(&gateway.active_client_routes),
+            active_agent_brokers: Arc::clone(&gateway.active_agent_brokers),
+            active_agent_runtime_routes: Arc::clone(&gateway.active_agent_runtime_routes),
             connection_tests: Arc::clone(&gateway.connection_tests),
         }
     }
@@ -79,22 +93,6 @@ impl GatewayStatus {
             allowed_model_ids.insert(main.clone());
         }
         allowed_model_ids.extend(state.model_slots.values().cloned());
-        if state.worker_mode {
-            allowed_model_ids.extend(
-                state
-                    .models
-                    .iter()
-                    .filter(|model| model.worker_enabled)
-                    .map(|model| model.id.clone()),
-            );
-        }
-        allowed_model_ids.extend(
-            state
-                .subagents
-                .iter()
-                .filter(|subagent| subagent.enabled)
-                .map(|subagent| subagent.model_id.clone()),
-        );
         let documents = self.files.read().map_err(|error| error.to_string())?;
         for id in &allowed_model_ids {
             if !documents.models.models.iter().any(|model| &model.id == id) {
@@ -117,6 +115,135 @@ impl GatewayStatus {
         }
     }
 
+    pub fn activate_client_agent_broker(
+        &self,
+        client_id: &str,
+        state: &ControlPlaneState,
+        token: &str,
+        runtime: &Path,
+        runtime_config_root: &Path,
+        routes: Vec<AgentRuntimeRoute>,
+    ) -> Result<(), String> {
+        validate_agent_client_id(client_id)?;
+        if token.is_empty() || token.trim() != token || token.chars().any(char::is_control) {
+            return Err(
+                "Agent broker token must not be empty, padded, or contain control characters"
+                    .into(),
+            );
+        }
+        if !runtime.is_absolute() || !runtime.is_file() {
+            return Err(format!(
+                "Claude Code runtime does not exist: {}",
+                runtime.display()
+            ));
+        }
+        if !runtime_config_root.is_absolute() || !runtime_config_root.is_dir() {
+            return Err(format!(
+                "Claude Code configuration root does not exist: {}",
+                runtime_config_root.display()
+            ));
+        }
+        if routes.is_empty() {
+            return Err("Agent broker requires at least one configured Agent".into());
+        }
+        let documents = self.files.read().map_err(|error| error.to_string())?;
+        let mut extension_ids = HashSet::new();
+        for route in &routes {
+            validate_extension_id(&route.extension_id)?;
+            if !extension_ids.insert(route.extension_id.clone()) {
+                return Err(format!(
+                    "duplicate Agent broker extension: {}",
+                    route.extension_id
+                ));
+            }
+            if route.source_client_id != "claude_code" {
+                return Err(format!(
+                    "unsupported Agent source client: {}",
+                    route.source_client_id
+                ));
+            }
+            validate_source_agent_id(&route.source_agent_id)?;
+            if let Some(model_id) = &route.model_id {
+                let model = documents
+                    .models
+                    .models
+                    .iter()
+                    .find(|model| &model.id == model_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "extension {} references unknown model {}",
+                            route.extension_id, model_id
+                        )
+                    })?;
+                let provider = documents
+                    .config
+                    .providers
+                    .iter()
+                    .find(|provider| provider.id == model.provider_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "model {} references unknown provider {}",
+                            model.id, model.provider_id
+                        )
+                    })?;
+                if !provider.enabled {
+                    return Err(format!(
+                        "model {} uses disabled provider {}",
+                        model.id, provider.id
+                    ));
+                }
+                if !state
+                    .models
+                    .iter()
+                    .any(|candidate| candidate.id == model.id)
+                {
+                    return Err(format!(
+                        "extension {} references an inactive model {}",
+                        route.extension_id, model.id
+                    ));
+                }
+            }
+        }
+        self.active_agent_brokers
+            .write()
+            .map_err(|_| "active Agent broker lock is poisoned".to_string())?
+            .insert(
+                client_id.to_string(),
+                ActiveAgentBroker {
+                    target_client_id: client_id.to_string(),
+                    documents,
+                    routes,
+                    token: token.to_string(),
+                    runtime: runtime.to_path_buf(),
+                    runtime_config_root: runtime_config_root.to_path_buf(),
+                    base_url: self.base_url.clone(),
+                    runtime_routes: Arc::clone(&self.active_agent_runtime_routes),
+                },
+            );
+        Ok(())
+    }
+
+    pub fn deactivate_client_agent_broker(&self, client_id: &str) {
+        if let Ok(mut active) = self.active_agent_brokers.write() {
+            active.remove(client_id);
+        }
+        if let Ok(mut routes) = self.active_agent_runtime_routes.lock() {
+            routes.retain(|_, route| route.target_client_id != client_id);
+        }
+    }
+
+    pub fn agent_broker_routes_for_client(
+        &self,
+        client_id: &str,
+    ) -> Result<Vec<AgentRuntimeRoute>, String> {
+        self.active_agent_brokers
+            .read()
+            .map_err(|_| "active Agent broker lock is poisoned".to_string())?
+            .get(client_id)
+            .map(|active| active.routes.clone())
+            .ok_or_else(|| format!("Agent broker is not active for {client_id}"))
+    }
+
     pub fn activate_claude_desktop(
         &self,
         routes: Vec<RouteSpec>,
@@ -133,10 +260,10 @@ impl GatewayStatus {
         let mut route_ids = HashSet::new();
         for route in &routes {
             let is_safe_route = is_claude_safe_model_id(&route.route_id);
-            let is_worker_route = route.route_id.starts_with("grillforge/");
-            if !is_safe_route && !is_worker_route {
+            let is_managed_route = route.route_id.starts_with("grillforge/");
+            if !is_safe_route && !is_managed_route {
                 return Err(format!(
-                    "Claude Desktop route must use a Claude-safe model id or GrillForge worker alias: {}",
+                    "Claude Desktop route must use a Claude-safe model id or GrillForge model alias: {}",
                     route.route_id
                 ));
             }
@@ -167,9 +294,9 @@ impl GatewayStatus {
                         route.route_id, route.model_id
                     )
                 })?;
-            if is_worker_route && route.route_id != format!("grillforge/{}", model.id) {
+            if is_managed_route && route.route_id != format!("grillforge/{}", model.id) {
                 return Err(format!(
-                    "Claude Desktop worker alias {} does not match model {}",
+                    "Claude Desktop model alias {} does not match model {}",
                     route.route_id, model.id
                 ));
             }
@@ -471,6 +598,25 @@ struct ActiveClientRoutes {
 }
 
 #[derive(Clone)]
+struct ActiveAgentBroker {
+    target_client_id: String,
+    documents: ConfigurationDocuments,
+    routes: Vec<AgentRuntimeRoute>,
+    token: String,
+    runtime: PathBuf,
+    runtime_config_root: PathBuf,
+    base_url: String,
+    runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
+}
+
+#[derive(Clone)]
+struct ActiveAgentRuntimeRoute {
+    documents: ConfigurationDocuments,
+    model_id: String,
+    target_client_id: String,
+}
+
+#[derive(Clone)]
 pub struct Gateway {
     files: ConfigurationFiles,
     client: reqwest::Client,
@@ -480,6 +626,8 @@ pub struct Gateway {
     active_pi_routes: Arc<RwLock<Option<ActivePiRoutes>>>,
     active_codex_routes: Arc<RwLock<Option<ActiveCodexRoutes>>>,
     active_client_routes: Arc<RwLock<HashMap<String, ActiveClientRoutes>>>,
+    active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
+    active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
     connection_tests: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -499,6 +647,8 @@ impl Gateway {
             active_pi_routes: Arc::new(RwLock::new(None)),
             active_codex_routes: Arc::new(RwLock::new(None)),
             active_client_routes: Arc::new(RwLock::new(HashMap::new())),
+            active_agent_brokers: Arc::new(RwLock::new(HashMap::new())),
+            active_agent_runtime_routes: Arc::new(Mutex::new(HashMap::new())),
             connection_tests: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -520,6 +670,8 @@ impl Gateway {
             .route("/pi/v1/messages", post(pi_messages))
             .route("/codex/v1/responses", post(codex_responses))
             .route("/clients/{client}/v1/messages", post(client_messages))
+            .route("/mcp/{client}", post(agent_broker_mcp))
+            .route("/agent-runtime/v1/messages", post(agent_runtime_messages))
             .with_state(self.clone())
     }
 
@@ -652,6 +804,33 @@ impl Gateway {
             .is_some_and(|value| value == expected);
         if !authorized {
             return Err(GatewayError::Unauthorized(client_id.to_owned()));
+        }
+        Ok(active)
+    }
+
+    fn authorized_agent_broker(
+        &self,
+        client_id: &str,
+        headers: &HeaderMap,
+    ) -> Result<ActiveAgentBroker, GatewayError> {
+        let active = self
+            .active_agent_brokers
+            .read()
+            .map_err(|_| {
+                GatewayError::Configuration("active Agent broker lock is poisoned".into())
+            })?
+            .get(client_id)
+            .cloned()
+            .ok_or_else(|| GatewayError::Unauthorized(format!("{client_id} Agent broker")))?;
+        let expected = format!("Bearer {}", active.token);
+        let authorized = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value == expected);
+        if !authorized {
+            return Err(GatewayError::Unauthorized(format!(
+                "{client_id} Agent broker"
+            )));
         }
         Ok(active)
     }
@@ -1121,6 +1300,40 @@ fn same_origin_and_path(left: &Url, right: &Url) -> bool {
         && left.path().trim_end_matches('/') == right.path().trim_end_matches('/')
 }
 
+fn validate_agent_client_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        return Err(format!("invalid Agent broker client id: {value}"));
+    }
+    Ok(())
+}
+
+fn validate_extension_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.trim() != value
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        })
+    {
+        return Err(format!("invalid extension SubAgent id: {value}"));
+    }
+    Ok(())
+}
+
+fn validate_source_agent_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(format!("invalid Claude Code Agent id: {value}"));
+    }
+    Ok(())
+}
+
 fn is_claude_safe_model_id(value: &str) -> bool {
     if value != value.trim() || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return false;
@@ -1420,6 +1633,374 @@ async fn client_messages(
         Ok(response) => response,
         Err(error) => error_response(error),
     }
+}
+
+async fn agent_broker_mcp(
+    State(gateway): State<Gateway>,
+    AxumPath(client): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<Value>,
+) -> Response {
+    agent_broker_mcp_for_client(gateway, client, headers, request).await
+}
+
+async fn agent_broker_mcp_for_client(
+    gateway: Gateway,
+    client: String,
+    headers: HeaderMap,
+    request: Value,
+) -> Response {
+    let active = match gateway.authorized_agent_broker(&client, &headers) {
+        Ok(active) => active,
+        Err(error) => return error_response(error),
+    };
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = match request.get("method").and_then(Value::as_str) {
+        Some(method) => method,
+        None => return mcp_error(id, -32600, "JSON-RPC method must be a string"),
+    };
+    let result = match method {
+        "initialize" => json!({
+            "protocolVersion": request
+                .pointer("/params/protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("2025-03-26"),
+            "capabilities": {"tools": {"listChanged": false}},
+            "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")}
+        }),
+        "ping" => json!({}),
+        "tools/list" => json!({
+            "tools": [
+                {
+                    "name": "list_agents",
+                    "title": "列出扩展 SubAgent",
+                    "description": "列出当前客户端可调用的扩展 SubAgent。需要委派任务时先调用本工具，再从结果中选择与任务能力匹配的 extensionId；列表为空时不要调用 run_agent。",
+                    "inputSchema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "run_agent",
+                    "title": "运行扩展 SubAgent",
+                    "description": "用 list_agents 返回的 extensionId 委派一项任务。cwd 是任务工作目录，prompt 必须包含完整任务和约束。服务端使用用户电脑上已有的 Coding Agent、Agent 定义及所选模型运行；不要提交运行时、模型或 Provider 参数，也不要在失败后静默换 Agent。",
+                    "inputSchema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["extensionId", "cwd", "prompt"],
+                        "properties": {
+                            "extensionId": {"type": "string"},
+                            "cwd": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "description": {"type": "string"},
+                            "background": {"type": "boolean", "const": false}
+                        }
+                    }
+                }
+            ]
+        }),
+        "tools/call" => match request.pointer("/params/name").and_then(Value::as_str) {
+            Some("list_agents") => match list_agents(&active, request.pointer("/params/arguments"))
+            {
+                Ok(text) => mcp_tool_result(text, false),
+                Err(message) => mcp_tool_result(message, true),
+            },
+            Some("run_agent") => {
+                let arguments = match request.pointer("/params/arguments") {
+                    Some(arguments) => arguments.clone(),
+                    None => return mcp_error(id, -32602, "run_agent arguments are required"),
+                };
+                match run_agent(active, arguments).await {
+                    Ok(text) => mcp_tool_result(text, false),
+                    Err(message) => mcp_tool_result(message, true),
+                }
+            }
+            _ => return mcp_error(id, -32602, "unknown MCP tool"),
+        },
+        "notifications/initialized" => return StatusCode::ACCEPTED.into_response(),
+        _ => return mcp_error(id, -32601, "JSON-RPC method is not supported"),
+    };
+    (
+        StatusCode::OK,
+        Json(json!({"jsonrpc": "2.0", "id": id, "result": result})),
+    )
+        .into_response()
+}
+
+fn mcp_tool_result(text: String, is_error: bool) -> Value {
+    json!({
+        "content": [{"type": "text", "text": text}],
+        "isError": is_error
+    })
+}
+
+fn list_agents(active: &ActiveAgentBroker, arguments: Option<&Value>) -> Result<String, String> {
+    if let Some(arguments) = arguments {
+        if arguments
+            .as_object()
+            .is_none_or(|object| !object.is_empty())
+        {
+            return Err("list_agents does not accept arguments".into());
+        }
+    }
+    serde_json::to_string(
+        &active
+            .routes
+            .iter()
+            .map(|route| {
+                json!({
+                    "extensionId": route.extension_id,
+                    "sourceClientId": route.source_client_id,
+                    "sourceAgentId": route.source_agent_id,
+                    "modelId": route.model_id,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| "could not serialize extension SubAgent list".to_string())
+}
+
+fn mcp_error(id: Value, code: i64, message: &str) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": code, "message": message}
+        })),
+    )
+        .into_response()
+}
+
+async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "run_agent arguments must be an object".to_string())?;
+    let allowed = ["extensionId", "cwd", "prompt", "description", "background"];
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("run_agent does not accept {key}"));
+    }
+    if object.get("background").and_then(Value::as_bool) == Some(true) {
+        return Err("background Agent execution is not supported in this version".into());
+    }
+    let extension_id = required_mcp_string(object, "extensionId")?;
+    let cwd = PathBuf::from(required_mcp_string(object, "cwd")?);
+    let prompt = required_mcp_string(object, "prompt")?;
+    if !cwd.is_absolute() || !cwd.is_dir() {
+        return Err(format!(
+            "Agent working directory does not exist: {}",
+            cwd.display()
+        ));
+    }
+    let route = active
+        .routes
+        .iter()
+        .find(|route| route.extension_id == extension_id)
+        .ok_or_else(|| format!("unknown configured extension SubAgent: {extension_id}"))?;
+    if route.source_client_id != "claude_code" {
+        return Err(format!(
+            "unsupported Agent source client: {}",
+            route.source_client_id
+        ));
+    }
+    let runtime = active.runtime.clone();
+    let runtime_config_root = active.runtime_config_root.clone();
+    let managed_route = route.model_id.as_ref().map(|model_id| {
+        (
+            format!("grillforge/{model_id}"),
+            uuid::Uuid::new_v4().to_string(),
+            model_id.clone(),
+        )
+    });
+    if let Some((_, runtime_token, model_id)) = &managed_route {
+        active
+            .runtime_routes
+            .lock()
+            .map_err(|_| "active Agent runtime route lock is poisoned".to_string())?
+            .insert(
+                runtime_token.clone(),
+                ActiveAgentRuntimeRoute {
+                    documents: active.documents.clone(),
+                    model_id: model_id.clone(),
+                    target_client_id: active.target_client_id.clone(),
+                },
+            );
+    }
+    let runtime_routes = Arc::clone(&active.runtime_routes);
+    let cleanup_token = managed_route
+        .as_ref()
+        .map(|(_, runtime_token, _)| runtime_token.clone());
+    let output = {
+        let mut command = tokio::process::Command::new(runtime);
+        command
+            .current_dir(cwd)
+            .args(["--agent", &route.source_agent_id]);
+        if let Some((model_route, _, _)) = &managed_route {
+            command.args(["--model", model_route]);
+        }
+        command.args([
+            "-p",
+            "--output-format",
+            "json",
+            "--no-session-persistence",
+            &prompt,
+        ]);
+        for key in [
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ] {
+            command.env_remove(key);
+        }
+        command.env("CLAUDE_CONFIG_DIR", runtime_config_root);
+        if let Some((model_route, runtime_token, _)) = &managed_route {
+            command
+                .env(
+                    "ANTHROPIC_BASE_URL",
+                    format!("{}/agent-runtime", active.base_url.trim_end_matches('/')),
+                )
+                .env("ANTHROPIC_API_KEY", runtime_token)
+                .env("ANTHROPIC_MODEL", model_route)
+                .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+                .env("GRILLFORGE_AGENT_CHILD", "1");
+        }
+        command.kill_on_drop(true);
+        tokio::time::timeout(Duration::from_secs(30 * 60), command.output())
+            .await
+            .map_err(|_| "Claude Code Agent runtime exceeded 30 minutes".to_string())
+            .and_then(|output| {
+                output
+                    .map_err(|error| format!("could not start Claude Code Agent runtime: {error}"))
+            })
+    };
+    if let (Some(cleanup_token), Ok(mut routes)) = (cleanup_token, runtime_routes.lock()) {
+        routes.remove(&cleanup_token);
+    }
+    let output = output?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Claude Code Agent runtime exited with {}: {}",
+            output.status,
+            safe_single_line(&message)
+        ));
+    }
+    let response: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Claude Code Agent runtime returned invalid JSON".to_string())?;
+    response
+        .get("result")
+        .and_then(Value::as_str)
+        .filter(|result| !result.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Claude Code Agent runtime returned no result".to_string())
+}
+
+fn required_mcp_string(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<String, String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.trim() == *value)
+        .map(str::to_string)
+        .ok_or_else(|| format!("run_agent {key} must be a non-empty string"))
+}
+
+fn safe_single_line(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(500)
+        .collect()
+}
+
+async fn agent_runtime_messages(
+    State(gateway): State<Gateway>,
+    request: Request<Body>,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let token = match local_runtime_token(&parts.headers) {
+        Some(token) => token,
+        None => return error_response(GatewayError::Unauthorized("Agent broker".into())),
+    };
+    let active = match gateway.active_agent_runtime_routes.lock() {
+        Ok(routes) => routes.get(token).cloned(),
+        Err(_) => {
+            return error_response(GatewayError::Configuration(
+                "active Agent runtime route lock is poisoned".into(),
+            ));
+        }
+    };
+    let active = match active {
+        Some(active) => active,
+        None => return error_response(GatewayError::Unauthorized("Agent broker".into())),
+    };
+    let bytes = match to_bytes(body, 64 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body could not be read".into(),
+            ));
+        }
+    };
+    let request: Value = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body must be valid JSON".into(),
+            ));
+        }
+    };
+    let alias = match request.get("model").and_then(Value::as_str) {
+        Some(alias) => alias.to_string(),
+        None => {
+            return error_response(GatewayError::InvalidRequest(
+                "model must be a string".into(),
+            ));
+        }
+    };
+    let Some(model_id) = alias.strip_prefix("grillforge/").map(str::to_string) else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unknown GrillForge route alias: {alias}"
+        )));
+    };
+    if active.model_id != model_id {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "inactive Agent runtime route alias: {alias}"
+        )));
+    }
+    match gateway
+        .complete_configured_model(parts.headers, request, active.documents, &model_id)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => error_response(error),
+    }
+}
+
+fn local_runtime_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+        })
 }
 
 async fn messages(

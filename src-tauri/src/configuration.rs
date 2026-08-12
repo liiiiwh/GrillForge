@@ -11,7 +11,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::fs;
 use std::path::PathBuf;
 
-const FORMAT_VERSION: u8 = 1;
+const FORMAT_VERSION: u8 = 2;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderRecord {
@@ -74,12 +74,22 @@ pub enum MainRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SubAgentRecord {
+pub struct CodexAgentModelRecord {
     pub id: String,
     pub name: String,
     pub model_id: String,
     pub capabilities: Vec<String>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtensionSubAgentRecord {
+    pub id: String,
+    pub name: String,
+    pub source_client_id: String,
+    pub source_agent_id: String,
+    pub model_id: Option<String>,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,22 +102,30 @@ pub struct AgentRecord {
     pub model_slots: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native_model_slots: BTreeMap<String, String>,
-    pub worker_mode: bool,
-    pub enabled_workers: Vec<String>,
-    #[serde(default = "default_true")]
-    pub native_subagent_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subagents: Vec<SubAgentRecord>,
-}
-
-fn default_true() -> bool {
-    true
+    pub model_pool: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub codex_agent_models: Vec<CodexAgentModelRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extension_subagent_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentsDocument {
     pub version: u8,
     pub agents: Vec<AgentRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extension_subagents: Vec<ExtensionSubAgentRecord>,
+}
+
+impl AgentsDocument {
+    pub fn new(agents: Vec<AgentRecord>) -> Self {
+        Self {
+            version: FORMAT_VERSION,
+            agents,
+            extension_subagents: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -281,6 +299,7 @@ impl Default for ConfigurationDocuments {
             },
             agents: AgentsDocument {
                 version: FORMAT_VERSION,
+                extension_subagents: Vec::new(),
                 agents: vec![AgentRecord {
                     id: "claude_code".to_string(),
                     adapter: "claude_code".to_string(),
@@ -288,10 +307,9 @@ impl Default for ConfigurationDocuments {
                     main: MainRecord::Native,
                     model_slots: BTreeMap::new(),
                     native_model_slots: BTreeMap::new(),
-                    worker_mode: false,
-                    enabled_workers: Vec::new(),
-                    native_subagent_enabled: true,
-                    subagents: Vec::new(),
+                    model_pool: Vec::new(),
+                    codex_agent_models: Vec::new(),
+                    extension_subagent_ids: Vec::new(),
                 }],
             },
         }
@@ -350,6 +368,45 @@ fn validate(
     let model_registry = ModelRegistry::new(model_values, provider_registry.ids())
         .map_err(|error| ConfigurationError::Invalid(error.to_string()))?;
 
+    let mut extension_ids = HashSet::new();
+    for extension in &agents.extension_subagents {
+        if !is_agent_key(&extension.id) || !extension_ids.insert(extension.id.clone()) {
+            return Err(ConfigurationError::Invalid(format!(
+                "invalid or duplicate extension SubAgent id: {}",
+                extension.id
+            )));
+        }
+        if extension.name.trim().is_empty()
+            || extension.name.trim() != extension.name
+            || !is_agent_key(&extension.source_client_id)
+            || extension.source_agent_id.trim().is_empty()
+            || extension.source_agent_id.trim() != extension.source_agent_id
+        {
+            return Err(ConfigurationError::Invalid(format!(
+                "invalid extension SubAgent definition: {}",
+                extension.id
+            )));
+        }
+        if extension
+            .model_id
+            .as_ref()
+            .is_some_and(|model_id| model_registry.get(model_id).is_none())
+        {
+            return Err(ConfigurationError::Invalid(format!(
+                "extension SubAgent {} references unknown model",
+                extension.id
+            )));
+        }
+        let mut capabilities = HashSet::new();
+        for capability in &extension.capabilities {
+            if !is_agent_key(capability) || !capabilities.insert(capability) {
+                return Err(ConfigurationError::Invalid(format!(
+                    "invalid or duplicate extension SubAgent capability: {capability}"
+                )));
+            }
+        }
+    }
+
     let mut agent_ids = HashSet::new();
     for record in &agents.agents {
         if !is_agent_key(&record.id) {
@@ -375,55 +432,60 @@ fn validate(
             MainRecord::Native => MainSelection::Native,
             MainRecord::Managed(id) => MainSelection::Managed(id.clone()),
         };
-        let agent = AgentConfiguration::new(
-            main,
-            record.worker_mode,
-            record.enabled_workers.clone(),
-            &model_registry,
-        )
-        .map_err(|error| ConfigurationError::Invalid(error.to_string()))?;
+        let agent = AgentConfiguration::new(main, record.model_pool.clone(), &model_registry)
+            .map_err(|error| ConfigurationError::Invalid(error.to_string()))?;
 
-        let mut subagent_ids = HashSet::new();
-        for subagent in &record.subagents {
-            if !is_agent_key(&subagent.id) {
+        let mut codex_agent_ids = HashSet::new();
+        for agent_model in &record.codex_agent_models {
+            if !is_agent_key(&agent_model.id) {
                 return Err(ConfigurationError::Invalid(format!(
-                    "SubAgent id must be a lowercase slug: {}",
-                    subagent.id
+                    "Codex Agent id must be a lowercase slug: {}",
+                    agent_model.id
                 )));
             }
-            if !subagent_ids.insert(&subagent.id) {
+            if !codex_agent_ids.insert(&agent_model.id) {
                 return Err(ConfigurationError::Invalid(format!(
-                    "duplicate SubAgent id: {}",
-                    subagent.id
+                    "duplicate Codex Agent id: {}",
+                    agent_model.id
                 )));
             }
-            if subagent.name.trim().is_empty()
-                || subagent.name.trim() != subagent.name
-                || subagent.name.chars().any(char::is_control)
+            if agent_model.name.trim().is_empty()
+                || agent_model.name.trim() != agent_model.name
+                || agent_model.name.chars().any(char::is_control)
             {
                 return Err(ConfigurationError::Invalid(format!(
-                    "SubAgent name is invalid: {}",
-                    subagent.id
+                    "Codex Agent name is invalid: {}",
+                    agent_model.id
                 )));
             }
-            if model_registry.get(&subagent.model_id).is_none() {
+            if model_registry.get(&agent_model.model_id).is_none() {
                 return Err(ConfigurationError::Invalid(format!(
-                    "SubAgent {} references unknown model: {}",
-                    subagent.id, subagent.model_id
+                    "Codex Agent {} references unknown model: {}",
+                    agent_model.id, agent_model.model_id
                 )));
             }
             let mut capabilities = HashSet::new();
-            for capability in &subagent.capabilities {
+            for capability in &agent_model.capabilities {
                 if !is_agent_key(capability) {
                     return Err(ConfigurationError::Invalid(format!(
-                        "SubAgent capability must be a lowercase slug: {capability}"
+                        "Codex Agent capability must be a lowercase slug: {capability}"
                     )));
                 }
                 if !capabilities.insert(capability) {
                     return Err(ConfigurationError::Invalid(format!(
-                        "duplicate SubAgent capability: {capability}"
+                        "duplicate Codex Agent capability: {capability}"
                     )));
                 }
+            }
+        }
+
+        let mut bindings = HashSet::new();
+        for extension_id in &record.extension_subagent_ids {
+            if !bindings.insert(extension_id) || !extension_ids.contains(extension_id.as_str()) {
+                return Err(ConfigurationError::Invalid(format!(
+                    "agent {} has an invalid extension SubAgent binding: {extension_id}",
+                    record.id
+                )));
             }
         }
 
@@ -446,10 +508,30 @@ fn validate(
                     "native model slot must be a lowercase slug: {slot}"
                 )));
             }
-            if record.id != "codex" {
+            if record.id != "codex" && record.id != "claude_code" {
                 return Err(ConfigurationError::Invalid(format!(
                     "native model slots are not supported by agent: {}",
                     record.id
+                )));
+            }
+            if record.id == "claude_code"
+                && !matches!(
+                    slot.as_str(),
+                    "main" | "sonnet" | "opus" | "fable" | "haiku" | "subagent_default"
+                )
+            {
+                return Err(ConfigurationError::Invalid(format!(
+                    "unsupported Claude Code native model slot: {slot}"
+                )));
+            }
+            if record.id == "claude_code"
+                && !matches!(
+                    model.as_str(),
+                    "default" | "sonnet" | "opus" | "fable" | "haiku"
+                )
+            {
+                return Err(ConfigurationError::Invalid(format!(
+                    "unsupported Claude Code native model: {model}"
                 )));
             }
             if model.trim().is_empty()
@@ -467,10 +549,10 @@ fn validate(
                 &agent,
                 record.model_slots.values().cloned().chain(
                     record
-                        .subagents
+                        .codex_agent_models
                         .iter()
-                        .filter(|subagent| subagent.enabled)
-                        .map(|subagent| subagent.model_id.clone()),
+                        .filter(|agent_model| agent_model.enabled)
+                        .map(|agent_model| agent_model.model_id.clone()),
                 ),
                 &model_registry,
                 &provider_registry,
@@ -517,7 +599,7 @@ fn validate_available_models(
         MainSelection::Managed(id) => Some(id.clone()),
     }
     .into_iter()
-    .chain(agent.effective_workers().iter().cloned())
+    .chain(agent.model_pool().iter().cloned())
     .chain(model_slots)
     .collect::<Vec<_>>();
 

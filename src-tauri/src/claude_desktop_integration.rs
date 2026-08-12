@@ -5,10 +5,10 @@ use crate::adapters::claude_desktop::{
     ClaudeDesktopTakeoverStatus, detect_claude_client, macos_paths_from_home,
 };
 use crate::application::{ControlPlaneService, ControlPlaneState};
+use crate::extension_integration::ExtensionIntegrationService;
 use crate::gateway::{GatewayStatus, RouteSpec};
 use crate::integration::IntegrationTakeover;
 use serde::Serialize;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,7 +42,6 @@ struct ActiveConfiguration {
 
 pub struct ClaudeDesktopIntegrationService {
     adapter: ClaudeDesktopAdapter,
-    grillforge_root: PathBuf,
     activated_this_session: AtomicBool,
     active: Mutex<Option<ActiveConfiguration>>,
 }
@@ -52,7 +51,6 @@ impl ClaudeDesktopIntegrationService {
         let grillforge_root = grillforge_root.into();
         Self {
             adapter: ClaudeDesktopAdapter::new(paths, &grillforge_root),
-            grillforge_root,
             activated_this_session: AtomicBool::new(false),
             active: Mutex::new(None),
         }
@@ -87,52 +85,6 @@ impl ClaudeDesktopIntegrationService {
         }
         if gateway_routes.is_empty() {
             return Err("Claude Client 至少需要配置一个对话/Cowork 模型槽位".into());
-        }
-
-        let worker_model_ids = if state.subagents.is_empty() && state.worker_mode {
-            state
-                .models
-                .iter()
-                .filter(|model| model.worker_enabled)
-                .map(|model| model.id.clone())
-                .collect::<Vec<_>>()
-        } else {
-            state
-                .subagents
-                .iter()
-                .filter(|subagent| subagent.enabled)
-                .map(|subagent| subagent.model_id.clone())
-                .collect::<Vec<_>>()
-        };
-        let mut worker_routes = HashSet::new();
-        if !worker_model_ids.is_empty()
-            && !self
-                .grillforge_root
-                .join("claude-code.snapshot.json")
-                .is_file()
-        {
-            return Err(
-                "Claude Client Code 的外部 SubAgent 尚未应用；请先在 Claude Code 页面应用配置"
-                    .into(),
-            );
-        }
-        for model_id in worker_model_ids {
-            if !worker_routes.insert(model_id.clone()) {
-                continue;
-            }
-            let model = state
-                .models
-                .iter()
-                .find(|model| model.id == model_id)
-                .ok_or_else(|| {
-                    format!("Claude Client Code SubAgent 引用了不存在的模型: {model_id}")
-                })?;
-            gateway_routes.push(RouteSpec {
-                route_id: format!("grillforge/{}", model.id),
-                model_id: model.id.clone(),
-                label_override: None,
-                supports_1m: false,
-            });
         }
 
         let token = Uuid::new_v4().simple().to_string();
@@ -286,11 +238,20 @@ pub async fn claude_desktop_status(
 pub fn apply_claude_desktop(
     integration: State<'_, ClaudeDesktopIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
     gateway: State<'_, GatewayStatus>,
 ) -> Result<ClaudeDesktopIntegrationStatus, String> {
-    let status = integration.apply(&control_plane.state()?, &gateway)?;
+    let state = control_plane.state()?;
+    let status = extensions.with_suspended_client(&state, &gateway, "claude_desktop", || {
+        integration.apply(&state, &gateway)
+    })?;
     if let Err(error) = control_plane.set_client_integration_enabled("claude_desktop", true) {
-        let restore = integration.disable(&gateway);
+        let restore = extensions.with_suspended_client(
+            &control_plane.state()?,
+            &gateway,
+            "claude_desktop",
+            || integration.disable(&gateway),
+        );
         return Err(match restore {
             Ok(_) => error,
             Err(restore_error) => {
@@ -305,9 +266,13 @@ pub fn apply_claude_desktop(
 pub fn disable_claude_desktop(
     integration: State<'_, ClaudeDesktopIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
+    extensions: State<'_, ExtensionIntegrationService>,
     gateway: State<'_, GatewayStatus>,
 ) -> Result<ClaudeDesktopIntegrationStatus, String> {
-    let status = integration.disable(&gateway)?;
+    let state = control_plane.state()?;
+    let status = extensions.with_suspended_client(&state, &gateway, "claude_desktop", || {
+        integration.disable(&gateway)
+    })?;
     control_plane.set_client_integration_enabled("claude_desktop", false)?;
     Ok(status)
 }

@@ -8,8 +8,8 @@ GrillForge keeps these state concepts separate:
 
 ```text
 Agent connection
-Main model selection
-Worker model pool
+Native model-slot selection
+Extension SubAgent library and client bindings
 Provider availability
 Model registry
 ```
@@ -30,8 +30,8 @@ override preserves the client's native/inherited value. A multi-model Slot is
 an explicit model pool. GrillForge does not interpret a list in a fixed Slot as
 fallback or retry order.
 
-Claude Code Phase 1 exposes `main`, `sonnet`, `opus`, `fable`, and `haiku` as
-single-model Slots and the SubAgent Worker Pool as a multi-model Slot. The
+Claude Code exposes `main`, `sonnet`, `opus`, `fable`, `haiku`, and
+`subagent_default` as single-model Slots. The
 cc-switch-derived fixed mappings are:
 
 | Slot | Claude Code key |
@@ -41,6 +41,7 @@ cc-switch-derived fixed mappings are:
 | Opus | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
 | Fable | `ANTHROPIC_DEFAULT_FABLE_MODEL` |
 | Haiku | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
+| Native SubAgent default | `CLAUDE_CODE_SUBAGENT_MODEL` |
 
 All configured Slot models must exist and use enabled Providers. Apply snapshots
 every key it may change, verifies the resulting state, and restores exact prior
@@ -76,120 +77,67 @@ Selecting it causes the Agent Adapter to apply the minimum configuration needed
 to route main requests to that model. Switching back to Native/Default restores
 the pre-GrillForge main-model behavior.
 
-Main-model switching and Worker enablement are independent. A model may be the
-main selection without being enabled as a Worker.
+Main-model switching, the native SubAgent-default Slot, and extension SubAgent
+bindings are independent. Following native means GrillForge writes no override
+for that Slot.
 
-## Worker Model Pool Logic
+## Extension SubAgent Selection
 
-The Worker Pool is the set of configured external models currently available
-for SubAgent work.
+Extension SubAgents reference Agents already installed in a supported local
+Coding Agent runtime. GrillForge stores the source Agent identity, an optional
+managed model, and capability hints. It never owns the Agent loop, tools,
+prompt, or context.
 
-For the MVP, an effective Worker model must satisfy all of:
+Each destination client has an independent allowed list. A non-empty list
+mounts a client-scoped MCP endpoint; changing the list updates MCP tools
+immediately; removing the last binding restores the client's original MCP
+configuration.
 
-```text
-worker mode is ON
-model is enabled for Worker use
-model exists
-provider exists and is enabled
-provider configuration is valid
-```
-
-Capability tags such as `coding`, `refactor`, `review`, and `reasoning` describe
-selection suitability. They do not grant tools or permissions.
-
-### Enable/Disable Rules
-
-- Any configured external model may be enabled or disabled for Worker use.
-- Turning Worker mode ON requires at least one valid enabled Worker model.
-- Disabling the last Worker while Worker mode is ON is rejected, unless the
-  same action also turns Worker mode OFF.
-- Turning Worker mode OFF keeps the user's model selections for later reuse but
-  makes the effective pool empty.
-- If the effective Worker Pool is empty, the Agent behaves normally and uses
-  native SubAgent behavior.
-- Provider deletion is rejected while referenced by a main selection or
-  enabled Worker, unless the user first removes those references in the same
-  operation.
-
-## Worker Selection
-
-The `grillforge-model-selector` Skill exposes only effective Worker models and
-capability metadata. Its credential-free public result contains the stable
-model ID, display name, capability tags, generated Claude Agent name, and
-agent-safe route alias. It never returns an API key.
-
-The selector is the only Skill that resolves GrillForge configuration. Consumer
-workflow Skills must not parse `~/.grillforge` YAML, duplicate Provider/model
-validation, or implement routing/fallback logic.
-
-The coding agent's Main Agent remains responsible for deciding whether to
-create a SubAgent and which Worker is suitable. A delegated SubAgent does not
-invoke the selector again and does not select its own Provider.
-
-Selection flow:
+Execution flow:
 
 ```text
-Task
-  -> Coding agent/Grill Skill evaluates capabilities
-  -> chooses GrillForge Worker model ID
-  -> invokes the generated native Claude Agent by subagent_type
-  -> that Agent definition emits its agent-safe model route
+Destination client
+  -> client-scoped GrillForge MCP
+  -> selected local Agent identity
+  -> user-installed Coding Agent runtime
+  -> native model or explicit GrillForge model route
   -> local gateway resolves route to Provider + upstream model
   -> cc-switch-derived protocol bridge forwards the request
 ```
 
 GrillForge does not schedule work or create a parallel custom Agent runtime.
 
-Selector failure semantics:
-
-- Selector not installed: the external integration is unavailable and an
-  existing consumer workflow may keep its historical native-only behavior.
-- Selector installed with no effective Workers: use native Claude Code
-  SubAgent behavior.
-- Selector installed but configuration, validation, or routing fails: return
-  the error immediately; do not silently fall back to native or another model.
-- Capability tags advise selection; they do not grant tools, authorize actions,
-  trigger delegation, or enable automatic fallback.
+MCP configuration, source Agent, runtime, model, Provider, or authentication
+errors fail immediately. Capability tags are hints, not tool permissions.
 
 ### Claude Code SubAgent Override
 
 `CLAUDE_CODE_SUBAGENT_MODEL` forces one model for all Claude Code SubAgents and
 has precedence over per-invocation selection. Therefore:
 
-- It may be used when the user explicitly chooses a single forced Worker.
-- It must not be set globally when multiple Worker models need to remain
-  selectable.
+- It is exposed as the explicit `subagent_default` model slot.
+- Following native removes GrillForge's override.
 - Claude Code 2.1.226 accepts arbitrary model IDs in a custom Agent definition,
   but the Agent tool's per-invocation `model` field accepts only the built-in
   Sonnet/Opus/Haiku/Fable choices.
-- Multi-model Worker Pool selection therefore generates one native Claude
-  Agent definition per effective Worker. Each definition contains that
-  Worker's stable GrillForge route alias, and the Main Agent chooses the
-  generated `subagent_type`; it does not pass an arbitrary model override.
+- Multiple selectable extension Agents use the client-scoped MCP broker rather
+  than generated Claude Agent definitions.
 
 This behavior must be covered by a Claude Code integration test rather than
 assumed from configuration alone.
 
-## Claude Authentication and First-Party Behavior
+## Extension Runtime Authentication
 
-Mixed Native-main plus external-Worker routing changes only
-`ANTHROPIC_BASE_URL`. It must not inject cc-switch's `PROXY_MANAGED`
-`ANTHROPIC_AUTH_TOKEN`, because that environment variable has precedence over
-the user's Claude subscription OAuth credential.
+The destination client's normal model route is independent from an extension
+SubAgent invocation. The MCP broker creates a short-lived, route-scoped local
+credential for a managed extension model and passes it only to the child
+runtime. It removes inherited Claude API/OAuth variables before launching that
+child. A native extension model receives no GrillForge model override and uses
+the source runtime's own local configuration.
 
-The gateway handles authentication by route:
-
-- Native Claude route: forward the inbound Claude Authorization without
-  persisting or logging it.
-- External Worker route: discard the inbound Claude Authorization and inject
-  only the selected Provider credential.
-
-Claude Code treats a custom base URL as non-first-party. While Worker routing
-is active, Remote Control is unavailable and optimistic Tool Search is disabled
-unless a gateway explicitly supports and forwards it. Those features are
-outside the MVP and the GUI must state the limitation. Full first-party
-behavior returns only after GrillForge is disabled and the original base URL is
-restored.
+The long-lived client MCP token never doubles as a model-gateway token. Tokens,
+Provider credentials, prompts, and tool results are not logged or persisted by
+the broker.
 
 ## Route Resolution
 
@@ -207,10 +155,10 @@ request.model
   -> upstream model ID
 ```
 
-Main and Worker requests are resolved independently:
+Native Slots and managed extension requests are resolved independently:
 
-- A recognized Worker alias routes to that Worker model.
-- A managed-main alias routes to the selected main model.
+- A recognized extension route alias routes to that extension's configured model.
+- A managed Slot alias routes to that Slot's selected model.
 - A non-GrillForge/native model route follows the adapter's native main route.
 - Unknown GrillForge aliases fail closed with a clear local error; they never
   fall through to an arbitrary Provider.
@@ -269,8 +217,8 @@ The common application workflow is:
 ```text
 1. Detect agent
 2. Read current integration status
-3. Validate desired main/Worker/provider state
-4. Install or update integration assets
+3. Validate desired Slot/extension/Provider state
+4. Install an explicitly approved required client extension, if any
 5. Snapshot agent-owned configuration
 6. Build adapter-specific configuration from neutral desired state
 7. Write atomically
@@ -292,27 +240,22 @@ Restoration must not delete unrelated user changes. If the current file has
 diverged since GrillForge applied it, the adapter must merge only owned fields or
 stop with a recoverable conflict instead of overwriting the file wholesale.
 
-## Claude Code CLI Effective Integration Matrix
+## Client-scoped MCP Lifecycle
 
-| Main selection | Effective Workers | Claude Adapter behavior |
-|---|---:|---|
-| Native/Default | 0 | Restore native configuration; gateway not required |
-| Managed model | 0 | Route main model only |
-| Native/Default | 1+ | Preserve native main route; route Worker aliases through gateway |
-| Managed model | 1+ | Route main and Worker aliases independently through gateway |
+- Zero enabled extension bindings means no GrillForge MCP entry in that client.
+- Enabling the first binding snapshots the relevant client file, mounts
+  `/mcp/{client_id}`, and activates the matching broker route list.
+- Changing a non-empty binding set updates broker authorization immediately;
+  the MCP tool names remain stable (`list_agents` and `run_agent`).
+- Removing the final binding deactivates that client's broker and restores the
+  exact pre-mount file.
+- Startup reconciles persisted desired bindings. Normal exit restores mounted
+  client files without deleting desired bindings.
+- A mount or reconciliation failure rolls the binding mutation back.
 
-The mixed Native/Default-main plus external-Worker case applies to the
-standalone Claude Code CLI. Claude account authentication must be forwarded
-without being persisted or exposed, while external Provider credentials
-replace it only on the external route.
-
-Claude Client is a separate host boundary. Its bundled Code runtime ignores the
-standalone CLI network setting because Claude Client injects host-managed
-authentication and `ANTHROPIC_BASE_URL`. External Workers are therefore
-selectable only while the Client is running GrillForge's 3P profile. That
-profile routes conversation, Cowork, and bundled Code through the same gateway;
-it cannot safely mix an official subscription main route with a third-party
-Worker. In official Client mode the selector must fail before delegation.
+Pi requires community package `pi-mcp-extension`. Missing support is reported
+before a Pi binding is saved. One-click installation is explicit, pinned, and
+verified by rereading Pi's package registration.
 
 ## GUI Behavior
 
@@ -322,37 +265,32 @@ Shows:
 
 - Detected and connected Agent
 - Active main selection
-- Enabled Worker count and names
+- Enabled extension SubAgent count and names
 - Gateway/integration health
 
 ### Coding Agent 客户端
 
-For MVP, Claude Code and Claude Client are configurable. Claude Client Code and
-background development tasks reuse Claude Code's Agent definitions, selector
-Skill, Slots, and SubAgent records, but not its network environment. The Client
-page owns the separate 3P profile needed to route conversation, Cowork, and
-bundled Code. Future Client cards are never presented as working toggles.
+Each client page renders only its verified native model Slots. Clients with a
+verified MCP configuration format also render their own extension SubAgent
+bindings. Unsupported combinations are not shown as working controls.
 
-### Claude Code Slots and SubAgents
+### Claude Code Slots and Extension SubAgents
 
-The Slot page exposes exactly the four Claude Code model-family mappings:
-Sonnet, Opus, Fable, and Haiku. Each is a single-model Slot and may follow the
-native default.
+The Slot page exposes Main, Sonnet, Opus, Fable, Haiku, and native SubAgent
+default. Each is a single-model Slot and may follow the native default.
 
-The SubAgent page stores independent named definitions. Each definition owns a
-stable ID, one Model reference, zero or more capability tags, and an enabled
-state. Users may add any number of definitions, and multiple definitions may
-bind the same Model with different capabilities. Applying the Adapter generates
-one Claude Agent file per enabled definition; GrillForge still does not execute
-or schedule those Agents. A failed mutation or Apply preserves the previous
-effective configuration.
+Extension definitions live in one global library. A definition references a
+discovered source Agent, optional Model, and capability hints. The Claude Code
+page only controls which definitions that destination client may use; it does
+not generate replacement Claude Agent files.
 
 ### 配置关系
 
 Shows only persisted configuration edges:
 
 ```text
-Client -> fixed model Slot or named SubAgent -> configured Model
+Client -> native model Slot -> configured Model
+Client -> extension binding -> source Agent -> optional configured Model
 ```
 
 No edge represents fallback order, load balancing, retries, or a scheduled
@@ -379,6 +317,6 @@ confirmation.
 - Protocol errors do not trigger an automatic protocol downgrade.
 - The MVP has no self-healing loop, repair daemon, or multi-generation backup
   system.
-- No effective Worker models means native behavior, not an error loop.
+- No extension bindings means native behavior, not an error loop.
 - Unsupported future Agent entries remain disabled data; they do not invoke
   placeholder adapters.

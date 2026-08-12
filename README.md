@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.6-6C5CE7">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.2.0-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -24,7 +24,7 @@
 GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型配置中心。它让多个 Coding Agent 共享同一套 Provider 与 Model Registry，同时由每个客户端的 Adapter 按其真实能力呈现模型槽位、模型池和 Agent 配置。
 
 > [!IMPORTANT]
-> GrillForge 不执行任务、不调度 Agent，也不运行 SubAgent。它只管理客户端配置、模型路由和协议转换；工具仍由对应的 Coding Agent 执行。
+> GrillForge 不实现 Agent Runtime、Agent Loop 或工具执行。扩展 SubAgent 由用户电脑上已经安装的 Coding Agent Runtime 运行；GrillForge 只挂载 MCP、启动对应本地 Runtime，并替换所选 Provider 与模型路由。
 
 ## 目录
 
@@ -46,6 +46,7 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 - **以客户端为中心**：先选择 Claude Code、Codex、Pi、Kimi Code 等客户端，再配置该客户端真实支持的模型结构。
 - **槽位独立选模**：同一个 Coding Agent 的不同槽位可分别选择不同的 Provider 与模型；GrillForge 会按客户端的真实能力呈现槽位，并保留 Codex 内置 SubAgent 必须与主模型同 Provider 等原生约束。
 - **共享模型资产**：Provider 和 Model 只维护一次，可被多个客户端独立使用。
+- **扩展 SubAgent**：把本机已有的 Agent 保存到统一库，再按客户端独立授权；存在绑定时自动挂载 MCP，最后一个绑定关闭后自动恢复客户端原配置。
 - **多协议桥接**：支持 Anthropic Messages、OpenAI Responses、OpenAI Chat Compatible 与 Gemini Native。
 - **安全接管与恢复**：原子写入、单一恢复快照、配置差异检测和精确恢复。
 - **失败即停止**：认证、配额、模型、Endpoint 或协议错误直接返回，不静默降级、不自动切换 Provider。
@@ -57,10 +58,10 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 
 | 客户端 | 当前支持的配置 | 状态 |
 | --- | --- | --- |
-| Claude Code | 默认模型、Sonnet / Opus / Fable / Haiku 槽位、原生 SubAgent、无限自定义 SubAgent | 已实现并完成真实 CLI 链路测试 |
-| Claude Client | 对话 / Cowork 安全角色映射；Code 复用 Claude Code SubAgent 定义，并通过独立的 Client 3P 网关路由 | 已实现并完成本机内置 Code 链路测试 |
+| Claude Code | 默认模型、Sonnet / Opus / Fable / Haiku、原生 SubAgent 默认模型槽位；可使用扩展 SubAgent MCP | 已实现并完成真实 CLI 与本地 Agent 工具循环测试 |
+| Claude Client | 对话 / Cowork 安全角色映射；1P / 3P 均可独立使用扩展 SubAgent MCP | 已实现并完成本机配置链路测试 |
 | Codex | 主模型、内置 SubAgent 默认模型、自定义 Agent 独立模型；支持独立 CLI 与 ChatGPT 内置 CLI | 已实现并完成真实 CLI 配置验收 |
-| Pi | 默认模型与可用模型池 | 已实现并完成真实 CLI、鉴权与网关链路测试 |
+| Pi | 默认模型、可用模型池；通过社区 `pi-mcp-extension` 使用扩展 SubAgent | 已实现并完成真实 CLI、扩展安装、鉴权与网关链路测试 |
 | Kimi Code | Primary、Secondary、模型池，以及内置/全局永久 Agent 同步 | 已实现；配置与网关集成测试通过，真实 CLI E2E 待验证 |
 | Gemini CLI | 默认模型 | 已实现 |
 | Grok Build | 默认模型 | 已实现 |
@@ -91,18 +92,20 @@ flowchart LR
     Core --> Registry["Provider / Model Registry"]
     Adapter --> Client["Coding Agent Client"]
     Client --> Gateway["Local Gateway"]
+    Client --> MCP["Client-scoped MCP"]
+    MCP --> Runtime["User-installed Agent Runtime"]
     Gateway --> Bridge["Protocol Bridge"]
     Bridge --> Provider["Anthropic / OpenAI Compatible / Local"]
 ```
 
-- **Client Adapter** 负责客户端检测、读取状态、写入配置、安装 Skill，以及恢复接管前状态。
+- **Client Adapter** 负责客户端检测、读取状态、写入配置、安装必要的客户端扩展，以及恢复接管前状态。
 - **Provider Layer** 负责 Endpoint、认证方式与 API 协议。
 - **Model Registry** 保存上游模型 ID、展示名称、任务能力和协议能力。
 - **Local Gateway** 只做鉴权替换、模型路由和协议转换，不执行任何 Agent 工具。
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.1.6-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.2.0-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，已使用 Developer ID Application 正式签名并通过 Apple Notarization；Release 同时提供 SHA-256 校验文件。
 
 解压后将 `GrillForge.app` 移入“应用程序”即可。首次运行不需要绕过 Gatekeeper。
 
@@ -135,6 +138,17 @@ pnpm tauri dev
 7. GrillForge 启动时会在后台恢复已启用客户端的配置与路由；正常退出时恢复接管前配置。
 8. 点击“停用”会关闭该客户端的持久启用状态，并精确恢复接管前配置。
 
+### 扩展 SubAgent
+
+1. 在“扩展 SubAgent”页面选择 GrillForge 已发现的本机 Agent。目前执行源只开放经过真实验证的 Claude Code Agent。
+2. 可选择跟随来源 Agent 原生模型，或绑定一个 GrillForge 模型。
+3. 在目标客户端页面开启该扩展 SubAgent。该客户端从零个绑定变为一个时，GrillForge 自动挂载客户端专属 MCP；关闭最后一个绑定时自动卸载并恢复原文件。
+4. Pi 本身没有原生 MCP。GrillForge 会检测社区 `pi-mcp-extension`；缺失时可在 Pi 页面确认后，一键安装固定版本 `1.5.0`。新 Pi 会话会加载挂载配置。
+
+模型配置与扩展 SubAgent 绑定彼此独立：停用客户端的模型配置不会解绑 MCP，解绑 MCP 也不会改变模型槽位。Claude Client 的扩展 SubAgent MCP 在 1P 与 3P 模式下都可使用。
+
+MCP 只暴露固定的 Agent 列表与调用入口。模型、Runtime 和来源 Agent 均由 GrillForge 根据当前绑定解析，调用方不能自行注入；实际 Agent Loop 和工具仍由本机 Coding Agent Runtime 执行。
+
 ## 配置与安全
 
 GrillForge 的控制面数据默认位于：
@@ -158,7 +172,7 @@ GrillForge 的控制面数据默认位于：
 > Claude Code 使用自定义 `ANTHROPIC_BASE_URL` 时，Claude Remote Control 和默认的 Optimistic Tool Search 可能不可用。停用 GrillForge 后会恢复原始配置。
 
 > [!NOTE]
-> Claude Client 会覆盖内置 Code 的认证和网络入口，因此独立 Claude Code CLI 的网关设置不会自动控制 Client Code。要在 Client Code 中使用外部 SubAgent，需先应用 Claude Code 的 SubAgent 定义，再在 Claude Client 页面至少配置一个角色模型、应用 Client 3P 配置并重新启动 Claude Client。Client 3P 模式会同时接管对话、Cowork 和内置 Code；官方订阅主模型与第三方 Worker 的混合路由没有受支持的安全凭据通道。
+> `pi-mcp-extension` 是社区扩展，拥有与其他 Pi 扩展相同的本机进程权限。GrillForge 不会静默安装；只有用户确认后才调用当前检测到的有效 Pi CLI。安装源固定为 `npm:pi-mcp-extension@1.5.0`。
 
 ## 开发
 
@@ -230,7 +244,6 @@ GrillForge/
 │   ├── gateway.rs               # 本地模型网关
 │   └── configuration.rs         # 配置事务与校验
 ├── src-tauri/tests/             # 集成、协议与真实链路测试
-├── skills/                      # GrillForge Selector Skill
 ├── CONTEXT.md                   # 产品边界与领域语言
 ├── ARCHITECTURE.md              # 架构约束
 └── LOGIC.md                     # 核心行为与不变量

@@ -184,7 +184,7 @@ fn codex_disable_restores_exact_original_config() {
 }
 
 #[test]
-fn codex_apply_configures_real_main_default_subagent_and_custom_agent_models() {
+fn codex_apply_configures_real_main_default_subagent_and_custom_codex_agent_models() {
     let temp = tempdir().unwrap();
     let codex = temp.path().join("home/.codex");
     let agents = codex.join("agents");

@@ -8,11 +8,7 @@ use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::gateway::{Gateway, RouteSpec};
 use serde_json::{Value, json};
-use std::fs;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
 #[derive(Clone, Default)]
@@ -68,193 +64,6 @@ fn route(route_id: &str) -> RouteSpec {
 
 async fn desktop_gateway(gateway: Gateway) -> String {
     serve(gateway.router()).await
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Claude Client's embedded Code binary; uses only loopback and dummy credentials"]
-async fn embedded_claude_client_code_routes_a_named_worker_through_threep_gateway() {
-    let capture = Capture::default();
-    let upstream =
-        Router::new()
-            .route(
-                "/v1/messages",
-                post(
-                    |State(capture): State<Capture>,
-                     headers: HeaderMap,
-                     Json(body): Json<Value>| async move {
-                        capture
-                            .0
-                            .lock()
-                            .expect("capture")
-                            .push((headers, body.clone()));
-                        let model = body["model"].as_str().expect("upstream model");
-                        let has_tool_result = body["messages"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|message| message["content"].as_array())
-                            .flatten()
-                            .any(|block| block["type"] == "tool_result");
-                        let (content, stop_reason) = if model == "upstream-main" && !has_tool_result
-                        {
-                            (
-                                json!([{
-                                    "type": "tool_use",
-                                    "id": "toolu_desktop_worker_e2e",
-                                    "name": "Agent",
-                                    "input": {
-                                        "description": "Run GrillForge Worker",
-                                        "prompt": "Return the loopback result",
-                                        "subagent_type": "grillforge-worker-worker",
-                                        "run_in_background": false
-                                    }
-                                }]),
-                                "tool_use",
-                            )
-                        } else {
-                            (
-                                json!([{"type":"text","text":format!("loopback {model}")}]),
-                                "end_turn",
-                            )
-                        };
-                        Json(json!({
-                            "id": "msg_desktop_worker_e2e",
-                            "type": "message",
-                            "role": "assistant",
-                            "model": model,
-                            "content": content,
-                            "stop_reason": stop_reason,
-                            "stop_sequence": null,
-                            "usage": {"input_tokens": 1, "output_tokens": 1}
-                        }))
-                    },
-                ),
-            )
-            .with_state(capture.clone());
-    let upstream_url = serve(upstream).await;
-    let directory = tempfile::tempdir().expect("temporary roots");
-    let service = ControlPlaneService::new(directory.path());
-    service
-        .save_provider(ProviderInput {
-            id: "loopback".into(),
-            name: "Loopback".into(),
-            protocol: Protocol::AnthropicMessages,
-            endpoint: upstream_url,
-            endpoint_mode: EndpointMode::BaseUrl,
-            api_key_placement: ApiKeyPlacement::None,
-            api_key: None,
-            enabled: true,
-            models_url: None,
-        })
-        .expect("provider");
-    for (id, upstream_id) in [("main", "upstream-main"), ("worker", "upstream-worker")] {
-        service
-            .save_model(ModelInput {
-                id: id.into(),
-                name: id.into(),
-                upstream_id: upstream_id.into(),
-                provider_id: "loopback".into(),
-                capabilities: vec!["coding".into()],
-                protocol_capabilities: vec![],
-            })
-            .expect("model");
-    }
-    let gateway = Gateway::new(directory.path());
-    gateway
-        .status("http://127.0.0.1:1".into())
-        .activate_claude_desktop(
-            vec![
-                RouteSpec {
-                    route_id: "claude-sonnet-5".into(),
-                    model_id: "main".into(),
-                    label_override: None,
-                    supports_1m: false,
-                },
-                RouteSpec {
-                    route_id: "grillforge/worker".into(),
-                    model_id: "worker".into(),
-                    label_override: None,
-                    supports_1m: false,
-                },
-            ],
-            "desktop-dummy-token",
-        )
-        .expect("activate routes");
-    let gateway_url = desktop_gateway(gateway).await;
-
-    let claude_root = directory.path().join("claude");
-    fs::create_dir_all(claude_root.join("agents")).expect("Agent directory");
-    fs::write(claude_root.join("settings.json"), "{}\n").expect("settings");
-    fs::write(
-        claude_root.join("agents/grillforge-worker-worker.md"),
-        "---\nname: grillforge-worker-worker\ndescription: Loopback Worker\nmodel: grillforge/worker\n---\nReturn the requested result.\n",
-    )
-    .expect("Agent definition");
-    let binary = std::env::var_os("GRILLFORGE_CLAUDE_DESKTOP_CODE_BIN")
-        .expect("GRILLFORGE_CLAUDE_DESKTOP_CODE_BIN must point to Claude Client's Code binary");
-    let process_root = claude_root.clone();
-    let endpoint = format!("{gateway_url}/claude-desktop");
-    let output = tokio::task::spawn_blocking(move || {
-        let mut child = Command::new(binary)
-            .args([
-                "--print",
-                "--no-session-persistence",
-                "--output-format",
-                "json",
-                "--model",
-                "claude-sonnet-5",
-                "Delegate this task to grillforge-worker-worker.",
-            ])
-            .current_dir(&process_root)
-            .env("CLAUDE_CONFIG_DIR", &process_root)
-            .env("CLAUDE_CODE_ENTRYPOINT", "claude-desktop-3p")
-            .env("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "1")
-            .env("ANTHROPIC_BASE_URL", endpoint)
-            .env("ANTHROPIC_AUTH_TOKEN", "desktop-dummy-token")
-            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-            .env_remove("ANTHROPIC_API_KEY")
-            .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start embedded Claude Code");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if child.try_wait().expect("poll Claude Code").is_some() {
-                return child.wait_with_output().expect("Claude Code output");
-            }
-            if Instant::now() >= deadline {
-                child.kill().expect("kill timed-out Claude Code");
-                return child.wait_with_output().expect("reap Claude Code");
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-    })
-    .await
-    .expect("join Claude Code");
-
-    assert!(
-        output.status.success(),
-        "embedded Claude Code failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let models = capture
-        .0
-        .lock()
-        .expect("capture")
-        .iter()
-        .map(|(_, body)| body["model"].as_str().expect("model").to_string())
-        .fold(Vec::new(), |mut models, model| {
-            if models.last() != Some(&model) {
-                models.push(model);
-            }
-            models
-        });
-    assert_eq!(
-        models,
-        ["upstream-main", "upstream-worker", "upstream-main"]
-    );
 }
 
 #[tokio::test]
@@ -332,7 +141,7 @@ async fn desktop_models_require_exact_bearer_token_and_only_expose_safe_routes()
 }
 
 #[tokio::test]
-async fn desktop_code_worker_route_maps_through_openai_compatible_bridge() {
+async fn desktop_managed_route_maps_through_openai_compatible_bridge() {
     let capture = Capture::default();
     let upstream =
         Router::new()

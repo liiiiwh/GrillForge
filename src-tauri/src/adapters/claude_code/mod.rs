@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -14,10 +14,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 const SETTINGS_FILE: &str = "settings.json";
-const AGENT_NAME_PREFIX: &str = "grillforge-worker-";
-const OWNERSHIP_MARKER: &[u8] = b"<!-- Managed by GrillForge. -->";
 const SNAPSHOT_FILE: &str = "claude-code.snapshot.json";
-const MANAGED_ENVIRONMENT_KEYS: [&str; 8] = [
+const MANAGED_ENVIRONMENT_KEYS: [&str; 7] = [
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -25,78 +23,27 @@ const MANAGED_ENVIRONMENT_KEYS: [&str; 8] = [
     "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
-    "GRILLFORGE_BIN",
 ];
-pub const MODEL_SLOT_IDS: [&str; 4] = ["sonnet", "opus", "fable", "haiku"];
-const MODEL_SLOTS: [(&str, &str); 4] = [
+pub const MODEL_SLOT_IDS: [&str; 5] = ["sonnet", "opus", "fable", "haiku", "subagent_default"];
+const MODEL_SLOTS: [(&str, &str); 5] = [
     ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
     ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
     ("fable", "ANTHROPIC_DEFAULT_FABLE_MODEL"),
     ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+    ("subagent_default", "CLAUDE_CODE_SUBAGENT_MODEL"),
 ];
 const CLI_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkerStrategy {
-    ForcedSingle,
-    SelectablePool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkerModel {
-    id: String,
-    route_alias: String,
-    capabilities: Vec<String>,
-}
-
-impl WorkerModel {
-    pub fn new(id: impl Into<String>, route_alias: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            route_alias: route_alias.into(),
-            capabilities: Vec::new(),
-        }
-    }
-
-    pub fn with_capabilities(
-        mut self,
-        capabilities: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        self.capabilities = capabilities.into_iter().map(Into::into).collect();
-        self
-    }
-
-    pub fn native_default() -> Self {
-        Self::new("claude-native", "inherit").with_capabilities(["coding", "general"])
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnableRequest {
     gateway_base_url: String,
     main_route: Option<String>,
     model_routes: BTreeMap<String, String>,
-    workers: Vec<WorkerModel>,
-    worker_strategy: Option<WorkerStrategy>,
-    selector_binary: Option<String>,
+    native_main_model: Option<String>,
+    native_model_slots: BTreeMap<String, String>,
 }
 
 impl EnableRequest {
-    pub fn native_main(
-        gateway_base_url: impl Into<String>,
-        workers: Vec<WorkerModel>,
-        strategy: WorkerStrategy,
-    ) -> Self {
-        Self {
-            gateway_base_url: gateway_base_url.into(),
-            main_route: None,
-            model_routes: BTreeMap::new(),
-            workers,
-            worker_strategy: Some(strategy),
-            selector_binary: None,
-        }
-    }
-
     pub fn managed_main_only(
         gateway_base_url: impl Into<String>,
         main_route: impl Into<String>,
@@ -105,42 +52,19 @@ impl EnableRequest {
             gateway_base_url: gateway_base_url.into(),
             main_route: Some(main_route.into()),
             model_routes: BTreeMap::new(),
-            workers: Vec::new(),
-            worker_strategy: None,
-            selector_binary: None,
+            native_main_model: None,
+            native_model_slots: BTreeMap::new(),
         }
     }
 
-    pub fn managed_main(
-        gateway_base_url: impl Into<String>,
-        main_route: impl Into<String>,
-        workers: Vec<WorkerModel>,
-        worker_strategy: WorkerStrategy,
-    ) -> Self {
-        Self {
-            gateway_base_url: gateway_base_url.into(),
-            main_route: Some(main_route.into()),
-            model_routes: BTreeMap::new(),
-            workers,
-            worker_strategy: Some(worker_strategy),
-            selector_binary: None,
-        }
-    }
-
-    pub fn native_main_without_workers() -> Self {
+    pub fn native() -> Self {
         Self {
             gateway_base_url: String::new(),
             main_route: None,
             model_routes: BTreeMap::new(),
-            workers: Vec::new(),
-            worker_strategy: None,
-            selector_binary: None,
+            native_main_model: None,
+            native_model_slots: BTreeMap::new(),
         }
-    }
-
-    pub fn with_selector_binary(mut self, path: impl Into<String>) -> Self {
-        self.selector_binary = Some(path.into());
-        self
     }
 
     pub fn with_model_routes(
@@ -155,72 +79,52 @@ impl EnableRequest {
         self
     }
 
+    pub fn with_native_models(
+        mut self,
+        main: Option<String>,
+        slots: BTreeMap<String, String>,
+    ) -> Self {
+        self.native_main_model = main;
+        self.native_model_slots = slots;
+        self
+    }
+
     fn takes_over(&self) -> bool {
-        self.main_route.is_some() || !self.model_routes.is_empty() || self.worker_strategy.is_some()
+        self.uses_gateway()
+            || self.native_main_model.is_some()
+            || !self.native_model_slots.is_empty()
+    }
+
+    fn uses_gateway(&self) -> bool {
+        self.main_route.is_some() || !self.model_routes.is_empty()
     }
 }
 
 impl ActiveConfiguration {
     fn from_request(request: &EnableRequest) -> Self {
-        let forced_worker_route = match request.worker_strategy {
-            Some(WorkerStrategy::ForcedSingle) => request
-                .workers
-                .first()
-                .map(|worker| worker.route_alias.clone()),
-            _ => None,
-        };
-        let agents = if request.worker_strategy.is_some() {
-            request
-                .workers
-                .iter()
-                .map(|worker| {
-                    (
-                        format!("{}{}.md", AGENT_NAME_PREFIX, worker.id),
-                        render_agent(worker),
-                    )
-                })
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
         Self {
             base_url: request.gateway_base_url.clone(),
             main_route: request.main_route.clone(),
             model_routes: request.model_routes.clone(),
-            forced_worker_route,
-            selector_binary: request.selector_binary.clone(),
-            agents,
+            native_main_model: request.native_main_model.clone(),
+            native_model_slots: request.native_model_slots.clone(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaudeCodeOperation {
-    SetEnvironment {
-        key: String,
-        value: String,
-    },
-    RemoveEnvironment {
-        key: String,
-    },
-    WriteFile {
-        path: PathBuf,
-        contents: String,
-    },
-    RemoveFile {
-        path: PathBuf,
-    },
-    RestoreFile {
-        path: PathBuf,
-        contents: Option<Vec<u8>>,
-    },
+    SetModel { value: String },
+    RemoveModel,
+    SetEnvironment { key: String, value: String },
+    RemoveEnvironment { key: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeCodeSnapshot {
     version: u8,
+    settings: Option<Vec<u8>>,
     environment: BTreeMap<String, Option<String>>,
-    agents: BTreeMap<String, Option<String>>,
     active: ActiveConfiguration,
 }
 
@@ -230,10 +134,16 @@ struct ActiveConfiguration {
     main_route: Option<String>,
     #[serde(default)]
     model_routes: BTreeMap<String, String>,
-    forced_worker_route: Option<String>,
     #[serde(default)]
-    selector_binary: Option<String>,
-    agents: BTreeMap<String, String>,
+    native_main_model: Option<String>,
+    #[serde(default)]
+    native_model_slots: BTreeMap<String, String>,
+}
+
+impl ActiveConfiguration {
+    fn uses_gateway(&self) -> bool {
+        self.main_route.is_some() || !self.model_routes.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,8 +159,7 @@ pub struct ClaudeCodeStatus {
     pub takeover: ClaudeCodeTakeoverStatus,
     pub differences: Vec<String>,
     pub managed_main_alias: Option<String>,
-    pub forced_worker_alias: Option<String>,
-    pub generated_agent_names: Vec<String>,
+    pub native_model_slots: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,14 +272,7 @@ pub struct ClaudeCodePlan {
 #[derive(Debug)]
 struct PreparedPlan {
     settings: Option<(PathBuf, Vec<u8>)>,
-    files: Vec<PreparedFileOperation>,
     rollback: Vec<FileSnapshot>,
-}
-
-#[derive(Debug)]
-enum PreparedFileOperation {
-    Write { path: PathBuf, contents: Vec<u8> },
-    Remove { path: PathBuf },
 }
 
 impl ClaudeCodePlan {
@@ -424,70 +326,70 @@ impl ClaudeCodeAdapter {
         let environment = settings.get("env").and_then(serde_json::Value::as_object);
         let current_base_url = environment_value(environment, "ANTHROPIC_BASE_URL");
         let current_main = environment_value(environment, "ANTHROPIC_MODEL");
-        let current_forced = environment_value(environment, "CLAUDE_CODE_SUBAGENT_MODEL");
-        let current_selector = environment_value(environment, "GRILLFORGE_BIN");
+        let current_settings_model = settings.get("model").and_then(serde_json::Value::as_str);
         let current_model_routes = MODEL_SLOTS
             .into_iter()
             .map(|(slot, key)| (slot, environment_value(environment, key)))
             .collect::<BTreeMap<_, _>>();
-        let current_agents = current_owned_agents(&self.config_dir.join("agents"))?;
-        let generated_agent_names = current_agents
-            .keys()
-            .filter_map(|name| name.strip_suffix(".md").map(str::to_owned))
-            .collect::<Vec<_>>();
         let managed_main_alias = current_main.filter(|alias| is_route_alias(alias));
-        let forced_worker_alias = current_forced.filter(|alias| is_route_alias(alias));
+        let mut native_model_slots = current_model_routes
+            .iter()
+            .filter_map(|(slot, model)| {
+                model
+                    .filter(|model| !is_route_alias(model))
+                    .map(|model| ((*slot).to_string(), model.to_string()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        if let Some(model) = current_settings_model {
+            native_model_slots.insert("main".into(), model.into());
+        }
 
         let snapshot = self.read_snapshot()?;
         let mut differences = Vec::new();
         let takeover = match &snapshot {
             Some(snapshot) => {
+                let original_settings_model = original_settings_model(snapshot)?;
+                let expected_settings_model = snapshot
+                    .active
+                    .native_main_model
+                    .as_deref()
+                    .or(original_settings_model.as_deref());
+                if current_settings_model != expected_settings_model {
+                    differences.push("model".into());
+                }
                 let expected_main = snapshot
                     .active
                     .main_route
                     .as_deref()
                     .or_else(|| original_environment(snapshot, "ANTHROPIC_MODEL"));
-                let expected_forced = snapshot
-                    .active
-                    .forced_worker_route
-                    .as_deref()
-                    .or_else(|| original_environment(snapshot, "CLAUDE_CODE_SUBAGENT_MODEL"));
-                let expected_selector = snapshot
-                    .active
-                    .selector_binary
-                    .as_deref()
-                    .or_else(|| original_environment(snapshot, "GRILLFORGE_BIN"));
                 for (slot, key) in MODEL_SLOTS {
                     let expected = snapshot
                         .active
                         .model_routes
                         .get(slot)
                         .map(String::as_str)
+                        .or_else(|| {
+                            snapshot
+                                .active
+                                .native_model_slots
+                                .get(slot)
+                                .map(String::as_str)
+                        })
                         .or_else(|| original_environment(snapshot, key));
                     if current_model_routes.get(slot).copied().flatten() != expected {
                         differences.push(key.to_string());
                     }
                 }
-                if current_base_url != Some(snapshot.active.base_url.as_str()) {
+                let expected_base_url = snapshot
+                    .active
+                    .uses_gateway()
+                    .then_some(snapshot.active.base_url.as_str())
+                    .or_else(|| original_environment(snapshot, "ANTHROPIC_BASE_URL"));
+                if current_base_url != expected_base_url {
                     differences.push("ANTHROPIC_BASE_URL".into());
                 }
                 if current_main != expected_main {
                     differences.push("ANTHROPIC_MODEL".into());
-                }
-                if current_forced != expected_forced {
-                    differences.push("CLAUDE_CODE_SUBAGENT_MODEL".into());
-                }
-                if current_selector != expected_selector {
-                    differences.push("GRILLFORGE_BIN".into());
-                }
-                let agent_names = current_agents
-                    .keys()
-                    .chain(snapshot.active.agents.keys())
-                    .collect::<HashSet<_>>();
-                for name in agent_names {
-                    if current_agents.get(name) != snapshot.active.agents.get(name) {
-                        differences.push(format!("agents/{name}"));
-                    }
                 }
                 differences.sort();
                 if differences.is_empty() {
@@ -498,25 +400,13 @@ impl ClaudeCodeAdapter {
             }
             None => {
                 let has_managed_configuration = managed_main_alias.is_some()
-                    || forced_worker_alias.is_some()
                     || current_model_routes
                         .values()
                         .flatten()
-                        .any(|alias| is_route_alias(alias))
-                    || current_selector.is_some()
-                    || !current_agents.is_empty();
+                        .any(|alias| is_route_alias(alias));
                 if has_managed_configuration {
                     if managed_main_alias.is_some() {
                         differences.push("ANTHROPIC_MODEL".into());
-                    }
-                    if forced_worker_alias.is_some() {
-                        differences.push("CLAUDE_CODE_SUBAGENT_MODEL".into());
-                    }
-                    if current_selector.is_some() {
-                        differences.push("GRILLFORGE_BIN".into());
-                    }
-                    for name in current_agents.keys() {
-                        differences.push(format!("agents/{name}"));
                     }
                     differences.sort();
                     ClaudeCodeTakeoverStatus::Drifted
@@ -531,8 +421,7 @@ impl ClaudeCodeAdapter {
             takeover,
             differences,
             managed_main_alias: managed_main_alias.map(str::to_owned),
-            forced_worker_alias: forced_worker_alias.map(str::to_owned),
-            generated_agent_names,
+            native_model_slots,
         })
     }
 
@@ -564,10 +453,20 @@ impl ClaudeCodeAdapter {
         let snapshot = self
             .read_snapshot()?
             .ok_or_else(|| ClaudeCodeAdapterError::SnapshotMissing(self.snapshot_path.clone()))?;
-        let plan = self.plan_disable(&snapshot);
-        let prepared = self.prepare(&plan)?;
-        if let Err(error) = self.apply(&prepared).and_then(|_| self.verify_plan(&plan)) {
-            let rollback = self.rollback(&prepared.rollback);
+        let settings_path = self.config_dir.join(SETTINGS_FILE);
+        let current = snapshot_file(&settings_path)?;
+        let original = FileSnapshot {
+            path: settings_path.clone(),
+            contents: snapshot.settings.clone(),
+        };
+        if let Err(error) = restore_snapshot(&original).and_then(|_| {
+            if snapshot_file(&settings_path)?.contents == original.contents {
+                Ok(())
+            } else {
+                Err(ClaudeCodeAdapterError::VerificationFailed(settings_path))
+            }
+        }) {
+            let rollback = restore_snapshot(&current);
             return Err(combine_rollback(error, rollback));
         }
         fs::remove_file(&self.snapshot_path).map_err(|source| {
@@ -591,7 +490,14 @@ impl ClaudeCodeAdapter {
                 },
             });
         }
-        validate_gateway(&request.gateway_base_url)?;
+        if request.uses_gateway() {
+            validate_gateway(&request.gateway_base_url)?;
+        }
+        if request.main_route.is_some() && request.native_main_model.is_some() {
+            return Err(ClaudeCodeAdapterError::ConflictingModelSelection(
+                "main".into(),
+            ));
+        }
         if let Some(main_route) = &request.main_route {
             if !is_route_alias(main_route) {
                 return Err(ClaudeCodeAdapterError::InvalidRouteAlias(
@@ -607,9 +513,19 @@ impl ClaudeCodeAdapter {
                 return Err(ClaudeCodeAdapterError::InvalidRouteAlias(route.clone()));
             }
         }
-        if let Some(worker_strategy) = request.worker_strategy {
-            validate_worker_count(worker_strategy, request.workers.len())?;
-            validate_workers(&request.workers)?;
+        if let Some(model) = request.native_main_model.as_deref() {
+            validate_native_model(model)?;
+        }
+        for (slot, model) in &request.native_model_slots {
+            if model_slot_environment_key(slot).is_none() {
+                return Err(ClaudeCodeAdapterError::InvalidModelSlot(slot.clone()));
+            }
+            if request.model_routes.contains_key(slot) {
+                return Err(ClaudeCodeAdapterError::ConflictingModelSelection(
+                    slot.clone(),
+                ));
+            }
+            validate_native_model(model)?;
         }
         let active = ActiveConfiguration::from_request(&request);
 
@@ -621,9 +537,9 @@ impl ClaudeCodeAdapter {
         let mut snapshot = match existing_snapshot {
             Some(snapshot) => snapshot,
             None => ClaudeCodeSnapshot {
-                version: 1,
+                version: 2,
+                settings: settings_snapshot.contents.clone(),
                 environment: capture_environment(&settings),
-                agents: BTreeMap::new(),
                 active: active.clone(),
             },
         };
@@ -640,27 +556,20 @@ impl ClaudeCodeAdapter {
                         .map(str::to_owned)
                 });
         }
-        let existing_agents = owned_agent_files(&self.config_dir.join("agents"))?;
-        let mut operations = vec![ClaudeCodeOperation::SetEnvironment {
-            key: "ANTHROPIC_BASE_URL".to_string(),
-            value: request.gateway_base_url,
-        }];
-        match &request.selector_binary {
-            Some(path) if !request.workers.is_empty() => {
-                if path.trim().is_empty() || !Path::new(path).is_absolute() {
-                    return Err(ClaudeCodeAdapterError::InvalidSelectorBinary(path.clone()));
-                }
-                operations.push(ClaudeCodeOperation::SetEnvironment {
-                    key: "GRILLFORGE_BIN".to_string(),
-                    value: path.clone(),
-                });
-            }
-            _ if had_snapshot => {
-                push_restore_environment(&mut operations, &snapshot, "GRILLFORGE_BIN")
-            }
-            _ => {}
+        let mut operations = Vec::new();
+        if request.uses_gateway() {
+            operations.push(ClaudeCodeOperation::SetEnvironment {
+                key: "ANTHROPIC_BASE_URL".to_string(),
+                value: request.gateway_base_url,
+            });
+        } else if had_snapshot {
+            push_restore_environment(&mut operations, &snapshot, "ANTHROPIC_BASE_URL");
         }
-
+        match request.native_main_model {
+            Some(model) => operations.push(ClaudeCodeOperation::SetModel { value: model }),
+            None if had_snapshot => push_restore_model(&mut operations, &snapshot)?,
+            None => {}
+        }
         match request.main_route {
             Some(main_route) => operations.push(ClaudeCodeOperation::SetEnvironment {
                 key: "ANTHROPIC_MODEL".to_string(),
@@ -678,77 +587,18 @@ impl ClaudeCodeAdapter {
                     key: key.to_string(),
                     value: route.clone(),
                 }),
-                None if had_snapshot => push_restore_environment(&mut operations, &snapshot, key),
-                None => {}
+                None => match request.native_model_slots.get(slot) {
+                    Some(model) => operations.push(ClaudeCodeOperation::SetEnvironment {
+                        key: key.to_string(),
+                        value: model.clone(),
+                    }),
+                    None if had_snapshot => {
+                        push_restore_environment(&mut operations, &snapshot, key)
+                    }
+                    None => {}
+                },
             }
         }
-
-        match request.worker_strategy {
-            Some(WorkerStrategy::ForcedSingle) => {
-                operations.push(ClaudeCodeOperation::SetEnvironment {
-                    key: "CLAUDE_CODE_SUBAGENT_MODEL".to_string(),
-                    value: request.workers[0].route_alias.clone(),
-                });
-                let worker = &request.workers[0];
-                let desired_path = self.agent_path(worker);
-                let file_snapshot = snapshot_file(&desired_path)?;
-                validate_agent_ownership(&file_snapshot)?;
-                capture_agent(&mut snapshot, &file_snapshot)?;
-                operations.push(ClaudeCodeOperation::WriteFile {
-                    path: desired_path.clone(),
-                    contents: render_agent(worker),
-                });
-                for agent in existing_agents {
-                    if agent.path != desired_path {
-                        operations.push(ClaudeCodeOperation::RemoveFile {
-                            path: agent.path.clone(),
-                        });
-                        capture_agent(&mut snapshot, &agent)?;
-                    }
-                }
-            }
-            Some(WorkerStrategy::SelectablePool) => {
-                operations.push(ClaudeCodeOperation::RemoveEnvironment {
-                    key: "CLAUDE_CODE_SUBAGENT_MODEL".to_string(),
-                });
-                let mut desired_paths = HashSet::new();
-                for worker in &request.workers {
-                    let path = self.agent_path(worker);
-                    desired_paths.insert(path.clone());
-                    let file_snapshot = snapshot_file(&path)?;
-                    validate_agent_ownership(&file_snapshot)?;
-                    capture_agent(&mut snapshot, &file_snapshot)?;
-                    operations.push(ClaudeCodeOperation::WriteFile {
-                        path,
-                        contents: render_agent(worker),
-                    });
-                }
-                for agent in existing_agents {
-                    if !desired_paths.contains(&agent.path) {
-                        operations.push(ClaudeCodeOperation::RemoveFile {
-                            path: agent.path.clone(),
-                        });
-                        capture_agent(&mut snapshot, &agent)?;
-                    }
-                }
-            }
-            None => {
-                if had_snapshot {
-                    push_restore_environment(
-                        &mut operations,
-                        &snapshot,
-                        "CLAUDE_CODE_SUBAGENT_MODEL",
-                    );
-                }
-                for agent in existing_agents {
-                    operations.push(ClaudeCodeOperation::RemoveFile {
-                        path: agent.path.clone(),
-                    });
-                    capture_agent(&mut snapshot, &agent)?;
-                }
-            }
-        }
-
         snapshot.active = active;
         Ok(ClaudeCodePlan {
             operations,
@@ -769,23 +619,10 @@ impl ClaudeCodeAdapter {
                 }
             }
         }
-        operations.extend(snapshot.agents.iter().map(|(name, contents)| {
-            ClaudeCodeOperation::RestoreFile {
-                path: self.config_dir.join("agents").join(name),
-                contents: contents.clone().map(String::into_bytes),
-            }
-        }));
-
         ClaudeCodePlan {
             operations,
             snapshot: None,
         }
-    }
-
-    fn agent_path(&self, worker: &WorkerModel) -> PathBuf {
-        self.config_dir
-            .join("agents")
-            .join(format!("{}{}.md", AGENT_NAME_PREFIX, worker.id))
     }
 
     fn read_snapshot(&self) -> Result<Option<ClaudeCodeSnapshot>, ClaudeCodeAdapterError> {
@@ -801,36 +638,35 @@ impl ClaudeCodeAdapter {
         };
         let snapshot: ClaudeCodeSnapshot = serde_json::from_slice(&contents)
             .map_err(|_| ClaudeCodeAdapterError::InvalidSnapshot(self.snapshot_path.clone()))?;
-        if snapshot.version != 1
-            || validate_gateway(&snapshot.active.base_url).is_err()
+        if snapshot.version != 2
+            || (snapshot.active.uses_gateway()
+                && validate_gateway(&snapshot.active.base_url).is_err())
             || snapshot
                 .active
                 .main_route
                 .as_deref()
                 .is_some_and(|alias| !is_route_alias(alias))
-            || snapshot
-                .active
-                .forced_worker_route
-                .as_deref()
-                .is_some_and(|alias| !is_route_alias(alias))
             || snapshot.active.model_routes.iter().any(|(slot, alias)| {
                 model_slot_environment_key(slot).is_none() || !is_route_alias(alias)
             })
-            || snapshot.active.agents.iter().any(|(name, contents)| {
-                !is_managed_agent_name(name)
-                    || !contents
-                        .as_bytes()
-                        .windows(OWNERSHIP_MARKER.len())
-                        .any(|part| part == OWNERSHIP_MARKER)
-            })
+            || snapshot
+                .active
+                .native_main_model
+                .as_deref()
+                .is_some_and(|model| validate_native_model(model).is_err())
+            || snapshot
+                .active
+                .native_model_slots
+                .iter()
+                .any(|(slot, model)| {
+                    model_slot_environment_key(slot).is_none()
+                        || validate_native_model(model).is_err()
+                        || snapshot.active.model_routes.contains_key(slot)
+                })
             || snapshot
                 .environment
                 .keys()
                 .any(|key| !MANAGED_ENVIRONMENT_KEYS.contains(&key.as_str()))
-            || snapshot
-                .agents
-                .keys()
-                .any(|name| !is_managed_agent_name(name))
         {
             return Err(ClaudeCodeAdapterError::InvalidSnapshot(
                 self.snapshot_path.clone(),
@@ -863,10 +699,16 @@ impl ClaudeCodeAdapter {
         let settings_snapshot = snapshot_file(&settings_path)?;
         let mut settings = parse_settings(&settings_snapshot)?;
         let mut changes_settings = false;
-        let mut files = Vec::new();
-
         for operation in plan.operations() {
             match operation {
+                ClaudeCodeOperation::SetModel { value } => {
+                    settings.insert("model".into(), serde_json::Value::String(value.clone()));
+                    changes_settings = true;
+                }
+                ClaudeCodeOperation::RemoveModel => {
+                    settings.remove("model");
+                    changes_settings = true;
+                }
                 ClaudeCodeOperation::SetEnvironment { key, value } => {
                     validate_managed_environment_key(key, &settings_path)?;
                     environment_mut(&mut settings, &settings_path)?
@@ -883,27 +725,6 @@ impl ClaudeCodeAdapter {
                     }
                     changes_settings = true;
                 }
-                ClaudeCodeOperation::WriteFile { path, contents } => {
-                    self.preflight_agent(path)?;
-                    files.push(PreparedFileOperation::Write {
-                        path: path.clone(),
-                        contents: contents.as_bytes().to_vec(),
-                    });
-                }
-                ClaudeCodeOperation::RemoveFile { path } => {
-                    self.preflight_agent(path)?;
-                    files.push(PreparedFileOperation::Remove { path: path.clone() });
-                }
-                ClaudeCodeOperation::RestoreFile { path, contents } => {
-                    self.preflight_agent(path)?;
-                    files.push(match contents {
-                        Some(contents) => PreparedFileOperation::Write {
-                            path: path.clone(),
-                            contents: contents.clone(),
-                        },
-                        None => PreparedFileOperation::Remove { path: path.clone() },
-                    });
-                }
             }
         }
 
@@ -918,40 +739,11 @@ impl ClaudeCodeAdapter {
             })
             .transpose()?
             .map(|contents| (settings_path, contents));
-        let mut rollback = Vec::new();
-        if changes_settings {
-            rollback.push(settings_snapshot);
-        }
-        let mut captured = HashSet::new();
-        for operation in &files {
-            let path = match operation {
-                PreparedFileOperation::Write { path, .. }
-                | PreparedFileOperation::Remove { path } => path,
-            };
-            if captured.insert(path.clone()) {
-                rollback.push(snapshot_file(path)?);
-            }
-        }
-        Ok(PreparedPlan {
-            settings,
-            files,
-            rollback,
-        })
-    }
-
-    fn preflight_agent(&self, path: &Path) -> Result<(), ClaudeCodeAdapterError> {
-        let expected_directory = self.config_dir.join("agents");
-        let valid_path = path.parent() == Some(expected_directory.as_path())
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(is_managed_agent_name);
-        if !valid_path {
-            return Err(ClaudeCodeAdapterError::AgentFileCollision(
-                path.to_path_buf(),
-            ));
-        }
-        validate_agent_ownership(&snapshot_file(path)?)
+        let rollback = changes_settings
+            .then_some(settings_snapshot)
+            .into_iter()
+            .collect();
+        Ok(PreparedPlan { settings, rollback })
     }
 
     fn apply(&self, prepared: &PreparedPlan) -> Result<(), ClaudeCodeAdapterError> {
@@ -963,29 +755,6 @@ impl ClaudeCodeAdapter {
                     source,
                 }
             })?;
-        }
-        for operation in &prepared.files {
-            match operation {
-                PreparedFileOperation::Write { path, contents } => {
-                    create_parent(path)?;
-                    crate::storage::atomic_replace(path, contents).map_err(|source| {
-                        ClaudeCodeAdapterError::WriteConfiguration {
-                            path: path.clone(),
-                            source,
-                        }
-                    })?;
-                }
-                PreparedFileOperation::Remove { path } => match fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(source) => {
-                        return Err(ClaudeCodeAdapterError::WriteConfiguration {
-                            path: path.clone(),
-                            source,
-                        });
-                    }
-                },
-            }
         }
         Ok(())
     }
@@ -1003,30 +772,24 @@ impl ClaudeCodeAdapter {
         let environment = settings.get("env").and_then(serde_json::Value::as_object);
         for operation in plan.operations() {
             let verified = match operation {
+                ClaudeCodeOperation::SetModel { value } => {
+                    settings.get("model").and_then(serde_json::Value::as_str)
+                        == Some(value.as_str())
+                }
+                ClaudeCodeOperation::RemoveModel => !settings.contains_key("model"),
                 ClaudeCodeOperation::SetEnvironment { key, value } => {
                     environment_value(environment, key) == Some(value.as_str())
                 }
                 ClaudeCodeOperation::RemoveEnvironment { key } => {
                     environment_value(environment, key).is_none()
                 }
-                ClaudeCodeOperation::WriteFile { path, contents } => {
-                    fs::read(path).is_ok_and(|actual| actual == contents.as_bytes())
-                }
-                ClaudeCodeOperation::RemoveFile { path } => !path.exists(),
-                ClaudeCodeOperation::RestoreFile { path, contents } => match contents {
-                    Some(contents) => {
-                        fs::read(path).is_ok_and(|actual| actual.as_slice() == contents.as_slice())
-                    }
-                    None => !path.exists(),
-                },
             };
             if !verified {
                 let path = match operation {
-                    ClaudeCodeOperation::SetEnvironment { .. }
+                    ClaudeCodeOperation::SetModel { .. }
+                    | ClaudeCodeOperation::RemoveModel
+                    | ClaudeCodeOperation::SetEnvironment { .. }
                     | ClaudeCodeOperation::RemoveEnvironment { .. } => settings_path.clone(),
-                    ClaudeCodeOperation::WriteFile { path, .. }
-                    | ClaudeCodeOperation::RemoveFile { path }
-                    | ClaudeCodeOperation::RestoreFile { path, .. } => path.clone(),
                 };
                 return Err(ClaudeCodeAdapterError::VerificationFailed(path));
             }
@@ -1038,35 +801,20 @@ impl ClaudeCodeAdapter {
 #[derive(Debug)]
 pub enum ClaudeCodeAdapterError {
     InvalidGateway(String),
-    InvalidWorkerCount {
-        strategy: WorkerStrategy,
-        actual: usize,
-    },
-    InvalidWorkerId(String),
-    InvalidWorkerCapability {
-        worker_id: String,
-        capability: String,
-    },
     InvalidModelSlot(String),
     InvalidRouteAlias(String),
-    InvalidSelectorBinary(String),
+    InvalidNativeModel(String),
+    ConflictingModelSelection(String),
     ApplyRollbackFailed {
         apply: Box<ClaudeCodeAdapterError>,
         rollback: Box<ClaudeCodeAdapterError>,
     },
-    DuplicateWorkerId(String),
-    DuplicateWorkerCapability {
-        worker_id: String,
-        capability: String,
-    },
-    DuplicateRouteAlias(String),
     InvalidSettings(PathBuf),
     InvalidSnapshot(PathBuf),
     SnapshotMissing(PathBuf),
     VerificationFailed(PathBuf),
     CliVersionFailed(PathBuf),
     CliTimedOut(PathBuf),
-    AgentFileCollision(PathBuf),
     ReadConfiguration {
         path: PathBuf,
         source: io::Error,
@@ -1092,50 +840,22 @@ impl Display for ClaudeCodeAdapterError {
                 formatter,
                 "Claude Code gateway must be an HTTP loopback URL: {url}"
             ),
-            Self::InvalidWorkerCount { strategy, actual } => match strategy {
-                WorkerStrategy::ForcedSingle => write!(
-                    formatter,
-                    "forced Worker mode requires exactly one Worker, got {actual}"
-                ),
-                WorkerStrategy::SelectablePool => write!(
-                    formatter,
-                    "selectable Worker mode requires at least one Worker, got {actual}"
-                ),
-            },
-            Self::InvalidWorkerId(id) => {
-                write!(formatter, "Worker id must be a lowercase slug: {id}")
-            }
-            Self::InvalidWorkerCapability {
-                worker_id,
-                capability,
-            } => write!(
-                formatter,
-                "Worker {worker_id} capability must be a lowercase slug: {capability}"
-            ),
             Self::InvalidModelSlot(slot) => {
                 write!(formatter, "unsupported Claude Code model slot: {slot}")
             }
             Self::InvalidRouteAlias(alias) => write!(
                 formatter,
-                "Worker route alias must be a safe grillforge/ identifier: {alias}"
+                "model route alias must be a safe grillforge/ identifier: {alias}"
             ),
-            Self::InvalidSelectorBinary(path) => write!(
+            Self::InvalidNativeModel(model) => {
+                write!(formatter, "unsupported Claude Code native model: {model}")
+            }
+            Self::ConflictingModelSelection(slot) => write!(
                 formatter,
-                "GrillForge selector binary must use an absolute path: {path}"
+                "Claude Code model slot cannot be both native and managed: {slot}"
             ),
             Self::ApplyRollbackFailed { apply, rollback } => {
                 write!(formatter, "{apply}; rollback failed: {rollback}")
-            }
-            Self::DuplicateWorkerId(id) => write!(formatter, "duplicate Worker id: {id}"),
-            Self::DuplicateWorkerCapability {
-                worker_id,
-                capability,
-            } => write!(
-                formatter,
-                "Worker {worker_id} has duplicate capability: {capability}"
-            ),
-            Self::DuplicateRouteAlias(alias) => {
-                write!(formatter, "duplicate Worker route alias: {alias}")
             }
             Self::InvalidSettings(path) => write!(
                 formatter,
@@ -1165,11 +885,6 @@ impl Display for ClaudeCodeAdapterError {
             Self::CliTimedOut(path) => write!(
                 formatter,
                 "Claude Code CLI version check timed out: {}",
-                path.display()
-            ),
-            Self::AgentFileCollision(path) => write!(
-                formatter,
-                "refusing to replace a non-GrillForge Claude Agent: {}",
                 path.display()
             ),
             Self::ReadConfiguration { path, source } => write!(
@@ -1225,20 +940,6 @@ fn validate_gateway(value: &str) -> Result<(), ClaudeCodeAdapterError> {
     Ok(())
 }
 
-fn validate_worker_count(
-    strategy: WorkerStrategy,
-    actual: usize,
-) -> Result<(), ClaudeCodeAdapterError> {
-    let valid = match strategy {
-        WorkerStrategy::ForcedSingle => actual == 1,
-        WorkerStrategy::SelectablePool => actual >= 1,
-    };
-    if !valid {
-        return Err(ClaudeCodeAdapterError::InvalidWorkerCount { strategy, actual });
-    }
-    Ok(())
-}
-
 fn push_restore_environment(
     operations: &mut Vec<ClaudeCodeOperation>,
     snapshot: &ClaudeCodeSnapshot,
@@ -1255,53 +956,50 @@ fn push_restore_environment(
     }
 }
 
-fn validate_workers(workers: &[WorkerModel]) -> Result<(), ClaudeCodeAdapterError> {
-    let mut ids = HashSet::new();
-    for worker in workers {
-        if !is_slug(&worker.id) || AGENT_NAME_PREFIX.len() + worker.id.len() > 64 {
-            return Err(ClaudeCodeAdapterError::InvalidWorkerId(worker.id.clone()));
-        }
-        if worker.route_alias != "inherit" && !is_route_alias(&worker.route_alias) {
-            return Err(ClaudeCodeAdapterError::InvalidRouteAlias(
-                worker.route_alias.clone(),
-            ));
-        }
-        if !ids.insert(worker.id.as_str()) {
-            return Err(ClaudeCodeAdapterError::DuplicateWorkerId(worker.id.clone()));
-        }
-        let mut capabilities = HashSet::new();
-        for capability in &worker.capabilities {
-            if !is_slug(capability) {
-                return Err(ClaudeCodeAdapterError::InvalidWorkerCapability {
-                    worker_id: worker.id.clone(),
-                    capability: capability.clone(),
-                });
-            }
-            if !capabilities.insert(capability) {
-                return Err(ClaudeCodeAdapterError::DuplicateWorkerCapability {
-                    worker_id: worker.id.clone(),
-                    capability: capability.clone(),
-                });
-            }
-        }
+fn push_restore_model(
+    operations: &mut Vec<ClaudeCodeOperation>,
+    snapshot: &ClaudeCodeSnapshot,
+) -> Result<(), ClaudeCodeAdapterError> {
+    match original_settings_model(snapshot)? {
+        Some(value) => operations.push(ClaudeCodeOperation::SetModel { value }),
+        None => operations.push(ClaudeCodeOperation::RemoveModel),
     }
     Ok(())
+}
+
+fn original_settings_model(
+    snapshot: &ClaudeCodeSnapshot,
+) -> Result<Option<String>, ClaudeCodeAdapterError> {
+    let Some(contents) = snapshot.settings.as_deref() else {
+        return Ok(None);
+    };
+    let settings = serde_json::from_slice::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .ok_or_else(|| ClaudeCodeAdapterError::InvalidSnapshot(PathBuf::from(SNAPSHOT_FILE)))?;
+    match settings.get("model") {
+        Some(serde_json::Value::String(model)) => Ok(Some(model.clone())),
+        None => Ok(None),
+        Some(_) => Err(ClaudeCodeAdapterError::InvalidSnapshot(PathBuf::from(
+            SNAPSHOT_FILE,
+        ))),
+    }
+}
+
+fn validate_native_model(value: &str) -> Result<(), ClaudeCodeAdapterError> {
+    if matches!(value, "default" | "sonnet" | "opus" | "fable" | "haiku") {
+        Ok(())
+    } else {
+        Err(ClaudeCodeAdapterError::InvalidNativeModel(
+            value.to_string(),
+        ))
+    }
 }
 
 fn model_slot_environment_key(slot: &str) -> Option<&'static str> {
     MODEL_SLOTS
         .iter()
         .find_map(|(candidate, key)| (*candidate == slot).then_some(*key))
-}
-
-fn is_slug(value: &str) -> bool {
-    !value.is_empty()
-        && !value.starts_with('-')
-        && !value.ends_with('-')
-        && !value.contains("--")
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn is_route_alias(value: &str) -> bool {
@@ -1368,67 +1066,6 @@ fn combine_rollback(
             rollback: Box::new(rollback),
         },
     }
-}
-
-fn owned_agent_files(directory: &Path) -> Result<Vec<FileSnapshot>, ClaudeCodeAdapterError> {
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => {
-            return Err(ClaudeCodeAdapterError::ReadConfiguration {
-                path: directory.to_path_buf(),
-                source,
-            });
-        }
-    };
-    let mut owned = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| ClaudeCodeAdapterError::ReadConfiguration {
-            path: directory.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        let candidate = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(AGENT_NAME_PREFIX) && name.ends_with(".md"));
-        if !candidate {
-            continue;
-        }
-        let snapshot = snapshot_file(&path)?;
-        if snapshot.contents.as_deref().is_some_and(|contents| {
-            contents
-                .windows(OWNERSHIP_MARKER.len())
-                .any(|part| part == OWNERSHIP_MARKER)
-        }) {
-            owned.push(snapshot);
-        }
-    }
-    owned.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(owned)
-}
-
-fn current_owned_agents(
-    directory: &Path,
-) -> Result<BTreeMap<String, String>, ClaudeCodeAdapterError> {
-    owned_agent_files(directory)?
-        .into_iter()
-        .map(|file| {
-            let name = file
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| ClaudeCodeAdapterError::AgentFileCollision(file.path.clone()))?
-                .to_string();
-            let contents = file
-                .contents
-                .as_deref()
-                .and_then(|contents| std::str::from_utf8(contents).ok())
-                .ok_or_else(|| ClaudeCodeAdapterError::AgentFileCollision(file.path.clone()))?
-                .to_string();
-            Ok((name, contents))
-        })
-        .collect()
 }
 
 fn environment_value<'a>(
@@ -1530,63 +1167,4 @@ fn create_parent(path: &Path) -> Result<(), ClaudeCodeAdapterError> {
         path: parent.to_path_buf(),
         source,
     })
-}
-
-fn capture_agent(
-    snapshot: &mut ClaudeCodeSnapshot,
-    file: &FileSnapshot,
-) -> Result<(), ClaudeCodeAdapterError> {
-    let name = file
-        .path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| is_managed_agent_name(name))
-        .ok_or_else(|| ClaudeCodeAdapterError::AgentFileCollision(file.path.clone()))?;
-    let contents = file
-        .contents
-        .as_deref()
-        .map(|contents| {
-            std::str::from_utf8(contents)
-                .map(str::to_owned)
-                .map_err(|_| ClaudeCodeAdapterError::AgentFileCollision(file.path.clone()))
-        })
-        .transpose()?;
-    snapshot.agents.entry(name.to_string()).or_insert(contents);
-    Ok(())
-}
-
-fn is_managed_agent_name(name: &str) -> bool {
-    name.starts_with(AGENT_NAME_PREFIX)
-        && name.ends_with(".md")
-        && is_slug(
-            name.strip_prefix(AGENT_NAME_PREFIX)
-                .and_then(|name| name.strip_suffix(".md"))
-                .unwrap_or_default(),
-        )
-}
-
-fn validate_agent_ownership(snapshot: &FileSnapshot) -> Result<(), ClaudeCodeAdapterError> {
-    if snapshot.contents.as_deref().is_some_and(|contents| {
-        !contents
-            .windows(OWNERSHIP_MARKER.len())
-            .any(|part| part == OWNERSHIP_MARKER)
-    }) {
-        return Err(ClaudeCodeAdapterError::AgentFileCollision(
-            snapshot.path.clone(),
-        ));
-    }
-    Ok(())
-}
-
-fn render_agent(worker: &WorkerModel) -> String {
-    let name = format!("{AGENT_NAME_PREFIX}{}", worker.id);
-    let description = if worker.capabilities.is_empty() {
-        format!("GrillForge worker {}", worker.id)
-    } else {
-        format!("GrillForge SubAgent for {}", worker.capabilities.join(", "))
-    };
-    format!(
-        "---\nname: {name}\ndescription: {description}\nmodel: {}\n---\n<!-- Managed by GrillForge. -->\nExecute the delegated task and return a concise result.\n",
-        worker.route_alias
-    )
 }

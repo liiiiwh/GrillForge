@@ -11,7 +11,7 @@ users one place to manage:
 
 - Coding agent connections
 - Main model selection
-- Worker/SubAgent model pools
+- Native model Slots and extension SubAgent bindings
 - Provider endpoints and credentials
 - Model identities and capabilities
 
@@ -25,7 +25,7 @@ and want to:
 
 - Keep the normal Claude experience available
 - Switch the main model when desired
-- Make external models available to Claude Code SubAgents
+- Make external models available to local Agents without replacing their runtime
 - Reuse Anthropic, OpenAI-compatible, and local model providers
 - Configure providers and models through a small desktop GUI
 
@@ -53,14 +53,12 @@ The client-first MVP is implemented and its model-routing release matrix is
 verified.
 
 The repository contains the Tauri desktop application, Provider and Model
-Registry, Claude Code Adapter, local gateway, Anthropic/Responses/Chat protocol
-bridges, selector Skill, deterministic tests, and the pinned read-only
-cc-switch reference. Mock, installed-CLI, and real DeepSeek acceptance tests
-pass across Anthropic Messages, OpenAI Responses, and OpenAI Chat-compatible
-protocols. One real Claude main session invoked two distinct generated
-DeepSeek Worker Agents and received both results. The supplied credential was
-injected only through the test process environment and is not part of
-repository state.
+Registry, client adapters, local gateway, Anthropic/Responses/Chat/Gemini
+protocol bridges, a client-scoped MCP broker, deterministic tests, and the
+pinned read-only cc-switch reference. A real installed Claude Code runtime has
+executed its own Agent and Read-tool loop through the broker against a local
+deterministic upstream. GrillForge did not implement that loop or execute the
+tool.
 
 The first release implements Claude Code, Claude Client, Codex, Pi, Gemini CLI,
 Grok Build, OpenCode, OpenClaw, Hermes, and Kimi Code adapters. Kimi Code uses
@@ -97,10 +95,10 @@ The MVP implements:
 - Provider add/edit/delete and connection testing
 - Provider configuration and presets adapted from cc-switch
 - Main model selection, including a Native/Default state
-- Worker model enable/disable and capability descriptions
+- Native client Slots and extension SubAgent capability descriptions
 - Independent adapters for every current cc-switch coding client plus Pi
 - Claude Code detection, configuration backup/apply/restore, and status
-- GrillForge Skill installation for model capability discovery and selection
+- Extension SubAgent library and per-client MCP bindings
 - A local Anthropic-compatible protocol gateway when model routing requires it
 - Anthropic Messages, OpenAI Responses, OpenAI Chat-compatible, and Gemini
   Native upstreams
@@ -114,7 +112,7 @@ The MVP does not implement:
 - An agent loop
 - A workflow engine or workflow editor
 - A task scheduler
-- An MCP server
+- An Agent Runtime hidden behind its MCP server
 - An agent marketplace
 - A graph editor
 - Other clients without a tested current adapter
@@ -124,13 +122,17 @@ The MVP does not implement:
 The local gateway may translate model API payloads, tool-call descriptions, and
 streaming events. It never executes tools and never owns the agent lifecycle.
 
-## Relationship With Grill Skill
+## Extension SubAgent Boundary
 
-GrillForge publishes available models and their capabilities. The user's Grill
-Skill may read that information and decide which native Coding Agent SubAgent
-to create and which Worker model to request.
+GrillForge may mount a small MCP broker into a supported destination client.
+The broker resolves a user-approved local Agent, starts its already-installed
+Coding Agent runtime, and applies an optional model route. The source runtime
+still owns the Agent loop, prompt, context, tools, and permissions. GrillForge
+does not bundle or own the user's workflow.
 
-GrillForge does not bundle or own the Grill workflow.
+Pi has no native MCP integration. GrillForge may, after explicit user
+confirmation, install pinned community package `pi-mcp-extension@1.5.0` through
+the detected valid Pi CLI. It never installs this package silently.
 
 ## Upstream Reuse Policy
 

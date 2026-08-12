@@ -1,5 +1,5 @@
 use grillforge_lib::adapters::claude_desktop::macos_paths_from_home;
-use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput, SubAgentInput};
+use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput};
 use grillforge_lib::claude_desktop_integration::ClaudeDesktopIntegrationService;
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::gateway::Gateway;
@@ -48,17 +48,7 @@ fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
     control
         .set_claude_desktop_model_slot("opus".into(), Some("desktop-model".into()))
         .expect("Desktop slot");
-    let state = control
-        .save_subagent(SubAgentInput {
-            id: "reviewer".into(),
-            name: "Reviewer".into(),
-            model_id: "desktop-model".into(),
-            capabilities: vec!["review".into()],
-            enabled: true,
-        })
-        .expect("SubAgent");
-    fs::write(grillforge.join("claude-code.snapshot.json"), "active")
-        .expect("active Claude Code integration");
+    let state = control.state().expect("state");
     let paths = macos_paths_from_home(&home);
     let profile_path = paths.profile_path.clone();
     let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
@@ -67,10 +57,7 @@ fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
     let active = integration.apply(&state, &gateway).expect("Desktop apply");
 
     assert_eq!(active.takeover, IntegrationTakeover::Active);
-    assert_eq!(
-        active.configured_routes,
-        ["claude-opus-5", "grillforge/desktop-model"]
-    );
+    assert_eq!(active.configured_routes, ["claude-opus-5"]);
     let profile: serde_json::Value =
         serde_json::from_slice(&fs::read(&profile_path).expect("Desktop profile"))
             .expect("Desktop profile JSON");
@@ -91,7 +78,7 @@ fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
 }
 
 #[test]
-fn desktop_external_workers_require_applied_claude_code_definitions() {
+fn desktop_conversation_routes_depend_only_on_desktop_slots() {
     let directory = tempfile::tempdir().expect("temp directory");
     let home = directory.path().join("home");
     let grillforge = directory.path().join("grillforge");
@@ -101,28 +88,17 @@ fn desktop_external_workers_require_applied_claude_code_definitions() {
     control
         .set_claude_desktop_model_slot("sonnet".into(), Some("desktop-model".into()))
         .expect("Desktop slot");
-    let state = control
-        .save_subagent(SubAgentInput {
-            id: "reviewer".into(),
-            name: "Reviewer".into(),
-            model_id: "desktop-model".into(),
-            capabilities: vec!["review".into()],
-            enabled: true,
-        })
-        .expect("SubAgent");
+    let state = control.state().expect("state");
     let paths = macos_paths_from_home(&home);
     let profile_path = paths.profile_path.clone();
     let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
 
-    let error = ClaudeDesktopIntegrationService::new(paths, &grillforge)
+    let active = ClaudeDesktopIntegrationService::new(paths, &grillforge)
         .apply(&state, &gateway)
-        .expect_err("unapplied Claude Code workers");
+        .expect("Desktop apply");
 
-    assert_eq!(
-        error,
-        "Claude Client Code 的外部 SubAgent 尚未应用；请先在 Claude Code 页面应用配置"
-    );
-    assert!(!profile_path.exists());
+    assert_eq!(active.configured_routes, ["claude-sonnet-5"]);
+    assert!(profile_path.exists());
 }
 
 #[test]

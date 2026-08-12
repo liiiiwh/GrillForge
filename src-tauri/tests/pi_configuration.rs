@@ -52,5 +52,4 @@ fn pi_default_and_enabled_models_are_independent_from_claude() {
         "saving Pi choices does not apply the client"
     );
     assert!(state.model_slots.is_empty());
-    assert!(state.subagents.is_empty());
 }

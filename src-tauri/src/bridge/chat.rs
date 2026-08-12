@@ -328,7 +328,12 @@ fn convert_message(
                 if role != "assistant" {
                     return Err(invalid_request("tool_use blocks require assistant role"));
                 }
-                reject_unknown(block, &["type", "id", "name", "input"], Some(&block_field))?;
+                reject_unknown(
+                    block,
+                    &["type", "id", "name", "input", "cache_control"],
+                    Some(&block_field),
+                )?;
+                validate_cache_control(block.get("cache_control"), &block_field)?;
                 let id = non_empty_string(block.get("id"), &format!("{block_field}.id"))?;
                 let name = non_empty_string(block.get("name"), &format!("{block_field}.name"))?;
                 let input = block
@@ -349,9 +354,10 @@ fn convert_message(
                 }
                 reject_unknown(
                     block,
-                    &["type", "tool_use_id", "content"],
+                    &["type", "tool_use_id", "content", "cache_control"],
                     Some(&block_field),
                 )?;
+                validate_cache_control(block.get("cache_control"), &block_field)?;
                 let id = non_empty_string(
                     block.get("tool_use_id"),
                     &format!("{block_field}.tool_use_id"),

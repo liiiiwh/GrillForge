@@ -3,8 +3,8 @@ use crate::adapters::codex::{
     CodexConfiguredModel, CodexModelSelection, CodexProviderRequest, CodexRequest,
 };
 use crate::configuration::{
-    AgentRecord, ConfigurationDocuments, ConfigurationFiles, MainRecord, ModelRecord,
-    ProviderRecord, SubAgentRecord,
+    AgentRecord, CodexAgentModelRecord, ConfigurationDocuments, ConfigurationFiles,
+    ExtensionSubAgentRecord, MainRecord, ModelRecord, ProviderRecord,
 };
 use crate::core::model::ProtocolCapability;
 use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
@@ -13,12 +13,14 @@ use crate::model_discovery::{self, DiscoveredModel};
 use crate::usage_query::{UsageQueryCredentials, UsageQueryPreset, UsageSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::State;
 
 const CLAUDE_CODE_AGENT: &str = "claude_code";
+const CLAUDE_CODE_MAIN_NATIVE_SLOT: &str = "main";
+const CLAUDE_CODE_NATIVE_MODELS: &[&str] = &["default", "sonnet", "opus", "fable", "haiku"];
 const CLAUDE_DESKTOP_AGENT: &str = "claude_desktop";
 const PI_AGENT: &str = "pi";
 const CODEX_AGENT: &str = "codex";
@@ -54,6 +56,7 @@ pub struct ControlPlaneState {
     pub agent_enabled: bool,
     pub main_model_id: Option<String>,
     pub model_slots: BTreeMap<String, String>,
+    pub claude_native_model_slots: BTreeMap<String, String>,
     pub claude_desktop_model_slots: BTreeMap<String, String>,
     pub pi_enabled: bool,
     pub pi_main_model_id: Option<String>,
@@ -62,9 +65,8 @@ pub struct ControlPlaneState {
     pub codex_native_model_slots: BTreeMap<String, String>,
     pub codex_agent_model_ids: BTreeMap<String, String>,
     pub client_configurations: BTreeMap<String, PublicClientConfiguration>,
-    pub worker_mode: bool,
-    pub native_subagent_enabled: bool,
-    pub subagents: Vec<PublicSubAgent>,
+    pub extension_subagents: Vec<PublicExtensionSubAgent>,
+    pub client_extension_subagent_ids: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -105,18 +107,18 @@ pub struct PublicModel {
     pub provider_id: String,
     pub capabilities: Vec<String>,
     pub protocol_capabilities: Vec<ProtocolCapability>,
-    pub worker_enabled: bool,
     pub route_alias: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct PublicSubAgent {
+pub struct PublicExtensionSubAgent {
     pub id: String,
     pub name: String,
-    pub model_id: String,
+    pub source_client_id: String,
+    pub source_agent_id: String,
+    pub model_id: Option<String>,
     pub capabilities: Vec<String>,
-    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -147,12 +149,13 @@ pub struct ModelInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SubAgentInput {
+pub struct ExtensionSubAgentInput {
     pub id: String,
     pub name: String,
-    pub model_id: String,
+    pub source_client_id: String,
+    pub source_agent_id: String,
+    pub model_id: Option<String>,
     pub capabilities: Vec<String>,
-    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -213,8 +216,8 @@ impl ControlPlaneService {
         Ok(matches!(agent.main, MainRecord::Managed(_))
             || !agent.model_slots.is_empty()
             || !agent.native_model_slots.is_empty()
-            || !agent.enabled_workers.is_empty()
-            || !agent.subagents.is_empty())
+            || !agent.model_pool.is_empty()
+            || !agent.codex_agent_models.is_empty())
     }
 
     fn provider_usage_query(
@@ -469,12 +472,12 @@ impl ControlPlaneService {
         let mut documents = self.documents()?;
         let selected_by = documents.agents.agents.iter().find(|agent| {
             matches!(&agent.main, MainRecord::Managed(model) if model == id)
-                || agent.enabled_workers.iter().any(|model| model == id)
+                || agent.model_pool.iter().any(|model| model == id)
                 || agent.model_slots.values().any(|model| model == id)
                 || agent
-                    .subagents
+                    .codex_agent_models
                     .iter()
-                    .any(|subagent| subagent.model_id == id)
+                    .any(|agent_model| agent_model.model_id == id)
         });
         if let Some(agent) = selected_by {
             return Err(format!("model {id} is selected by {}", agent.id));
@@ -489,10 +492,47 @@ impl ControlPlaneService {
 
     pub fn set_main_model(&self, id: Option<String>) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
-        claude_agent_mut(&mut documents)?.main = match id {
+        let agent = claude_agent_mut(&mut documents)?;
+        agent.main = match id {
             Some(id) => MainRecord::Managed(id),
             None => MainRecord::Native,
         };
+        if matches!(agent.main, MainRecord::Managed(_)) {
+            agent
+                .native_model_slots
+                .remove(CLAUDE_CODE_MAIN_NATIVE_SLOT);
+        }
+        self.save_and_return(documents)
+    }
+
+    pub fn set_claude_native_model(
+        &self,
+        slot: String,
+        model: Option<String>,
+    ) -> Result<ControlPlaneState, String> {
+        if slot != CLAUDE_CODE_MAIN_NATIVE_SLOT && !MODEL_SLOT_IDS.contains(&slot.as_str()) {
+            return Err(format!("unsupported Claude Code native model slot: {slot}"));
+        }
+        if let Some(model) = model.as_deref() {
+            if !CLAUDE_CODE_NATIVE_MODELS.contains(&model) {
+                return Err(format!("unsupported Claude Code native model: {model}"));
+            }
+        }
+        let mut documents = self.documents()?;
+        let agent = claude_agent_mut(&mut documents)?;
+        if slot == CLAUDE_CODE_MAIN_NATIVE_SLOT {
+            agent.main = MainRecord::Native;
+        } else if model.is_some() {
+            agent.model_slots.remove(&slot);
+        }
+        match model {
+            Some(model) => {
+                agent.native_model_slots.insert(slot, model);
+            }
+            None => {
+                agent.native_model_slots.remove(&slot);
+            }
+        }
         self.save_and_return(documents)
     }
 
@@ -508,7 +548,8 @@ impl ControlPlaneService {
         let agent = claude_agent_mut(&mut documents)?;
         match id {
             Some(id) => {
-                agent.model_slots.insert(slot, id);
+                agent.model_slots.insert(slot.clone(), id);
+                agent.native_model_slots.remove(&slot);
             }
             None => {
                 agent.model_slots.remove(&slot);
@@ -542,10 +583,9 @@ impl ControlPlaneService {
                     main: MainRecord::Native,
                     model_slots: BTreeMap::new(),
                     native_model_slots: BTreeMap::new(),
-                    worker_mode: false,
-                    enabled_workers: Vec::new(),
-                    native_subagent_enabled: true,
-                    subagents: Vec::new(),
+                    model_pool: Vec::new(),
+                    codex_agent_models: Vec::new(),
+                    extension_subagent_ids: Vec::new(),
                 });
                 documents
                     .agents
@@ -570,11 +610,10 @@ impl ControlPlaneService {
         let agent = pi_agent_mut(&mut documents);
         agent.main = match id {
             Some(id) => {
-                if !agent.enabled_workers.contains(&id) {
-                    agent.enabled_workers.push(id.clone());
-                    agent.enabled_workers.sort();
+                if !agent.model_pool.contains(&id) {
+                    agent.model_pool.push(id.clone());
+                    agent.model_pool.sort();
                 }
-                agent.worker_mode = true;
                 MainRecord::Managed(id)
             }
             None => MainRecord::Native,
@@ -593,16 +632,15 @@ impl ControlPlaneService {
         if !enabled && is_default {
             return Err(format!("Pi default model cannot be disabled: {id}"));
         }
-        let exists = agent.enabled_workers.contains(&id);
+        let exists = agent.model_pool.contains(&id);
         match (enabled, exists) {
             (true, false) => {
-                agent.enabled_workers.push(id);
-                agent.enabled_workers.sort();
+                agent.model_pool.push(id);
+                agent.model_pool.sort();
             }
-            (false, true) => agent.enabled_workers.retain(|model| model != &id),
+            (false, true) => agent.model_pool.retain(|model| model != &id),
             _ => {}
         }
-        agent.worker_mode = !agent.enabled_workers.is_empty();
         self.save_and_return(documents)
     }
 
@@ -697,9 +735,9 @@ impl ControlPlaneService {
             validate_codex_registry_model(&documents, id)?;
         }
         let agent = client_agent_mut(&mut documents, CODEX_AGENT);
-        agent.subagents.retain(|record| record.id != name);
+        agent.codex_agent_models.retain(|record| record.id != name);
         if let Some(id) = id {
-            agent.subagents.push(SubAgentRecord {
+            agent.codex_agent_models.push(CodexAgentModelRecord {
                 id: name.clone(),
                 name: name.clone(),
                 model_id: id,
@@ -707,7 +745,7 @@ impl ControlPlaneService {
                 enabled: true,
             });
             agent
-                .subagents
+                .codex_agent_models
                 .sort_by(|left, right| left.id.cmp(&right.id));
         }
         agent
@@ -727,7 +765,7 @@ impl ControlPlaneService {
         }
         let mut documents = self.documents()?;
         let agent = client_agent_mut(&mut documents, CODEX_AGENT);
-        agent.subagents.retain(|record| record.id != name);
+        agent.codex_agent_models.retain(|record| record.id != name);
         let slot = codex_agent_native_slot(&name);
         match model {
             Some(model) => {
@@ -790,7 +828,7 @@ impl ControlPlaneService {
                     .transpose()?
             };
         let mut custom_agents = BTreeMap::new();
-        for record in &agent.subagents {
+        for record in &agent.codex_agent_models {
             if record.enabled {
                 custom_agents.insert(
                     record.id.clone(),
@@ -828,7 +866,7 @@ impl ControlPlaneService {
             validate_codex_registry_model(&documents, id)?;
             ids.insert(id.clone(), ());
         }
-        for record in &agent.subagents {
+        for record in &agent.codex_agent_models {
             if record.enabled {
                 validate_codex_registry_model(&documents, &record.model_id)?;
                 ids.insert(record.model_id.clone(), ());
@@ -852,14 +890,13 @@ impl ControlPlaneService {
             if matches!(
                 client_id.as_str(),
                 OPENCODE_AGENT | OPENCLAW_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
-            ) && !agent.enabled_workers.contains(model_id)
+            ) && !agent.model_pool.contains(model_id)
             {
-                agent.enabled_workers.push(model_id.clone());
-                agent.enabled_workers.sort();
+                agent.model_pool.push(model_id.clone());
+                agent.model_pool.sort();
             }
         }
         agent.main = id.map_or(MainRecord::Native, MainRecord::Managed);
-        agent.worker_mode = !agent.enabled_workers.is_empty();
         self.save_and_return(documents)
     }
 
@@ -886,16 +923,15 @@ impl ControlPlaneService {
                 "{client_id} secondary model cannot be disabled: {id}"
             ));
         }
-        let exists = agent.enabled_workers.contains(&id);
+        let exists = agent.model_pool.contains(&id);
         match (enabled, exists) {
             (true, false) => {
-                agent.enabled_workers.push(id);
-                agent.enabled_workers.sort();
+                agent.model_pool.push(id);
+                agent.model_pool.sort();
             }
-            (false, true) => agent.enabled_workers.retain(|model| model != &id),
+            (false, true) => agent.model_pool.retain(|model| model != &id),
             _ => {}
         }
-        agent.worker_mode = !agent.enabled_workers.is_empty();
         self.save_and_return(documents)
     }
 
@@ -914,9 +950,9 @@ impl ControlPlaneService {
         let agent = client_agent_mut(&mut documents, &client_id);
         match id {
             Some(model_id) => {
-                if !agent.enabled_workers.contains(&model_id) {
-                    agent.enabled_workers.push(model_id.clone());
-                    agent.enabled_workers.sort();
+                if !agent.model_pool.contains(&model_id) {
+                    agent.model_pool.push(model_id.clone());
+                    agent.model_pool.sort();
                 }
                 agent.model_slots.insert("secondary".into(), model_id);
             }
@@ -924,7 +960,6 @@ impl ControlPlaneService {
                 agent.model_slots.remove("secondary");
             }
         }
-        agent.worker_mode = !agent.enabled_workers.is_empty();
         self.save_and_return(documents)
     }
 
@@ -959,7 +994,7 @@ impl ControlPlaneService {
             client_id,
             OPENCODE_AGENT | OPENCLAW_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
         ) {
-            &agent.enabled_workers
+            &agent.model_pool
         } else {
             std::slice::from_ref(main_model_id)
         };
@@ -983,63 +1018,110 @@ impl ControlPlaneService {
         })
     }
 
-    pub fn set_worker(&self, id: String, enabled: bool) -> Result<ControlPlaneState, String> {
+    pub fn save_extension_subagent(
+        &self,
+        input: ExtensionSubAgentInput,
+    ) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
-        let agent = claude_agent_mut(&mut documents)?;
-        let exists = agent.enabled_workers.iter().any(|model| model == &id);
-        match (enabled, exists) {
-            (true, false) => agent.enabled_workers.push(id),
-            (false, true) => agent.enabled_workers.retain(|model| model != &id),
-            _ => {}
-        }
-        self.save_and_return(documents)
-    }
-
-    pub fn set_worker_mode(&self, enabled: bool) -> Result<ControlPlaneState, String> {
-        let mut documents = self.documents()?;
-        claude_agent_mut(&mut documents)?.worker_mode = enabled;
-        self.save_and_return(documents)
-    }
-
-    pub fn set_native_subagent_enabled(&self, enabled: bool) -> Result<ControlPlaneState, String> {
-        let mut documents = self.documents()?;
-        claude_agent_mut(&mut documents)?.native_subagent_enabled = enabled;
-        self.save_and_return(documents)
-    }
-
-    pub fn save_subagent(&self, input: SubAgentInput) -> Result<ControlPlaneState, String> {
-        let mut documents = self.documents()?;
-        let agent = claude_agent_mut(&mut documents)?;
-        if agent
-            .subagents
+        validate_extension_subagent_input(&documents, &input)?;
+        if documents
+            .agents
+            .extension_subagents
             .iter()
-            .any(|subagent| subagent.id == input.id)
+            .any(|extension| extension.id == input.id)
         {
-            return Err(format!("duplicate SubAgent id: {}", input.id));
+            return Err(format!("duplicate extension SubAgent id: {}", input.id));
         }
-        agent.subagents.push(subagent_record(input));
+        documents
+            .agents
+            .extension_subagents
+            .push(extension_subagent_record(input));
+        documents
+            .agents
+            .extension_subagents
+            .sort_by(|left, right| left.id.cmp(&right.id));
         self.save_and_return(documents)
     }
 
-    pub fn update_subagent(&self, input: SubAgentInput) -> Result<ControlPlaneState, String> {
+    pub fn update_extension_subagent(
+        &self,
+        input: ExtensionSubAgentInput,
+    ) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
-        let agent = claude_agent_mut(&mut documents)?;
-        let index = agent
-            .subagents
+        validate_extension_subagent_input(&documents, &input)?;
+        let record = documents
+            .agents
+            .extension_subagents
+            .iter_mut()
+            .find(|extension| extension.id == input.id)
+            .ok_or_else(|| format!("unknown extension SubAgent: {}", input.id))?;
+        *record = extension_subagent_record(input);
+        self.save_and_return(documents)
+    }
+
+    pub fn delete_extension_subagent(&self, id: &str) -> Result<ControlPlaneState, String> {
+        let mut documents = self.documents()?;
+        if !documents
+            .agents
+            .extension_subagents
             .iter()
-            .position(|subagent| subagent.id == input.id)
-            .ok_or_else(|| format!("unknown SubAgent: {}", input.id))?;
-        agent.subagents[index] = subagent_record(input);
+            .any(|extension| extension.id == id)
+        {
+            return Err(format!("unknown extension SubAgent: {id}"));
+        }
+        let mut bound_clients = documents
+            .agents
+            .agents
+            .iter()
+            .filter(|agent| {
+                agent
+                    .extension_subagent_ids
+                    .iter()
+                    .any(|binding| binding == id)
+            })
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>();
+        if !bound_clients.is_empty() {
+            bound_clients.sort();
+            return Err(format!(
+                "extension SubAgent {id} is still bound to clients: {}",
+                bound_clients.join(", ")
+            ));
+        }
+        documents
+            .agents
+            .extension_subagents
+            .retain(|extension| extension.id != id);
         self.save_and_return(documents)
     }
 
-    pub fn delete_subagent(&self, id: &str) -> Result<ControlPlaneState, String> {
+    pub fn set_client_extension_subagent_enabled(
+        &self,
+        client_id: &str,
+        extension_subagent_id: &str,
+        enabled: bool,
+    ) -> Result<ControlPlaneState, String> {
+        validate_known_client(client_id)?;
         let mut documents = self.documents()?;
-        let agent = claude_agent_mut(&mut documents)?;
-        let before = agent.subagents.len();
-        agent.subagents.retain(|subagent| subagent.id != id);
-        if agent.subagents.len() == before {
-            return Err(format!("unknown SubAgent: {id}"));
+        if !documents
+            .agents
+            .extension_subagents
+            .iter()
+            .any(|extension| extension.id == extension_subagent_id)
+        {
+            return Err(format!(
+                "unknown extension SubAgent: {extension_subagent_id}"
+            ));
+        }
+        let bindings = &mut client_agent_mut(&mut documents, client_id).extension_subagent_ids;
+        let exists = bindings.iter().any(|id| id == extension_subagent_id);
+        match (enabled, exists) {
+            (true, false) => {
+                bindings.push(extension_subagent_id.into());
+                bindings.sort();
+            }
+            (false, true) => bindings.retain(|id| id != extension_subagent_id),
+            _ => {}
         }
         self.save_and_return(documents)
     }
@@ -1249,14 +1331,90 @@ fn claude_agent(documents: &ConfigurationDocuments) -> Result<&AgentRecord, Stri
         .ok_or_else(|| "agents.yaml is missing claude_code".to_string())
 }
 
-fn subagent_record(input: SubAgentInput) -> SubAgentRecord {
-    SubAgentRecord {
+fn extension_subagent_record(input: ExtensionSubAgentInput) -> ExtensionSubAgentRecord {
+    ExtensionSubAgentRecord {
         id: input.id,
         name: input.name,
+        source_client_id: input.source_client_id,
+        source_agent_id: input.source_agent_id,
         model_id: input.model_id,
         capabilities: input.capabilities,
-        enabled: input.enabled,
     }
+}
+
+fn validate_extension_subagent_input(
+    documents: &ConfigurationDocuments,
+    input: &ExtensionSubAgentInput,
+) -> Result<(), String> {
+    if !is_lowercase_slug(&input.id) {
+        return Err(format!(
+            "extension SubAgent id must be a lowercase slug: {}",
+            input.id
+        ));
+    }
+    if input.name.trim().is_empty()
+        || input.name.trim() != input.name
+        || input.name.chars().any(char::is_control)
+    {
+        return Err(format!("extension SubAgent name is invalid: {}", input.id));
+    }
+    validate_known_client(&input.source_client_id)?;
+    if input.source_agent_id.trim().is_empty()
+        || input.source_agent_id.trim() != input.source_agent_id
+        || input.source_agent_id.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "extension SubAgent source Agent id is invalid: {}",
+            input.source_agent_id
+        ));
+    }
+    if let Some(model_id) = &input.model_id {
+        let model = documents
+            .models
+            .models
+            .iter()
+            .find(|model| model.id == *model_id)
+            .ok_or_else(|| {
+                format!(
+                    "extension SubAgent {} references unknown model: {model_id}",
+                    input.id
+                )
+            })?;
+        let provider = documents
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.id == model.provider_id)
+            .ok_or_else(|| format!("model {model_id} references unknown provider"))?;
+        if !provider.enabled {
+            return Err(format!(
+                "extension SubAgent {} model uses disabled provider: {}",
+                input.id, provider.id
+            ));
+        }
+    }
+    let mut capabilities = HashSet::new();
+    for capability in &input.capabilities {
+        if !is_lowercase_slug(capability) || !capabilities.insert(capability) {
+            return Err(format!(
+                "invalid or duplicate extension SubAgent capability: {capability}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_lowercase_slug(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with(['-', '_'])
+        && !value.ends_with(['-', '_'])
+        && !value.contains("--")
+        && !value.contains("__")
+        && value.bytes().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, b'-' | b'_')
+        })
 }
 
 fn claude_agent_mut(documents: &mut ConfigurationDocuments) -> Result<&mut AgentRecord, String> {
@@ -1291,10 +1449,9 @@ fn client_agent_mut<'a>(
         main: MainRecord::Native,
         model_slots: BTreeMap::new(),
         native_model_slots: BTreeMap::new(),
-        worker_mode: false,
-        enabled_workers: Vec::new(),
-        native_subagent_enabled: true,
-        subagents: Vec::new(),
+        model_pool: Vec::new(),
+        codex_agent_models: Vec::new(),
+        extension_subagent_ids: Vec::new(),
     });
     documents
         .agents
@@ -1474,7 +1631,6 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
         .find(|agent| agent.id == CLAUDE_DESKTOP_AGENT)
         .map(|agent| agent.model_slots.clone())
         .unwrap_or_default();
-    let workers = &agent.enabled_workers;
     let pi = documents
         .agents
         .agents
@@ -1503,7 +1659,7 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
                     secondary_model_id: agent
                         .and_then(|agent| agent.model_slots.get("secondary").cloned()),
                     enabled_model_ids: agent
-                        .map(|agent| agent.enabled_workers.clone())
+                        .map(|agent| agent.model_pool.clone())
                         .unwrap_or_default(),
                 },
             )
@@ -1537,7 +1693,6 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
                 provider_id: model.provider_id.clone(),
                 capabilities: model.capabilities.clone(),
                 protocol_capabilities: model.protocol_capabilities.clone(),
-                worker_enabled: workers.contains(&model.id),
                 route_alias: format!("grillforge/{}", model.id),
             })
             .collect(),
@@ -1547,15 +1702,14 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
             MainRecord::Managed(id) => Some(id.clone()),
         },
         model_slots: agent.model_slots.clone(),
+        claude_native_model_slots: agent.native_model_slots.clone(),
         claude_desktop_model_slots,
-        pi_enabled: pi.is_some_and(|agent| agent.enabled && agent.worker_mode),
+        pi_enabled: pi.is_some_and(|agent| agent.enabled),
         pi_main_model_id: pi.and_then(|agent| match &agent.main {
             MainRecord::Native => None,
             MainRecord::Managed(id) => Some(id.clone()),
         }),
-        pi_enabled_model_ids: pi
-            .map(|agent| agent.enabled_workers.clone())
-            .unwrap_or_default(),
+        pi_enabled_model_ids: pi.map(|agent| agent.model_pool.clone()).unwrap_or_default(),
         codex_main_model_id: codex.and_then(|agent| match &agent.main {
             MainRecord::Native => None,
             MainRecord::Managed(id) => Some(id.clone()),
@@ -1566,7 +1720,7 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
         codex_agent_model_ids: codex
             .map(|agent| {
                 let mut selections = agent
-                    .subagents
+                    .codex_agent_models
                     .iter()
                     .filter(|record| record.enabled)
                     .map(|record| (record.id.clone(), record.model_id.clone()))
@@ -1578,18 +1732,24 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
             })
             .unwrap_or_default(),
         client_configurations,
-        worker_mode: agent.worker_mode,
-        native_subagent_enabled: agent.native_subagent_enabled,
-        subagents: agent
-            .subagents
+        extension_subagents: documents
+            .agents
+            .extension_subagents
             .iter()
-            .map(|subagent| PublicSubAgent {
-                id: subagent.id.clone(),
-                name: subagent.name.clone(),
-                model_id: subagent.model_id.clone(),
-                capabilities: subagent.capabilities.clone(),
-                enabled: subagent.enabled,
+            .map(|extension| PublicExtensionSubAgent {
+                id: extension.id.clone(),
+                name: extension.name.clone(),
+                source_client_id: extension.source_client_id.clone(),
+                source_agent_id: extension.source_agent_id.clone(),
+                model_id: extension.model_id.clone(),
+                capabilities: extension.capabilities.clone(),
             })
+            .collect(),
+        client_extension_subagent_ids: documents
+            .agents
+            .agents
+            .iter()
+            .map(|agent| (agent.id.clone(), agent.extension_subagent_ids.clone()))
             .collect(),
     })
 }
@@ -1679,6 +1839,15 @@ pub fn set_model_slot(
     id: Option<String>,
 ) -> Result<ControlPlaneState, String> {
     service.set_model_slot(slot, id)
+}
+
+#[tauri::command]
+pub fn set_claude_native_model(
+    service: State<'_, ControlPlaneService>,
+    slot: String,
+    model: Option<String>,
+) -> Result<ControlPlaneState, String> {
+    service.set_claude_native_model(slot, model)
 }
 
 #[tauri::command]
@@ -1786,52 +1955,19 @@ pub fn set_claude_desktop_model_slot(
 }
 
 #[tauri::command]
-pub fn set_worker(
+pub fn save_extension_subagent(
     service: State<'_, ControlPlaneService>,
-    id: String,
-    enabled: bool,
+    input: ExtensionSubAgentInput,
 ) -> Result<ControlPlaneState, String> {
-    service.set_worker(id, enabled)
+    service.save_extension_subagent(input)
 }
 
 #[tauri::command]
-pub fn set_worker_mode(
-    service: State<'_, ControlPlaneService>,
-    enabled: bool,
-) -> Result<ControlPlaneState, String> {
-    service.set_worker_mode(enabled)
-}
-
-#[tauri::command]
-pub fn set_native_subagent_enabled(
-    service: State<'_, ControlPlaneService>,
-    enabled: bool,
-) -> Result<ControlPlaneState, String> {
-    service.set_native_subagent_enabled(enabled)
-}
-
-#[tauri::command]
-pub fn save_subagent(
-    service: State<'_, ControlPlaneService>,
-    input: SubAgentInput,
-) -> Result<ControlPlaneState, String> {
-    service.save_subagent(input)
-}
-
-#[tauri::command]
-pub fn update_subagent(
-    service: State<'_, ControlPlaneService>,
-    input: SubAgentInput,
-) -> Result<ControlPlaneState, String> {
-    service.update_subagent(input)
-}
-
-#[tauri::command]
-pub fn delete_subagent(
+pub fn delete_extension_subagent(
     service: State<'_, ControlPlaneService>,
     id: String,
 ) -> Result<ControlPlaneState, String> {
-    service.delete_subagent(&id)
+    service.delete_extension_subagent(&id)
 }
 
 #[tauri::command]

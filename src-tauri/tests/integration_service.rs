@@ -3,7 +3,6 @@ use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::gateway::Gateway;
 use grillforge_lib::integration::{IntegrationService, IntegrationTakeover};
 use std::fs;
-use std::process::Command;
 
 fn provider() -> ProviderInput {
     ProviderInput {
@@ -31,128 +30,24 @@ fn model(id: &str) -> ModelInput {
 }
 
 #[test]
-fn apply_and_disable_restore_claude_code_and_install_selector_skill() {
-    let directory = tempfile::tempdir().expect("temp directory");
-    let grillforge_root = directory.path().join("grillforge");
-    let claude_root = directory.path().join("claude");
-    fs::create_dir_all(&claude_root).expect("Claude root");
-    fs::write(
-        claude_root.join("settings.json"),
-        r#"{"env":{"UNCHANGED":"yes"}}"#,
-    )
-    .expect("settings");
-
-    let control = ControlPlaneService::new(&grillforge_root);
-    control.save_provider(provider()).expect("provider");
-    control.save_model(model("coder-a")).expect("model a");
-    control.save_model(model("coder-b")).expect("model b");
-    control
-        .set_worker("coder-a".into(), true)
-        .expect("worker a");
-    control
-        .set_worker("coder-b".into(), true)
-        .expect("worker b");
-    control.set_worker_mode(true).expect("worker mode");
-
-    let integration = IntegrationService::new(&claude_root, &grillforge_root);
-    let status = integration
-        .apply(&control.state().expect("state"), "http://127.0.0.1:15721")
-        .expect("apply");
-
-    assert_eq!(status.takeover, IntegrationTakeover::Active);
-    assert_eq!(status.generated_agent_names.len(), 3);
-    assert!(
-        claude_root
-            .join("skills/grillforge-model-selector/SKILL.md")
-            .is_file()
-    );
-    let selector = Command::new("python3")
-        .arg(claude_root.join("skills/grillforge-model-selector/scripts/select_models.py"))
-        .args(["--config-dir"])
-        .arg(&grillforge_root)
-        .env("GRILLFORGE_BIN", env!("CARGO_BIN_EXE_grillforge"))
-        .output()
-        .expect("installed selector Skill");
-    assert!(
-        selector.status.success(),
-        "selector failed: {}",
-        String::from_utf8_lossy(&selector.stderr)
-    );
-    let selected: serde_json::Value =
-        serde_json::from_slice(&selector.stdout).expect("selector JSON");
-    assert_eq!(selected["workers"].as_array().expect("workers").len(), 3);
-    assert_eq!(
-        selected["workers"][0]["agentName"],
-        "grillforge-worker-claude-native"
-    );
-    assert_eq!(
-        selected["workers"][1]["agentName"],
-        "grillforge-worker-coder-a"
-    );
-    let client_official = Command::new("python3")
-        .arg(claude_root.join("skills/grillforge-model-selector/scripts/select_models.py"))
-        .args(["--config-dir"])
-        .arg(&grillforge_root)
-        .env("GRILLFORGE_BIN", env!("CARGO_BIN_EXE_grillforge"))
-        .env("CLAUDE_CODE_ENTRYPOINT", "claude-desktop")
-        .output()
-        .expect("Claude Client selector");
-    assert!(!client_official.status.success());
-    assert!(client_official.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&client_official.stderr)
-            .contains("Claude Client Code 正在使用官方路由")
-    );
-    let settings = fs::read_to_string(claude_root.join("settings.json")).expect("settings");
-    assert!(settings.contains("http://127.0.0.1:15721"));
-    assert!(settings.contains("UNCHANGED"));
-    assert!(!settings.contains("CLAUDE_CODE_SUBAGENT_MODEL"));
-
-    let restored = integration.disable().expect("disable");
-    assert_eq!(restored.takeover, IntegrationTakeover::Inactive);
-    let disabled_selector = Command::new("python3")
-        .arg(claude_root.join("skills/grillforge-model-selector/scripts/select_models.py"))
-        .args(["--config-dir"])
-        .arg(&grillforge_root)
-        .env("GRILLFORGE_BIN", env!("CARGO_BIN_EXE_grillforge"))
-        .output()
-        .expect("disabled selector");
-    assert!(disabled_selector.status.success());
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&disabled_selector.stdout)
-            .expect("disabled selector JSON")["workers"],
-        serde_json::json!([])
-    );
-    assert_eq!(
-        fs::read_to_string(claude_root.join("settings.json")).expect("restored settings"),
-        "{\n  \"env\": {\n    \"UNCHANGED\": \"yes\"\n  }\n}"
-    );
-}
-
-#[test]
-fn one_external_worker_without_native_fallback_becomes_the_default_and_stays_selectable() {
+fn native_subagent_model_is_an_explicit_model_slot() {
     let directory = tempfile::tempdir().expect("temp directory");
     let grillforge_root = directory.path().join("grillforge");
     let claude_root = directory.path().join("claude");
     let control = ControlPlaneService::new(&grillforge_root);
     control.save_provider(provider()).expect("provider");
     control.save_model(model("coder")).expect("model");
-    control.set_worker("coder".into(), true).expect("worker");
-    control.set_worker_mode(true).expect("worker mode");
     control
-        .set_native_subagent_enabled(false)
-        .expect("disable native fallback");
+        .set_model_slot("subagent_default".into(), Some("coder".into()))
+        .expect("subagent slot");
 
     IntegrationService::new(&claude_root, &grillforge_root)
         .apply(&control.state().expect("state"), "http://127.0.0.1:15721")
         .expect("apply");
 
     let settings = fs::read_to_string(claude_root.join("settings.json")).expect("settings");
-    assert!(settings.contains("\"CLAUDE_CODE_SUBAGENT_MODEL\": \"grillforge/coder\""));
-    assert!(settings.contains("GRILLFORGE_BIN"));
-    let agent = fs::read_to_string(claude_root.join("agents/grillforge-worker-coder.md"))
-        .expect("generated Agent");
-    assert!(agent.contains("model: grillforge/coder"));
+    assert!(settings.contains("CLAUDE_CODE_SUBAGENT_MODEL"));
+    assert!(settings.contains("grillforge/coder"));
 }
 
 #[test]
@@ -203,6 +98,36 @@ fn applying_an_empty_native_configuration_is_a_noop() {
 
     assert_eq!(status.takeover, IntegrationTakeover::Inactive);
     assert!(!claude_root.join("settings.json").exists());
+}
+
+#[test]
+fn native_model_choices_apply_without_starting_a_gateway_takeover() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let grillforge_root = directory.path().join("grillforge");
+    let claude_root = directory.path().join("claude");
+    let control = ControlPlaneService::new(&grillforge_root);
+    control
+        .set_claude_native_model("main".into(), Some("fable".into()))
+        .expect("main");
+    control
+        .set_claude_native_model("subagent_default".into(), Some("haiku".into()))
+        .expect("subagent");
+
+    let integration = IntegrationService::new(&claude_root, &grillforge_root);
+    let status = integration
+        .apply(&control.state().expect("state"), "http://127.0.0.1:15721")
+        .expect("apply native models");
+
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(claude_root.join("settings.json")).expect("settings"))
+            .expect("json");
+    assert_eq!(settings["model"], "fable");
+    assert_eq!(settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "haiku");
+    assert!(settings["env"].get("ANTHROPIC_BASE_URL").is_none());
+    assert_eq!(
+        status.native_model_slots.get("main").map(String::as_str),
+        Some("fable")
+    );
 }
 
 #[test]
