@@ -210,7 +210,7 @@ fn codex_mount_uses_the_real_http_mcp_toml_shape() {
             .iter()
             .filter_map(toml_edit::Value::as_str)
             .collect::<Vec<_>>(),
-        vec!["list_agents", "run_agent"]
+        vec!["list_agents", "run_agent", "get_agent_task"]
     );
     assert_eq!(
         server["omit_tools_from"]

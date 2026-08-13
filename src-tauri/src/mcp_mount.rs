@@ -618,6 +618,7 @@ fn update_codex_toml(
     let mut enabled_tools = toml_edit::Array::new();
     enabled_tools.push("list_agents");
     enabled_tools.push("run_agent");
+    enabled_tools.push("get_agent_task");
     server["enabled_tools"] = toml_edit::value(enabled_tools);
     let mut omitted_surfaces = toml_edit::Array::new();
     omitted_surfaces.push("deferred");

@@ -4,12 +4,151 @@ use grillforge_lib::core::model::ProtocolCapability;
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::gateway::{AgentRuntimeRoute, AgentSourceRuntime, Gateway};
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 
 #[derive(Clone, Default)]
 struct Trace(Arc<Mutex<Vec<bool>>>);
+
+async fn wait_for_agent_task(base_url: &str, token: &str, started: Value) -> Value {
+    let started: Value = serde_json::from_str(
+        started["result"]["content"][0]["text"]
+            .as_str()
+            .expect("started task JSON"),
+    )
+    .expect("started task");
+    let task_id = started["taskId"].as_str().expect("task id");
+    let response: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth(token)
+        .json(&json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"get_agent_task","arguments":{"taskId":task_id,"waitSeconds":60}}
+        }))
+        .send()
+        .await
+        .expect("task response")
+        .json()
+        .await
+        .expect("task response JSON");
+    serde_json::from_str(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("task JSON"),
+    )
+    .expect("task object")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the installed Codex CLI; traffic and credentials are loopback-only"]
+async fn installed_codex_runtime_routes_an_external_model_without_native_spawn_validation() {
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&calls);
+    let upstream = Router::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = Arc::clone(&captured);
+            async move {
+                captured.lock().unwrap().push(body.clone());
+                let events = [
+                    ("response.created", json!({"type":"response.created","response":{"id":"resp_live"}})),
+                    ("response.output_item.done", json!({"type":"response.output_item.done","item":{"id":"msg_live","type":"message","role":"assistant","content":[{"type":"output_text","text":"Codex external model completed"}]}})),
+                    ("response.completed", json!({"type":"response.completed","response":{"id":"resp_live","usage":{"input_tokens":1,"input_tokens_details":null,"output_tokens":1,"output_tokens_details":null,"total_tokens":2}}})),
+                ];
+                let sse = events.into_iter().fold(String::new(), |mut sse, (event, data)| {
+                    write!(sse, "event: {event}\ndata: {data}\n\n").unwrap();
+                    sse
+                });
+                axum::response::Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .unwrap()
+            }
+        }),
+    );
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+
+    let directory = tempdir().unwrap();
+    let grillforge_root = directory.path().join(".grillforge");
+    let codex_root = directory.path().join(".codex");
+    std::fs::create_dir_all(&codex_root).unwrap();
+    let control = ControlPlaneService::new(&grillforge_root);
+    control
+        .save_provider(ProviderInput {
+            id: "local-responses".into(),
+            name: "Local Responses".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    control
+        .save_model(ModelInput {
+            id: "external-worker".into(),
+            name: "External Worker".into(),
+            upstream_id: "deepseek-test".into(),
+            provider_id: "local-responses".into(),
+            capabilities: vec!["coding".into()],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    let codex = grillforge_lib::adapters::codex::detect_codex_cli()
+        .unwrap()
+        .expect("Codex CLI is not installed");
+    let gateway = Gateway::new(&grillforge_root);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "claude_code",
+            &control.state().unwrap(),
+            "codex-live-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "codex".into(),
+                runtime: codex.path,
+                config_root: codex_root,
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "codex-default-external".into(),
+                source_client_id: "codex".into(),
+                source_agent_id: "default".into(),
+                model_id: Some("external-worker".into()),
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let started: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("codex-live-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"codex-default-external","cwd":directory.path(),
+                "prompt":"Return a short completion."
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let completed = wait_for_agent_task(&base_url, "codex-live-token", started).await;
+    assert_eq!(completed["status"], "completed", "{completed}");
+    assert_eq!(completed["result"], "Codex external model completed");
+    assert_eq!(calls.lock().unwrap()[0]["model"], "deepseek-test");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires an installed Claude Code CLI; uses only loopback and dummy credentials"]
@@ -161,10 +300,14 @@ async fn installed_claude_runtime_executes_its_own_tool_loop_through_the_mcp_bro
     assert_eq!(response.status(), StatusCode::OK);
     let response: Value = response.json().await.unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        response["result"]["content"][0]["text"],
-        "worker tool loop completed"
-    );
+    let response = wait_for_agent_task(
+        &format!("http://{address}"),
+        "loopback-broker-token",
+        response,
+    )
+    .await;
+    assert_eq!(response["status"], "completed", "{response}");
+    assert_eq!(response["result"], "worker tool loop completed");
     assert_eq!(trace.0.lock().unwrap().as_slice(), [false, true]);
 }
 
@@ -281,10 +424,9 @@ async fn current_opencode_cli_runs_an_exact_custom_subagent_through_the_broker()
     assert_eq!(response.status(), StatusCode::OK);
     let response: Value = response.json().await.unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        response["result"]["content"][0]["text"],
-        "OpenCode real CLI completed"
-    );
+    let response = wait_for_agent_task(&base_url, "opencode-live-token", response).await;
+    assert_eq!(response["status"], "completed", "{response}");
+    assert_eq!(response["result"], "OpenCode real CLI completed");
     assert!(
         requests.lock().unwrap().iter().any(|request| request
             .to_string()
@@ -366,7 +508,7 @@ async fn installed_codex_prefers_the_grillforge_extension_for_an_explicit_subage
             ])
             .args([
                 "-c",
-                "mcp_servers.grillforge_test.enabled_tools=[\"list_agents\",\"run_agent\"]",
+                "mcp_servers.grillforge_test.enabled_tools=[\"list_agents\",\"run_agent\",\"get_agent_task\"]",
             ])
             .args([
                 "-c",
@@ -512,8 +654,7 @@ async fn current_kimi_runtime_completes_a_managed_agent_through_the_broker() {
     assert_eq!(response.status(), StatusCode::OK);
     let response: Value = response.json().await.unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        response["result"]["content"][0]["text"],
-        "Kimi real CLI completed"
-    );
+    let response = wait_for_agent_task(&base_url, "kimi-live-token", response).await;
+    assert_eq!(response["status"], "completed", "{response}");
+    assert_eq!(response["result"], "Kimi real CLI completed");
 }

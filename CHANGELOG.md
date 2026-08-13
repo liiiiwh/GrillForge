@@ -4,6 +4,27 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-08-13
+
+### Changed
+
+- Extension Agent execution is asynchronous: `run_agent` immediately returns
+  a task ID, while `get_agent_task` long-polls or reads the final result. Native
+  Agent runtimes may run for up to one hour without hitting a host MCP timeout.
+
+### Fixed
+
+- Codex-sourced extensions with external models now run through the installed
+  Codex CLI and GrillForge Responses gateway instead of Codex's native
+  `spawn_agent` model allowlist, which rejected `grillforge/*` before any API
+  request was sent.
+
+### Verification
+
+- The ChatGPT-bundled Codex CLI completed a loopback-only external-model task
+  through GrillForge and sent the configured upstream model to a local
+  Responses service without contacting a paid provider.
+
 ## [0.2.1] - 2026-08-13
 
 ### Added

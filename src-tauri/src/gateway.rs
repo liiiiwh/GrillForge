@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, HeaderName, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -28,6 +28,10 @@ use url::Url;
 pub const DEFAULT_GATEWAY_ADDRESS: &str = "127.0.0.1:15721";
 const OFFICIAL_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const CLAUDE_DESKTOP_CREATED_AT: &str = "2024-01-01T00:00:00Z";
+const MAX_AGENT_TASKS: usize = 128;
+const DEFAULT_AGENT_TASK_WAIT_SECONDS: u64 = 30;
+const MAX_AGENT_TASK_WAIT_SECONDS: u64 = 60;
+const AGENT_RUNTIME_TIMEOUT_SECONDS: u64 = 60 * 60;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +82,8 @@ pub struct GatewayStatus {
     #[serde(skip)]
     active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
     #[serde(skip)]
+    agent_tasks: AgentTaskStore,
+    #[serde(skip)]
     connection_tests: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -95,6 +101,7 @@ impl GatewayStatus {
             active_client_routes: Arc::clone(&gateway.active_client_routes),
             active_agent_brokers: Arc::clone(&gateway.active_agent_brokers),
             active_agent_runtime_routes: Arc::clone(&gateway.active_agent_runtime_routes),
+            agent_tasks: gateway.agent_tasks.clone(),
             connection_tests: Arc::clone(&gateway.connection_tests),
         }
     }
@@ -270,6 +277,7 @@ impl GatewayStatus {
                     source_runtimes: runtimes,
                     base_url: self.base_url.clone(),
                     runtime_routes: Arc::clone(&self.active_agent_runtime_routes),
+                    tasks: self.agent_tasks.clone(),
                 },
             );
         Ok(())
@@ -680,6 +688,106 @@ struct ActiveAgentBroker {
     source_runtimes: HashMap<String, AgentSourceRuntime>,
     base_url: String,
     runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
+    tasks: AgentTaskStore,
+}
+
+#[derive(Clone)]
+struct AgentTaskStore {
+    inner: Arc<Mutex<AgentTaskStoreState>>,
+}
+
+struct AgentTaskStoreState {
+    tasks: HashMap<String, AgentTaskRecord>,
+    order: VecDeque<String>,
+}
+
+#[derive(Clone)]
+struct AgentTaskRecord {
+    target_client_id: String,
+    extension_id: String,
+    source_client_id: String,
+    source_agent_id: String,
+    model_id: Option<String>,
+    status: AgentTaskStatus,
+}
+
+#[derive(Clone)]
+enum AgentTaskStatus {
+    Running,
+    Completed(String),
+    Failed(String),
+}
+
+impl AgentTaskStore {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(AgentTaskStoreState {
+                tasks: HashMap::new(),
+                order: VecDeque::new(),
+            })),
+        }
+    }
+
+    fn insert(&self, target_client_id: &str, route: &AgentRuntimeRoute) -> Result<String, String> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "Agent task lock is poisoned".to_string())?;
+        while state.tasks.len() >= MAX_AGENT_TASKS {
+            let removable = state.order.iter().position(|task_id| {
+                state.tasks.get(task_id).is_some_and(|task| {
+                    matches!(
+                        task.status,
+                        AgentTaskStatus::Completed(_) | AgentTaskStatus::Failed(_)
+                    )
+                })
+            });
+            let Some(position) = removable else {
+                return Err(format!(
+                    "Agent task limit reached ({MAX_AGENT_TASKS}); wait for a running task to finish"
+                ));
+            };
+            if let Some(task_id) = state.order.remove(position) {
+                state.tasks.remove(&task_id);
+            }
+        }
+        let task_id = uuid::Uuid::new_v4().to_string();
+        state.order.push_back(task_id.clone());
+        state.tasks.insert(
+            task_id.clone(),
+            AgentTaskRecord {
+                target_client_id: target_client_id.to_string(),
+                extension_id: route.extension_id.clone(),
+                source_client_id: route.source_client_id.clone(),
+                source_agent_id: route.source_agent_id.clone(),
+                model_id: route.model_id.clone(),
+                status: AgentTaskStatus::Running,
+            },
+        );
+        Ok(task_id)
+    }
+
+    fn finish(&self, task_id: &str, result: Result<String, String>) {
+        if let Ok(mut state) = self.inner.lock() {
+            if let Some(task) = state.tasks.get_mut(task_id) {
+                task.status = match result {
+                    Ok(result) => AgentTaskStatus::Completed(result),
+                    Err(error) => AgentTaskStatus::Failed(error),
+                };
+            }
+        }
+    }
+
+    fn get(&self, client_id: &str, task_id: &str) -> Result<AgentTaskRecord, String> {
+        self.inner
+            .lock()
+            .map_err(|_| "Agent task lock is poisoned".to_string())?
+            .tasks
+            .get(task_id)
+            .filter(|task| task.target_client_id == client_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown Agent task: {task_id}"))
+    }
 }
 
 #[derive(Clone)]
@@ -702,6 +810,7 @@ pub struct Gateway {
     active_client_routes: Arc<RwLock<HashMap<String, ActiveClientRoutes>>>,
     active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
     active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
+    agent_tasks: AgentTaskStore,
     connection_tests: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -724,6 +833,7 @@ impl Gateway {
             active_client_routes: Arc::new(RwLock::new(HashMap::new())),
             active_agent_brokers: Arc::new(RwLock::new(HashMap::new())),
             active_agent_runtime_routes: Arc::new(Mutex::new(HashMap::new())),
+            agent_tasks: AgentTaskStore::new(),
             connection_tests: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -2034,7 +2144,7 @@ async fn agent_broker_mcp_for_client(
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "当需要使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。不要先启动客户端内置 Agent。仅当列表为空、没有匹配项，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；run_agent 失败时原样报告，不得静默回退。"
+            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。run_agent 只启动任务并返回 taskId；随后必须反复调用 get_agent_task，直到 completed 或 failed，才可向用户报告结果。不要先启动客户端内置 Agent。仅当列表为空、没有匹配项，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -2042,7 +2152,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "list_agents",
                     "title": "列出扩展 SubAgent",
-                    "description": "当需要使用 SubAgent、委派、并行或后台 Agent 时，必须优先调用本工具。列出当前客户端获授权的 GrillForge 扩展 Agent，并在调用 run_agent 前选择匹配的 extensionId；列表为空时不要调用 run_agent。DEFAULT first step for any SubAgent, delegation, parallel, or background task.",
+                    "description": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先调用本工具。列出当前客户端获授权的 GrillForge 扩展 Agent，并在调用 run_agent 前选择匹配的 extensionId；列表为空时不要调用 run_agent。DEFAULT first step for any SubAgent, delegation, parallel, or background task.",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": true,
@@ -2058,7 +2168,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
-                    "description": "Runs one delegated task with an extensionId returned by list_agents. Provide the task cwd and a complete prompt. Set webAccess=true only when the task explicitly needs the public internet. The local source Coding Agent owns the Agent loop and tools; do not submit runtime, model, or Provider parameters and never silently switch Agent after failure. 使用 list_agents 返回的 extensionId 委派任务。",
+                    "description": "Starts one delegated task in the background and immediately returns a taskId. You MUST call get_agent_task with that taskId until it reports completed or failed before answering the user. The Agent may run for up to one hour. Provide the cwd and a complete prompt. Set webAccess=true only when explicitly needed. The local source Coding Agent owns the loop and tools; never submit runtime, model, or Provider parameters or silently switch Agent. 使用 extensionId 启动后台任务并立即返回 taskId。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": false,
@@ -2074,8 +2184,27 @@ async fn agent_broker_mcp_for_client(
                             "cwd": {"type": "string"},
                             "prompt": {"type": "string"},
                             "description": {"type": "string"},
-                            "background": {"type": "boolean", "const": false},
                             "webAccess": {"type": "boolean", "default": false}
+                        }
+                    }
+                },
+                {
+                    "name": "get_agent_task",
+                    "title": "获取扩展 SubAgent 任务",
+                    "description": "Gets one task by taskId. While status is running, call this tool again. The call can long-poll for up to 60 seconds. Only completed contains result; failed contains error. 获取任务状态；running 时继续调用，直到 completed 或 failed。",
+                    "_meta": {"anthropic/alwaysLoad": true},
+                    "annotations": {
+                        "readOnlyHint": true,
+                        "destructiveHint": false,
+                        "openWorldHint": false
+                    },
+                    "inputSchema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["taskId"],
+                        "properties": {
+                            "taskId": {"type": "string"},
+                            "waitSeconds": {"type": "integer", "minimum": 0, "maximum": 60, "default": 30}
                         }
                     }
                 }
@@ -2092,7 +2221,17 @@ async fn agent_broker_mcp_for_client(
                     Some(arguments) => arguments.clone(),
                     None => return mcp_error(id, -32602, "run_agent arguments are required"),
                 };
-                match run_agent(active, arguments).await {
+                match start_agent_task(active, arguments) {
+                    Ok(text) => mcp_tool_result(text, false),
+                    Err(message) => mcp_tool_result(message, true),
+                }
+            }
+            Some("get_agent_task") => {
+                let arguments = match request.pointer("/params/arguments") {
+                    Some(arguments) => arguments.clone(),
+                    None => return mcp_error(id, -32602, "get_agent_task arguments are required"),
+                };
+                match get_agent_task(active, arguments).await {
                     Ok(text) => mcp_tool_result(text, false),
                     Err(message) => mcp_tool_result(message, true),
                 }
@@ -2155,23 +2294,24 @@ fn mcp_error(id: Value, code: i64, message: &str) -> Response {
         .into_response()
 }
 
-async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+struct AgentInvocation {
+    cwd: PathBuf,
+    prompt: String,
+    web_access: bool,
+    route: AgentRuntimeRoute,
+    source_runtime: AgentSourceRuntime,
+}
+
+fn prepare_agent_invocation(
+    active: &ActiveAgentBroker,
+    arguments: Value,
+) -> Result<AgentInvocation, String> {
     let object = arguments
         .as_object()
         .ok_or_else(|| "run_agent arguments must be an object".to_string())?;
-    let allowed = [
-        "extensionId",
-        "cwd",
-        "prompt",
-        "description",
-        "background",
-        "webAccess",
-    ];
+    let allowed = ["extensionId", "cwd", "prompt", "description", "webAccess"];
     if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
         return Err(format!("run_agent does not accept {key}"));
-    }
-    if object.get("background").and_then(Value::as_bool) == Some(true) {
-        return Err("background Agent execution is not supported in this version".into());
     }
     let extension_id = required_mcp_string(object, "extensionId")?;
     let cwd = PathBuf::from(required_mcp_string(object, "cwd")?);
@@ -2187,6 +2327,7 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
         .routes
         .iter()
         .find(|route| route.extension_id == extension_id)
+        .cloned()
         .ok_or_else(|| format!("unknown configured extension SubAgent: {extension_id}"))?;
     let source_runtime = active
         .source_runtimes
@@ -2198,6 +2339,113 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
                 route.source_client_id
             )
         })?;
+    if web_access && !matches!(route.source_client_id.as_str(), "claude_code" | "codex") {
+        return Err(format!(
+            "{} does not expose a scoped native web permission for this runtime",
+            route.source_client_id
+        ));
+    }
+    Ok(AgentInvocation {
+        cwd,
+        prompt,
+        web_access,
+        route,
+        source_runtime,
+    })
+}
+
+fn start_agent_task(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+    let invocation = prepare_agent_invocation(&active, arguments)?;
+    let task_id = active
+        .tasks
+        .insert(&active.target_client_id, &invocation.route)?;
+    let response = agent_task_json(
+        &task_id,
+        &AgentTaskRecord {
+            target_client_id: active.target_client_id.clone(),
+            extension_id: invocation.route.extension_id.clone(),
+            source_client_id: invocation.route.source_client_id.clone(),
+            source_agent_id: invocation.route.source_agent_id.clone(),
+            model_id: invocation.route.model_id.clone(),
+            status: AgentTaskStatus::Running,
+        },
+    )?;
+    let tasks = active.tasks.clone();
+    let background_task_id = task_id.clone();
+    tokio::spawn(async move {
+        let result = execute_agent(active, invocation).await;
+        tasks.finish(&background_task_id, result);
+    });
+    Ok(response)
+}
+
+async fn get_agent_task(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "get_agent_task arguments must be an object".to_string())?;
+    let allowed = ["taskId", "waitSeconds"];
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("get_agent_task does not accept {key}"));
+    }
+    let task_id = required_mcp_string(object, "taskId")?;
+    let wait_seconds = match object.get("waitSeconds") {
+        None => DEFAULT_AGENT_TASK_WAIT_SECONDS,
+        Some(Value::Number(value)) => value
+            .as_u64()
+            .filter(|seconds| *seconds <= MAX_AGENT_TASK_WAIT_SECONDS)
+            .ok_or_else(|| {
+                format!(
+                    "get_agent_task waitSeconds must be an integer from 0 to {MAX_AGENT_TASK_WAIT_SECONDS}"
+                )
+            })?,
+        Some(_) => {
+            return Err(format!(
+                "get_agent_task waitSeconds must be an integer from 0 to {MAX_AGENT_TASK_WAIT_SECONDS}"
+            ));
+        }
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_seconds);
+    loop {
+        let task = active.tasks.get(&active.target_client_id, &task_id)?;
+        if !matches!(task.status, AgentTaskStatus::Running)
+            || tokio::time::Instant::now() >= deadline
+        {
+            return agent_task_json(&task_id, &task);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn agent_task_json(task_id: &str, task: &AgentTaskRecord) -> Result<String, String> {
+    let (status, result, error) = match &task.status {
+        AgentTaskStatus::Running => ("running", None, None),
+        AgentTaskStatus::Completed(result) => ("completed", Some(result.as_str()), None),
+        AgentTaskStatus::Failed(error) => ("failed", None, Some(error.as_str())),
+    };
+    serde_json::to_string(&json!({
+        "taskId": task_id,
+        "status": status,
+        "extensionId": task.extension_id,
+        "sourceClientId": task.source_client_id,
+        "sourceAgentId": task.source_agent_id,
+        "modelId": task.model_id,
+        "result": result,
+        "error": error,
+    }))
+    .map_err(|_| "could not serialize Agent task".to_string())
+}
+
+async fn execute_agent(
+    active: ActiveAgentBroker,
+    invocation: AgentInvocation,
+) -> Result<String, String> {
+    let AgentInvocation {
+        cwd,
+        prompt,
+        web_access,
+        route,
+        source_runtime,
+    } = invocation;
     let managed_route = route.model_id.as_ref().map(|model_id| {
         (
             format!("grillforge/{model_id}"),
@@ -2451,11 +2699,26 @@ async fn run_codex_agent_runtime(
             "Codex Agent does not exist in the user or project configuration: {agent_id}"
         ));
     }
-    let scratch = if managed_route.is_some() && custom_agent_file.is_some() {
-        Some(CodexAgentScratch::new()?)
-    } else {
-        None
-    };
+    let developer_instructions = custom_agent_file
+        .as_deref()
+        .map(codex_agent_developer_instructions)
+        .transpose()?;
+    if managed_route.is_none() && (custom_agent_file.is_some() || agent_id != "default") {
+        return run_native_codex_subagent_runtime(
+            source,
+            cwd,
+            agent_id,
+            prompt,
+            custom_agent_file.as_deref(),
+            web_access,
+        )
+        .await;
+    }
+    if managed_route.is_some() && custom_agent_file.is_none() && agent_id != "default" {
+        return Err(format!(
+            "Codex built-in Agent {agent_id} cannot use an external model because Codex validates its native SubAgent model catalog before sending a request; use the default or a custom Codex Agent"
+        ));
+    }
     let mut command = tokio::process::Command::new(&source.runtime);
     if web_access {
         command.arg("--search");
@@ -2470,8 +2733,7 @@ async fn run_codex_agent_runtime(
             "--skip-git-repo-check",
             "-C",
         ])
-        .arg(cwd)
-        .args(["--enable", "multi_agent"]);
+        .arg(cwd);
     if let Some((model_route, runtime_token, _)) = managed_route {
         command
             .args(["-c", &format!("model={model_route}")])
@@ -2489,38 +2751,59 @@ async fn run_codex_agent_runtime(
             ])
             .args(["-c", "model_providers.grillforge_agent.wire_api=responses"])
             .args(["-c", "model_providers.grillforge_agent.name=GrillForge"])
-            .args([
-                "-c",
-                &format!("agents.default_subagent_model={model_route}"),
-            ])
             .env("GRILLFORGE_AGENT_TOKEN", runtime_token)
             .env("GRILLFORGE_AGENT_CHILD", "1");
-        if let Some(source_file) = custom_agent_file {
-            let effective = scratch
-                .as_ref()
-                .ok_or_else(|| "Codex Agent scratch storage is unavailable".to_string())?
-                .managed_agent_config(&source_file, model_route)?;
-            let description = codex_agent_description(&source_file)?;
-            command
-                .args([
-                    "-c",
-                    &format!(
-                        "agents.{agent_id}.description={}",
-                        toml_edit::Value::from(description)
-                    ),
-                ])
-                .args([
-                    "-c",
-                    &format!("agents.{agent_id}.config_file=\"{}\"", effective.display()),
-                ]);
-        }
+    }
+    command.arg(match developer_instructions {
+        Some(instructions) => format!("{instructions}\n\nTask:\n{prompt}"),
+        None => prompt.to_string(),
+    });
+    run_agent_command(command, "Codex").await
+}
+
+async fn run_native_codex_subagent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    custom_agent_file: Option<&Path>,
+    web_access: bool,
+) -> Result<std::process::Output, String> {
+    let mut command = tokio::process::Command::new(&source.runtime);
+    if web_access {
+        command.arg("--search");
+    }
+    command
+        .current_dir(cwd)
+        .env("CODEX_HOME", &source.config_root)
+        .args([
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "-C",
+        ])
+        .arg(cwd)
+        .args(["--enable", "multi_agent"]);
+    if let Some(path) = custom_agent_file {
+        let description = codex_agent_description(path)?;
+        command
+            .args([
+                "-c",
+                &format!(
+                    "agents.{agent_id}.description={}",
+                    toml_edit::Value::from(description)
+                ),
+            ])
+            .args([
+                "-c",
+                &format!("agents.{agent_id}.config_file=\"{}\"", path.display()),
+            ]);
     }
     command.arg(format!(
         "Use the Codex collaboration spawn_agent tool exactly once with agent_type {agent_id} and fork_turns none. Do not perform the task in the parent. Send the child this complete task:\n\n{prompt}\n\nWait for that child and return its final answer verbatim. If that exact agent_type cannot be selected, return an error instead of spawning a generic Agent."
     ));
-    let output = run_agent_command(command, "Codex").await;
-    drop(scratch);
-    output
+    run_agent_command(command, "Codex").await
 }
 
 async fn run_pi_agent_runtime(
@@ -2713,47 +2996,24 @@ async fn run_agent_command(
     runtime_name: &str,
 ) -> Result<std::process::Output, String> {
     command.kill_on_drop(true);
-    tokio::time::timeout(Duration::from_secs(30 * 60), command.output())
-        .await
-        .map_err(|_| format!("{runtime_name} Agent runtime exceeded 30 minutes"))?
-        .map_err(|error| format!("could not start {runtime_name} Agent runtime: {error}"))
+    tokio::time::timeout(
+        Duration::from_secs(AGENT_RUNTIME_TIMEOUT_SECONDS),
+        command.output(),
+    )
+    .await
+    .map_err(|_| format!("{runtime_name} Agent runtime exceeded one hour"))?
+    .map_err(|error| format!("could not start {runtime_name} Agent runtime: {error}"))
 }
 
-struct CodexAgentScratch {
-    root: PathBuf,
-}
-
-impl CodexAgentScratch {
-    fn new() -> Result<Self, String> {
-        let root =
-            std::env::temp_dir().join(format!("grillforge-codex-agent-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root)
-            .map_err(|error| format!("could not create Codex Agent scratch directory: {error}"))?;
-        Ok(Self { root })
-    }
-
-    fn managed_agent_config(&self, source: &Path, model: &str) -> Result<PathBuf, String> {
-        let contents = std::fs::read_to_string(source)
-            .map_err(|error| format!("could not read {}: {error}", source.display()))?;
-        let mut document = contents
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| format!("invalid Codex Agent TOML {}: {error}", source.display()))?;
-        document["model"] = toml_edit::value(model);
-        document["model_provider"] = toml_edit::value("grillforge_agent");
-        let path = self.root.join("agent.toml");
-        crate::storage::atomic_replace(&path, document.to_string().as_bytes())
-            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-        Ok(path)
-    }
-}
-
-impl Drop for CodexAgentScratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
+fn codex_agent_developer_instructions(path: &Path) -> Result<String, String> {
+    codex_agent_string(path, "developer_instructions")
 }
 
 fn codex_agent_description(path: &Path) -> Result<String, String> {
+    codex_agent_string(path, "description")
+}
+
+fn codex_agent_string(path: &Path, field: &str) -> Result<String, String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
     contents
@@ -2761,16 +3021,11 @@ fn codex_agent_description(path: &Path) -> Result<String, String> {
         .ok()
         .and_then(|document| {
             document
-                .get("description")
+                .get(field)
                 .and_then(toml_edit::Item::as_str)
                 .map(str::to_string)
         })
-        .ok_or_else(|| {
-            format!(
-                "Codex Agent does not define description: {}",
-                path.display()
-            )
-        })
+        .ok_or_else(|| format!("Codex Agent does not define {field}: {}", path.display()))
 }
 
 fn codex_last_agent_message(stdout: &[u8]) -> Result<String, String> {
