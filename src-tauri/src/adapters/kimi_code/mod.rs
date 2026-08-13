@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value as YamlValue;
-use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
@@ -21,31 +19,19 @@ const CLI_TIMEOUT: Duration = Duration::from_secs(8);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KimiCodePaths {
     pub config_path: PathBuf,
-    pub user_agents_dir: PathBuf,
-    pub shared_agents_dir: PathBuf,
 }
 
 impl KimiCodePaths {
-    pub fn new(
-        config_path: impl Into<PathBuf>,
-        user_agents_dir: impl Into<PathBuf>,
-        shared_agents_dir: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(config_path: impl Into<PathBuf>) -> Self {
         Self {
             config_path: config_path.into(),
-            user_agents_dir: user_agents_dir.into(),
-            shared_agents_dir: shared_agents_dir.into(),
         }
     }
 }
 
 pub fn paths_from_home(home: impl AsRef<Path>) -> KimiCodePaths {
     let home = home.as_ref();
-    KimiCodePaths::new(
-        home.join(".kimi-code/config.toml"),
-        home.join(".kimi-code/agents"),
-        home.join(".agents/agents"),
-    )
+    KimiCodePaths::new(home.join(".kimi/config.toml"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,235 +152,31 @@ pub fn inspect_kimi_code_cli(
 pub struct KimiCodeAgentProfile {
     pub name: String,
     pub description: String,
-    pub model_preference: Option<String>,
-    pub built_in: bool,
-    pub source: Option<PathBuf>,
 }
 
-pub fn discover_kimi_code_agents(
-    paths: &KimiCodePaths,
-) -> Result<Vec<KimiCodeAgentProfile>, KimiCodeAdapterError> {
-    let mut agents = BTreeMap::from([
-        (
-            "coder".to_string(),
-            built_in_agent("coder", "General coding tasks"),
-        ),
-        (
-            "explore".to_string(),
-            built_in_agent("explore", "Codebase exploration"),
-        ),
-        (
-            "plan".to_string(),
-            built_in_agent("plan", "Implementation planning"),
-        ),
-    ]);
-    load_agent_directory(&paths.shared_agents_dir, &mut agents)?;
-    load_agent_directory(&paths.user_agents_dir, &mut agents)?;
-    Ok(agents.into_values().collect())
+pub fn discover_kimi_code_agents() -> Vec<KimiCodeAgentProfile> {
+    vec![
+        built_in_agent("default", "Kimi Code 默认 Agent"),
+        built_in_agent("okabe", "Kimi Code 实验 Agent"),
+    ]
 }
 
 fn built_in_agent(name: &str, description: &str) -> KimiCodeAgentProfile {
     KimiCodeAgentProfile {
         name: name.into(),
         description: description.into(),
-        model_preference: None,
-        built_in: true,
-        source: None,
     }
-}
-
-fn load_agent_directory(
-    root: &Path,
-    agents: &mut BTreeMap<String, KimiCodeAgentProfile>,
-) -> Result<(), KimiCodeAdapterError> {
-    if !root.exists() {
-        return Ok(());
-    }
-    let mut pending = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = pending.pop() {
-        let entries = fs::read_dir(&directory).map_err(|source| KimiCodeAdapterError::Io {
-            operation: "read Kimi Code agent directory",
-            path: directory.clone(),
-            source,
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|source| KimiCodeAdapterError::Io {
-                operation: "read Kimi Code agent directory entry",
-                path: directory.clone(),
-                source,
-            })?;
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    for path in files {
-        let profile = parse_agent_profile(&path)?;
-        agents.insert(profile.name.clone(), profile);
-    }
-    Ok(())
-}
-
-fn parse_agent_profile(path: &Path) -> Result<KimiCodeAgentProfile, KimiCodeAdapterError> {
-    let text = fs::read_to_string(path).map_err(|source| KimiCodeAdapterError::Io {
-        operation: "read Kimi Code agent",
-        path: path.to_path_buf(),
-        source,
-    })?;
-    parse_agent_profile_text(path, &text)
-}
-
-fn parse_agent_profile_text(
-    path: &Path,
-    text: &str,
-) -> Result<KimiCodeAgentProfile, KimiCodeAdapterError> {
-    let Some(rest) = text.strip_prefix("---\n") else {
-        return Err(KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent has no YAML frontmatter: {}",
-            path.display()
-        )));
-    };
-    let Some((frontmatter, _body)) = rest.split_once("\n---\n") else {
-        return Err(KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent frontmatter is not terminated: {}",
-            path.display()
-        )));
-    };
-    let yaml: YamlValue = serde_yaml::from_str(frontmatter).map_err(|error| {
-        KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent frontmatter is invalid at {}: {error}",
-            path.display()
-        ))
-    })?;
-    let mapping = yaml.as_mapping().ok_or_else(|| {
-        KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent frontmatter must be a mapping: {}",
-            path.display()
-        ))
-    })?;
-    let string = |key: &str| {
-        mapping
-            .get(YamlValue::String(key.into()))
-            .and_then(YamlValue::as_str)
-            .map(str::to_string)
-    };
-    let name = string("name").ok_or_else(|| {
-        KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent name is missing: {}",
-            path.display()
-        ))
-    })?;
-    let description = string("description").unwrap_or_default();
-    let model_preference = string("model_preference");
-    if model_preference
-        .as_deref()
-        .is_some_and(|value| !matches!(value, "primary" | "secondary"))
-    {
-        return Err(KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent model_preference must be primary or secondary: {}",
-            path.display()
-        )));
-    }
-    Ok(KimiCodeAgentProfile {
-        name,
-        description,
-        model_preference,
-        built_in: false,
-        source: Some(path.to_path_buf()),
-    })
-}
-
-pub fn set_kimi_code_agent_model_preference(
-    paths: &KimiCodePaths,
-    name: &str,
-    preference: &str,
-) -> Result<KimiCodeAgentProfile, KimiCodeAdapterError> {
-    if !matches!(preference, "primary" | "secondary") {
-        return Err(KimiCodeAdapterError::Invalid(
-            "Kimi Code agent model preference must be primary or secondary".into(),
-        ));
-    }
-    let agent = discover_kimi_code_agents(paths)?
-        .into_iter()
-        .find(|agent| agent.name == name)
-        .ok_or_else(|| {
-            KimiCodeAdapterError::Invalid(format!("Kimi Code agent not found: {name}"))
-        })?;
-    let path = agent.source.ok_or_else(|| {
-        KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code built-in agent model preference is managed by the client: {name}"
-        ))
-    })?;
-    let original = fs::read_to_string(&path).map_err(|source| KimiCodeAdapterError::Io {
-        operation: "read Kimi Code agent",
-        path: path.clone(),
-        source,
-    })?;
-    let rest = original.strip_prefix("---\n").ok_or_else(|| {
-        KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent has no YAML frontmatter: {}",
-            path.display()
-        ))
-    })?;
-    let (frontmatter, body) = rest.split_once("\n---\n").ok_or_else(|| {
-        KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent frontmatter is not terminated: {}",
-            path.display()
-        ))
-    })?;
-    let mut lines = frontmatter.lines().map(str::to_owned).collect::<Vec<_>>();
-    if let Some(line) = lines
-        .iter_mut()
-        .find(|line| line.starts_with("model_preference:"))
-    {
-        *line = format!("model_preference: {preference}");
-    } else {
-        lines.push(format!("model_preference: {preference}"));
-    }
-    let projected = format!("---\n{}\n---\n{body}", lines.join("\n"));
-    let profile = parse_agent_profile_text(&path, &projected)?;
-    if profile.name != name || profile.model_preference.as_deref() != Some(preference) {
-        return Err(KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent projection did not preserve the selected agent: {name}"
-        )));
-    }
-    crate::storage::atomic_replace(&path, projected.as_bytes()).map_err(|source| {
-        KimiCodeAdapterError::Io {
-            operation: "write Kimi Code agent model preference",
-            path: path.clone(),
-            source,
-        }
-    })?;
-    let verified = fs::read_to_string(&path).map_err(|source| KimiCodeAdapterError::Io {
-        operation: "verify Kimi Code agent model preference",
-        path: path.clone(),
-        source,
-    })?;
-    if verified != projected {
-        return Err(KimiCodeAdapterError::Invalid(format!(
-            "Kimi Code agent model preference verification failed: {}",
-            path.display()
-        )));
-    }
-    Ok(profile)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KimiCodeModel {
     id: String,
-    name: String,
     capabilities: Vec<String>,
 }
 
 impl KimiCodeModel {
     pub fn new(
         id: impl Into<String>,
-        name: impl Into<String>,
         capabilities: impl IntoIterator<Item = impl Into<String>>,
     ) -> Result<Self, KimiCodeAdapterError> {
         let id = id.into();
@@ -403,27 +185,18 @@ impl KimiCodeModel {
                 "Kimi Code model must use a GrillForge route alias: {id}"
             )));
         }
-        let name = name.into();
-        if name.trim().is_empty() || name.trim() != name || name.chars().any(char::is_control) {
-            return Err(KimiCodeAdapterError::Invalid(format!(
-                "Kimi Code model name is invalid: {id}"
-            )));
-        }
         let capabilities = capabilities.into_iter().map(Into::into).collect::<Vec<_>>();
         if capabilities.iter().any(|capability| {
-            capability.trim().is_empty()
-                || capability.trim() != capability
-                || capability.chars().any(char::is_control)
+            !matches!(
+                capability.as_str(),
+                "thinking" | "always_thinking" | "image_in" | "video_in"
+            )
         }) {
             return Err(KimiCodeAdapterError::Invalid(format!(
                 "Kimi Code model capabilities are invalid: {id}"
             )));
         }
-        Ok(Self {
-            id,
-            name,
-            capabilities,
-        })
+        Ok(Self { id, capabilities })
     }
 }
 
@@ -432,8 +205,7 @@ pub struct KimiCodeRequest {
     gateway_base_url: String,
     gateway_token: String,
     models: Vec<KimiCodeModel>,
-    primary_model: String,
-    secondary_model: Option<String>,
+    default_model: String,
 }
 
 impl KimiCodeRequest {
@@ -441,8 +213,7 @@ impl KimiCodeRequest {
         gateway_base_url: impl Into<String>,
         gateway_token: impl Into<String>,
         mut models: Vec<KimiCodeModel>,
-        primary_model: impl Into<String>,
-        secondary_model: Option<impl Into<String>>,
+        default_model: impl Into<String>,
     ) -> Result<Self, KimiCodeAdapterError> {
         let gateway_base_url = gateway_base_url.into();
         validate_gateway_url(&gateway_base_url)?;
@@ -466,27 +237,17 @@ impl KimiCodeRequest {
                 "Kimi Code managed model ids must be unique".into(),
             ));
         }
-        let primary_model = primary_model.into();
-        if !models.iter().any(|model| model.id == primary_model) {
+        let default_model = default_model.into();
+        if !models.iter().any(|model| model.id == default_model) {
             return Err(KimiCodeAdapterError::Invalid(
-                "Kimi Code primary model must be present in managed models".into(),
-            ));
-        }
-        let secondary_model = secondary_model.map(Into::into);
-        if secondary_model
-            .as_ref()
-            .is_some_and(|id| !models.iter().any(|model| &model.id == id))
-        {
-            return Err(KimiCodeAdapterError::Invalid(
-                "Kimi Code secondary model must be present in managed models".into(),
+                "Kimi Code default model must be present in managed models".into(),
             ));
         }
         Ok(Self {
             gateway_base_url,
             gateway_token,
             models,
-            primary_model,
-            secondary_model,
+            default_model,
         })
     }
 }
@@ -498,8 +259,7 @@ impl Debug for KimiCodeRequest {
             .field("gateway_base_url", &self.gateway_base_url)
             .field("gateway_token", &"[REDACTED]")
             .field("models", &self.models)
-            .field("primary_model", &self.primary_model)
-            .field("secondary_model", &self.secondary_model)
+            .field("default_model", &self.default_model)
             .finish()
     }
 }
@@ -661,14 +421,13 @@ fn render_config(
         ));
     }
 
-    document["default_model"] = value(&request.primary_model);
+    document["default_model"] = value(&request.default_model);
     document["providers"][PROVIDER_ID]["type"] = value("anthropic");
     document["providers"][PROVIDER_ID]["base_url"] = value(&request.gateway_base_url);
     document["providers"][PROVIDER_ID]["api_key"] = value(&request.gateway_token);
     for model in &request.models {
         document["models"][&model.id]["provider"] = value(PROVIDER_ID);
         document["models"][&model.id]["model"] = value(&model.id);
-        document["models"][&model.id]["display_name"] = value(&model.name);
         document["models"][&model.id]["max_context_size"] = value(128_000_i64);
         let mut capabilities = Array::new();
         for capability in &model.capabilities {
@@ -676,12 +435,7 @@ fn render_config(
         }
         document["models"][&model.id]["capabilities"] = value(capabilities);
     }
-    match &request.secondary_model {
-        Some(model) => document["secondary_model"]["model"] = value(model),
-        None => {
-            document.remove("secondary_model");
-        }
-    }
+    document.remove("secondary_model");
     Ok(document.to_string().into_bytes())
 }
 

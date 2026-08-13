@@ -57,6 +57,13 @@ async fn named_client_route_is_isolated_by_client_token_and_model_pool() {
         .unwrap();
     let gateway = Gateway::new(temp.path());
     let status = gateway.status("http://127.0.0.1:1".into());
+    let removed = ["open", "claw"].concat();
+    assert!(
+        status
+            .activate_client(&removed, vec!["coder".into()], "removed-token")
+            .unwrap_err()
+            .contains("unsupported")
+    );
     status
         .activate_client("opencode", vec!["coder".into()], "client-token")
         .unwrap();
@@ -72,7 +79,7 @@ async fn named_client_route_is_isolated_by_client_token_and_model_pool() {
 
     assert_eq!(
         client
-            .post(format!("http://{address}/clients/openclaw/v1/messages"))
+            .post(format!("http://{address}/clients/hermes/v1/messages"))
             .bearer_auth("client-token")
             .json(&body)
             .send()

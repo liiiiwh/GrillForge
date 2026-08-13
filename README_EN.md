@@ -46,7 +46,7 @@ GrillForge is a local-first, client-centric model configuration center for codin
 - **Client-centric configuration**: choose Claude Code, Codex, Pi, Kimi Code, or another supported client first, then configure its real model shape.
 - **Independent slot routing**: different slots in the same Coding Agent can select different Providers and models. GrillForge exposes only the client's real slots and preserves native constraints, such as Codex built-in SubAgents sharing the main model's Provider.
 - **Shared model assets**: maintain Providers and Models once and reuse them independently across clients.
-- **Extension SubAgents**: save local Agents in one library and authorize them per client. MCP is mounted when the first binding is enabled and the original client configuration is restored after the last binding is removed.
+- **Extension SubAgents**: save local Agents in one library and authorize them per client. Each client mounts or unmounts MCP independently, and an empty binding list does not override that choice.
 - **Multi-protocol bridges**: Anthropic Messages, OpenAI Responses, OpenAI Chat Compatible, and Gemini Native.
 - **Safe takeover and restore**: atomic writes, one recovery snapshot, configuration difference reporting, and exact restoration.
 - **Fail fast**: authentication, quota, model, endpoint, and protocol errors are returned directly—without silent downgrade or Provider switching.
@@ -62,11 +62,10 @@ GrillForge is a local-first, client-centric model configuration center for codin
 | Claude Client | Safe conversation / Cowork role routes; extension SubAgent MCP in both 1P and 3P | Implemented and verified through the local configuration path |
 | Codex | Main model, built-in SubAgent default, and per-custom-Agent models; standalone and ChatGPT-bundled CLI support | Implemented and verified with real CLI configuration |
 | Pi | Default model, available model pool, and extension SubAgents through community `pi-mcp-extension` | Implemented with real CLI, extension-install, authentication, and gateway verification |
-| Kimi Code | Primary, Secondary, model pool, and built-in/global persistent Agent discovery | Implemented; configuration and gateway integration tests pass, real CLI E2E pending |
+| Kimi Code | Default model, model pool, and the exactly selectable `default` / `okabe` built-in Agents | Implemented with the current `~/.kimi/config.toml` structure; configuration and gateway integration tests pass |
 | Gemini CLI | Default model | Implemented |
 | Grok Build | Default model | Implemented |
 | OpenCode | Default model and model pool | Implemented |
-| OpenClaw | Primary model and ordered fallback pool | Implemented |
 | Hermes | Default model and model pool | Implemented |
 
 Client discovery checks the application PATH, standard installation locations, dynamic NVM/fnm/Volta/asdf/mise/pnpm/Bun/npm paths, and the user's interactive login shell. When several executables have the same name, GrillForge runs `--version` on each candidate, skips stale installations, and uses the first valid version. Opening the Clients page always refreshes discovery, so GrillForge does not need to be restarted after installing a CLI.
@@ -140,12 +139,12 @@ pnpm tauri dev
 
 ### Extension SubAgents
 
-1. On Extension SubAgents, choose an Agent discovered from a local runtime. Verified Claude Code and Codex Agents are currently available as executable sources.
+1. On Extension SubAgents, choose an Agent discovered from a local runtime. Verified Claude Code, Codex, Pi, OpenCode, and Kimi Code Agents are currently available as executable sources.
 2. Keep the source Agent's native model or bind a GrillForge model.
-3. Enable that extension for a destination client. The first binding automatically mounts a client-scoped MCP endpoint; removing the last binding unmounts it and restores the original file.
+3. Mount the client-scoped MCP on the destination client, then enable the extensions it may use. Binding changes update the mounted Agent list immediately; removing all bindings does not unmount MCP.
 4. Pi has no native MCP. GrillForge detects community `pi-mcp-extension` and, after explicit confirmation, can install pinned version `1.5.0` with the valid detected Pi CLI. A new Pi session loads the mounted configuration.
 
-Model configuration and extension SubAgent bindings are independent: disabling model configuration does not unbind MCP, and unbinding MCP does not change model slots. Claude Client can use its extension SubAgent MCP in both 1P and 3P modes.
+Model configuration, MCP mounting, and extension SubAgent bindings are independent. On normal exit GrillForge restores the client MCP file but preserves the mount preference, then remounts it in the background on the next launch. Claude Client can use its extension SubAgent MCP in both 1P and 3P modes.
 
 The MCP exposes only fixed Agent-list and invocation entry points. GrillForge resolves the runtime, source Agent, and model from the current binding; callers cannot inject them. The installed coding-agent runtime still owns the Agent Loop and tools.
 
@@ -228,7 +227,7 @@ The macOS Universal (`arm64` + `x86_64`) release has passed Developer ID Applica
 
 ## Roadmap
 
-- Complete a real Kimi Code CLI end-to-end run covering Primary, Secondary, and persistent Agents.
+- Add a live online-model acceptance run for Kimi Code CLI.
 - Build and verify a native installer in a Windows/MSVC environment.
 - Add a contribution guide, security policy, and release automation.
 

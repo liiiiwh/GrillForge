@@ -22,6 +22,17 @@ pub enum ProtocolCapability {
     ReasoningEffort,
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeProtocol {
+    AnthropicMessages,
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
+    #[serde(rename = "openai_chat")]
+    OpenAiChat,
+    GeminiNative,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model {
     id: String,

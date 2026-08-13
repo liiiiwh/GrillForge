@@ -61,10 +61,9 @@ deterministic upstream. GrillForge did not implement that loop or execute the
 tool.
 
 The first release implements Claude Code, Claude Client, Codex, Pi, Gemini CLI,
-Grok Build, OpenCode, OpenClaw, Hermes, and Kimi Code adapters. Kimi Code uses
-its current official primary/secondary model configuration and synchronizes
-built-in and persistent global Agent definitions without pretending that it
-supports arbitrary per-Agent model IDs.
+Grok Build, OpenCode, Hermes, and Kimi Code adapters. Kimi Code uses its current
+official `~/.kimi/config.toml` default-model and model-pool configuration and
+exposes only the exactly selectable built-in `default` and `okabe` Agents.
 
 The current macOS artifact is a Universal x86_64/arm64 App bundle signed with a
 Developer ID Application identity, notarized by Apple, stapled, and accepted by

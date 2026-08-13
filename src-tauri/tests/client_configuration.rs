@@ -56,7 +56,6 @@ fn generic_clients_keep_independent_main_and_model_pool_selections() {
         state.client_configurations["opencode"].enabled_model_ids,
         ["coder", "reviewer"]
     );
-    assert_eq!(state.client_configurations["openclaw"].main_model_id, None);
     service
         .set_client_main_model("hermes".into(), Some("reviewer".into()))
         .unwrap();
@@ -72,6 +71,29 @@ fn generic_clients_keep_independent_main_and_model_pool_selections() {
             .set_client_model_enabled("opencode".into(), "coder".into(), false)
             .unwrap_err()
             .contains("main model")
+    );
+}
+
+#[test]
+fn removed_client_is_not_known_or_exposed_in_public_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(temp.path());
+    let removed = ["open", "claw"].concat();
+
+    let state = service.state().unwrap();
+    assert!(!state.client_configurations.contains_key(&removed));
+    assert!(!state.client_extension_subagent_ids.contains_key(&removed));
+    assert!(
+        service
+            .client_integration_enabled(&removed)
+            .unwrap_err()
+            .contains("unsupported")
+    );
+    assert!(
+        service
+            .set_client_main_model(removed, None)
+            .unwrap_err()
+            .contains("unsupported")
     );
 }
 
@@ -102,7 +124,7 @@ fn client_selection_rejects_incompatible_provider_protocols_at_save_boundary() {
 }
 
 #[test]
-fn kimi_code_keeps_primary_secondary_and_available_models_as_distinct_configuration() {
+fn kimi_code_exposes_only_default_and_available_models() {
     let temp = tempfile::tempdir().unwrap();
     let service = ControlPlaneService::new(temp.path());
     service
@@ -113,13 +135,13 @@ fn kimi_code_keeps_primary_secondary_and_available_models_as_distinct_configurat
         ))
         .unwrap();
     service.save_model(model("primary", "responses")).unwrap();
-    service.save_model(model("secondary", "responses")).unwrap();
+    service.save_model(model("pool", "responses")).unwrap();
 
     service
         .set_client_main_model("kimi_code".into(), Some("primary".into()))
         .unwrap();
     let state = service
-        .set_client_secondary_model("kimi_code".into(), Some("secondary".into()))
+        .set_client_model_enabled("kimi_code".into(), "pool".into(), true)
         .unwrap();
 
     assert_eq!(
@@ -129,13 +151,9 @@ fn kimi_code_keeps_primary_secondary_and_available_models_as_distinct_configurat
         Some("primary")
     );
     assert_eq!(
-        state.client_configurations["kimi_code"]
-            .secondary_model_id
-            .as_deref(),
-        Some("secondary")
-    );
-    assert_eq!(
         state.client_configurations["kimi_code"].enabled_model_ids,
-        ["primary", "secondary"]
+        ["pool", "primary"]
     );
+    let public = serde_json::to_value(&state.client_configurations["kimi_code"]).unwrap();
+    assert!(public.get("secondaryModelId").is_none());
 }

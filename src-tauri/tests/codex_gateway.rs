@@ -3,10 +3,11 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, StatusCode, header},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::post,
 };
 use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput};
+use grillforge_lib::core::model::NativeProtocol;
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::gateway::Gateway;
 use serde_json::{Value, json};
@@ -108,6 +109,172 @@ async fn codex_route_requires_its_token_and_forwards_responses_without_client_au
     let response: Value = response.json().await.unwrap();
     assert_eq!(response["output"][0]["content"][0]["text"], "codex-ok");
     assert_eq!(calls.lock().unwrap()[0]["model"], "deepseek-v4-flash");
+}
+
+#[tokio::test]
+async fn same_provider_routes_flash_to_responses_and_pro_to_its_verified_chat_protocol() {
+    #[derive(Clone, Default)]
+    struct ProtocolCalls {
+        responses: Arc<AtomicUsize>,
+        chat: Arc<AtomicUsize>,
+    }
+    let calls = ProtocolCalls::default();
+    let upstream = Router::new()
+        .route(
+            "/v1/responses",
+            post(
+                |State(calls): State<ProtocolCalls>, Json(body): Json<Value>| async move {
+                    calls.responses.fetch_add(1, Ordering::SeqCst);
+                    if body["model"] == "deepseek-v4-pro" {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error":{"message":"Responses model unavailable"}})),
+                        )
+                            .into_response();
+                    }
+                    Json(json!({
+                        "id": "resp_flash",
+                        "status": "completed",
+                        "model": "deepseek-v4-flash",
+                        "output": [{
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "flash-ok"}]
+                        }],
+                        "usage": {"input_tokens": 1, "output_tokens": 1}
+                    }))
+                    .into_response()
+                },
+            ),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(
+                |State(calls): State<ProtocolCalls>, Json(body): Json<Value>| async move {
+                    calls.chat.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(body["model"], "deepseek-v4-pro");
+                    Json(json!({
+                        "id": "chat_pro",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "deepseek-v4-pro",
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "pro-ok"},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }))
+                },
+            ),
+        )
+        .with_state(calls.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+
+    let temp = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(temp.path());
+    service
+        .save_provider(ProviderInput {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::Bearer,
+            api_key: Some("loopback-token".into()),
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    for (id, protocol) in [
+        ("deepseek-v4-flash", NativeProtocol::OpenAiResponses),
+        ("deepseek-v4-pro", NativeProtocol::OpenAiChat),
+    ] {
+        service
+            .save_model(ModelInput {
+                id: id.into(),
+                name: id.into(),
+                upstream_id: id.into(),
+                provider_id: "deepseek".into(),
+                capabilities: vec![],
+                protocol_capabilities: vec![],
+            })
+            .unwrap();
+        service
+            .set_model_native_protocols(id, vec![protocol])
+            .unwrap();
+    }
+    service
+        .save_model(ModelInput {
+            id: "future-model".into(),
+            name: "Future Model".into(),
+            upstream_id: "future-model".into(),
+            provider_id: "deepseek".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    service
+        .set_model_native_protocols("future-model", vec![])
+        .unwrap();
+    let gateway = Gateway::new(temp.path());
+    gateway
+        .status("http://127.0.0.1:1".into())
+        .activate_codex(
+            vec![
+                "deepseek-v4-flash".into(),
+                "deepseek-v4-pro".into(),
+                "future-model".into(),
+            ],
+            "codex-token",
+        )
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+    let client = reqwest::Client::new();
+    for (model, expected) in [
+        ("deepseek-v4-flash", "flash-ok"),
+        ("deepseek-v4-pro", "pro-ok"),
+    ] {
+        let response: Value = client
+            .post(format!("http://{address}/codex/v1/responses"))
+            .bearer_auth("codex-token")
+            .json(&json!({
+                "model": format!("grillforge/{model}"),
+                "instructions": "reply",
+                "input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}],
+                "stream": false
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(response["output"][0]["content"][0]["text"], expected);
+    }
+    let unknown = client
+        .post(format!("http://{address}/codex/v1/responses"))
+        .bearer_auth("codex-token")
+        .json(&json!({
+            "model": "grillforge/future-model",
+            "input": "ping",
+            "stream": false
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        unknown.json::<Value>().await.unwrap()["error"]["message"],
+        "model future-model has no verified native protocol"
+    );
+    assert_eq!(calls.responses.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.chat.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

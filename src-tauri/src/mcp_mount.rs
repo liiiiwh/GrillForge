@@ -25,6 +25,7 @@ pub struct McpMountTarget {
     pub client_id: String,
     pub config_path: PathBuf,
     pub format: McpClientFormat,
+    stdio_command: Option<PathBuf>,
 }
 
 pub fn pi_mcp_extension_installed(settings_path: &Path) -> Result<bool, String> {
@@ -63,7 +64,13 @@ impl McpMountTarget {
             client_id: client_id.into(),
             config_path: config_path.into(),
             format,
+            stdio_command: None,
         }
+    }
+
+    pub fn with_stdio_command(mut self, command: impl Into<PathBuf>) -> Self {
+        self.stdio_command = Some(command.into());
+        self
     }
 }
 
@@ -87,6 +94,12 @@ struct MountEntrySnapshot {
 pub struct McpMountManager {
     snapshot_root: PathBuf,
     targets: HashMap<String, McpMountTarget>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpMountStatus {
+    pub mounted: bool,
+    pub configuration_changed: bool,
 }
 
 impl McpMountManager {
@@ -138,6 +151,7 @@ impl McpMountManager {
                 client_id,
                 url,
                 token,
+                target.stdio_command.as_deref(),
             )?,
             McpClientFormat::CodexToml => update_codex_toml(
                 current.as_deref(),
@@ -238,8 +252,40 @@ impl McpMountManager {
     }
 
     pub fn is_mounted(&self, client_id: &str) -> Result<bool, String> {
-        self.target(client_id)?;
-        Ok(self.snapshot_path(client_id).is_file())
+        Ok(self.status(client_id)?.mounted)
+    }
+
+    pub fn status(&self, client_id: &str) -> Result<McpMountStatus, String> {
+        let target = self.target(client_id)?;
+        let snapshot_path = self.snapshot_path(client_id);
+        let Some(bytes) = read_optional(&snapshot_path)? else {
+            return Ok(McpMountStatus {
+                mounted: false,
+                configuration_changed: false,
+            });
+        };
+        let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
+        let current = read_optional(&target.config_path)?;
+        let mounted = if target.format == McpClientFormat::CodexToml {
+            parse_toml(current.as_deref(), &target.config_path)?
+                .get("mcp_servers")
+                .and_then(toml_edit::Item::as_table_like)
+                .and_then(|servers| servers.get(&server_name(client_id)))
+                .and_then(|entry| entry.get("url"))
+                .and_then(toml_edit::Item::as_str)
+                == Some(snapshot.mounted_url.as_str())
+        } else {
+            let root = parse_json_object(current.as_deref(), &target.config_path)?;
+            root.get(json_section(target.format))
+                .and_then(Value::as_object)
+                .and_then(|servers| servers.get(&server_name(client_id)))
+                .and_then(|entry| mounted_json_url(target.format, entry))
+                == Some(snapshot.mounted_url.as_str())
+        };
+        Ok(McpMountStatus {
+            mounted,
+            configuration_changed: !mounted,
+        })
     }
 
     pub fn supported_clients(&self) -> Vec<String> {
@@ -305,7 +351,14 @@ fn update_claude_desktop_json(
     client_id: &str,
     url: &str,
     token: &str,
+    stdio_command: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
+    let stdio_command = stdio_command.ok_or_else(|| {
+        "Claude Client MCP mount requires the GrillForge executable path".to_string()
+    })?;
+    if !stdio_command.is_absolute() {
+        return Err("Claude Client MCP stdio command must be an absolute path".into());
+    }
     let mut root = parse_json_object(current, path)?;
     let servers = root
         .entry("mcpServers")
@@ -313,10 +366,10 @@ fn update_claude_desktop_json(
         .as_object_mut()
         .ok_or_else(|| format!("mcpServers must be an object: {}", path.display()))?;
     let name = server_name(client_id);
-    if servers
-        .get(&name)
-        .is_some_and(|existing| existing.get("url").and_then(Value::as_str) != Some(url))
-    {
+    if servers.get(&name).is_some_and(|existing| {
+        mounted_json_url(McpClientFormat::ClaudeDesktopJson, existing) != Some(url)
+            && legacy_claude_desktop_url(existing) != Some(url)
+    }) {
         return Err(format!(
             "refusing to overwrite non-GrillForge MCP server: {name}"
         ));
@@ -324,9 +377,12 @@ fn update_claude_desktop_json(
     servers.insert(
         name,
         json!({
-            "transport": "http",
-            "url": url,
-            "headers": {"Authorization": format!("Bearer {token}")}
+            "command": stdio_command,
+            "args": ["mcp-stdio"],
+            "env": {
+                "GRILLFORGE_MCP_URL": url,
+                "GRILLFORGE_MCP_TOKEN": token
+            }
         }),
     );
     serde_json::to_vec_pretty(&Value::Object(root))
@@ -355,10 +411,18 @@ fn capture_mount_snapshot(
         let root = parse_json_object(current, &target.config_path)?;
         let section = json_section(target.format);
         let servers = root.get(section).and_then(Value::as_object);
+        let original_json = servers.and_then(|servers| servers.get(&name).cloned());
+        let original_json = if target.format == McpClientFormat::ClaudeDesktopJson
+            && original_json.as_ref().and_then(legacy_claude_desktop_url) == Some(mounted_url)
+        {
+            None
+        } else {
+            original_json
+        };
         MountEntrySnapshot {
             file_existed: current.is_some(),
             section_existed: root.contains_key(section),
-            original_json: servers.and_then(|servers| servers.get(&name).cloned()),
+            original_json,
             original_toml: None,
         }
     };
@@ -466,16 +530,28 @@ fn remove_codex_mount(
 }
 
 fn mounted_json_url(format: McpClientFormat, entry: &Value) -> Option<&str> {
+    if format == McpClientFormat::ClaudeDesktopJson {
+        return entry
+            .pointer("/env/GRILLFORGE_MCP_URL")
+            .and_then(Value::as_str);
+    }
     let key = match format {
         McpClientFormat::GeminiJson => "httpUrl",
         McpClientFormat::ClaudeJson
-        | McpClientFormat::ClaudeDesktopJson
         | McpClientFormat::OpenCodeJson
         | McpClientFormat::KimiJson
         | McpClientFormat::PiExtensionJson => "url",
-        McpClientFormat::CodexToml | McpClientFormat::Unsupported => return None,
+        McpClientFormat::ClaudeDesktopJson
+        | McpClientFormat::CodexToml
+        | McpClientFormat::Unsupported => return None,
     };
     entry.get(key).and_then(Value::as_str)
+}
+
+fn legacy_claude_desktop_url(entry: &Value) -> Option<&str> {
+    (entry.get("transport").and_then(Value::as_str) == Some("http"))
+        .then(|| entry.get("url").and_then(Value::as_str))
+        .flatten()
 }
 
 fn json_section(format: McpClientFormat) -> &'static str {
@@ -650,7 +726,21 @@ fn validate_url(client_id: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_token(token: &str) -> Result<(), String> {
+pub(crate) fn validate_mcp_url(value: &str) -> Result<(), String> {
+    let url = Url::parse(value).map_err(|_| format!("invalid MCP URL: {value}"))?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || url.port().is_none()
+        || !url.path().starts_with("/mcp/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("MCP URL must be an exact loopback /mcp/<client> URL".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_token(token: &str) -> Result<(), String> {
     if token.is_empty()
         || token.trim() != token
         || token.chars().any(char::is_control)

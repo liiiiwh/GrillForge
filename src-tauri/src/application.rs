@@ -6,7 +6,7 @@ use crate::configuration::{
     AgentRecord, CodexAgentModelRecord, ConfigurationDocuments, ConfigurationFiles,
     ExtensionSubAgentRecord, MainRecord, ModelRecord, ProviderRecord,
 };
-use crate::core::model::ProtocolCapability;
+use crate::core::model::{NativeProtocol, ProtocolCapability};
 use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use crate::gateway::GatewayStatus;
 use crate::model_discovery::{self, DiscoveredModel};
@@ -31,14 +31,12 @@ const CODEX_AGENT_NATIVE_PREFIX: &str = "agent_";
 const GEMINI_AGENT: &str = "gemini";
 const GROK_BUILD_AGENT: &str = "grok_build";
 const OPENCODE_AGENT: &str = "opencode";
-const OPENCLAW_AGENT: &str = "openclaw";
 const HERMES_AGENT: &str = "hermes";
 const KIMI_CODE_AGENT: &str = "kimi_code";
 const GENERIC_CLIENTS: &[&str] = &[
     GEMINI_AGENT,
     GROK_BUILD_AGENT,
     OPENCODE_AGENT,
-    OPENCLAW_AGENT,
     HERMES_AGENT,
     KIMI_CODE_AGENT,
 ];
@@ -67,13 +65,13 @@ pub struct ControlPlaneState {
     pub client_configurations: BTreeMap<String, PublicClientConfiguration>,
     pub extension_subagents: Vec<PublicExtensionSubAgent>,
     pub client_extension_subagent_ids: BTreeMap<String, Vec<String>>,
+    pub mcp_mounted_client_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicClientConfiguration {
     pub main_model_id: Option<String>,
-    pub secondary_model_id: Option<String>,
     pub enabled_model_ids: Vec<String>,
 }
 
@@ -107,6 +105,7 @@ pub struct PublicModel {
     pub provider_id: String,
     pub capabilities: Vec<String>,
     pub protocol_capabilities: Vec<ProtocolCapability>,
+    pub native_protocols: Vec<NativeProtocol>,
     pub route_alias: String,
 }
 
@@ -419,6 +418,7 @@ impl ControlPlaneService {
                 .find(|preset| preset.id == provider_id)
                 .and_then(|preset| preset.model_protocol_capabilities.get(&model.id).cloned())
                 .unwrap_or_default();
+            let native_protocols = import_native_protocols(provider_id, &model)?;
             documents.models.models.push(ModelRecord {
                 id,
                 provider_id: provider_id.to_string(),
@@ -426,6 +426,7 @@ impl ControlPlaneService {
                 display_name: model.id,
                 capabilities: Vec::new(),
                 protocol_capabilities,
+                native_protocols: Some(native_protocols),
             });
         }
         documents
@@ -444,6 +445,7 @@ impl ControlPlaneService {
             display_name: input.name,
             capabilities: input.capabilities,
             protocol_capabilities: input.protocol_capabilities,
+            native_protocols: None,
         };
         if documents
             .models
@@ -465,6 +467,7 @@ impl ControlPlaneService {
             .iter()
             .position(|model| model.id == input.id)
             .ok_or_else(|| format!("unknown model: {}", input.id))?;
+        let native_protocols = documents.models.models[index].native_protocols.clone();
         documents.models.models[index] = ModelRecord {
             id: input.id,
             provider_id: input.provider_id,
@@ -472,7 +475,31 @@ impl ControlPlaneService {
             display_name: input.name,
             capabilities: input.capabilities,
             protocol_capabilities: input.protocol_capabilities,
+            native_protocols,
         };
+        self.save_and_return(documents)
+    }
+
+    pub fn set_model_native_protocols(
+        &self,
+        id: &str,
+        mut protocols: Vec<NativeProtocol>,
+    ) -> Result<ControlPlaneState, String> {
+        let mut documents = self.documents()?;
+        if !documents.models.models.iter().any(|model| model.id == id) {
+            return Err(format!("unknown model: {id}"));
+        }
+        protocols.sort();
+        if protocols.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(format!("duplicate native protocol for model: {id}"));
+        }
+        documents
+            .models
+            .models
+            .iter_mut()
+            .find(|model| model.id == id)
+            .expect("validated model")
+            .native_protocols = Some(protocols);
         self.save_and_return(documents)
     }
 
@@ -897,7 +924,7 @@ impl ControlPlaneService {
         if let Some(model_id) = &id {
             if matches!(
                 client_id.as_str(),
-                OPENCODE_AGENT | OPENCLAW_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
+                OPENCODE_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
             ) && !agent.model_pool.contains(model_id)
             {
                 agent.model_pool.push(model_id.clone());
@@ -916,7 +943,7 @@ impl ControlPlaneService {
     ) -> Result<ControlPlaneState, String> {
         if !matches!(
             client_id.as_str(),
-            OPENCODE_AGENT | OPENCLAW_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
+            OPENCODE_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
         ) {
             return Err(format!("{client_id} does not expose a managed model pool"));
         }
@@ -926,11 +953,6 @@ impl ControlPlaneService {
         if !enabled && matches!(&agent.main, MainRecord::Managed(main) if main == &id) {
             return Err(format!("{client_id} main model cannot be disabled: {id}"));
         }
-        if !enabled && agent.model_slots.get("secondary") == Some(&id) {
-            return Err(format!(
-                "{client_id} secondary model cannot be disabled: {id}"
-            ));
-        }
         let exists = agent.model_pool.contains(&id);
         match (enabled, exists) {
             (true, false) => {
@@ -939,34 +961,6 @@ impl ControlPlaneService {
             }
             (false, true) => agent.model_pool.retain(|model| model != &id),
             _ => {}
-        }
-        self.save_and_return(documents)
-    }
-
-    pub fn set_client_secondary_model(
-        &self,
-        client_id: String,
-        id: Option<String>,
-    ) -> Result<ControlPlaneState, String> {
-        if client_id != KIMI_CODE_AGENT {
-            return Err(format!("{client_id} does not expose a secondary model"));
-        }
-        let mut documents = self.documents()?;
-        if let Some(model_id) = &id {
-            validate_client_model(&documents, &client_id, model_id)?;
-        }
-        let agent = client_agent_mut(&mut documents, &client_id);
-        match id {
-            Some(model_id) => {
-                if !agent.model_pool.contains(&model_id) {
-                    agent.model_pool.push(model_id.clone());
-                    agent.model_pool.sort();
-                }
-                agent.model_slots.insert("secondary".into(), model_id);
-            }
-            None => {
-                agent.model_slots.remove("secondary");
-            }
         }
         self.save_and_return(documents)
     }
@@ -998,10 +992,7 @@ impl ControlPlaneService {
             .find(|provider| provider.id == main_model.provider_id)
             .expect("validated provider")
             .clone();
-        let enabled_ids = if matches!(
-            client_id,
-            OPENCODE_AGENT | OPENCLAW_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
-        ) {
+        let enabled_ids = if matches!(client_id, OPENCODE_AGENT | HERMES_AGENT | KIMI_CODE_AGENT) {
             &agent.model_pool
         } else {
             std::slice::from_ref(main_model_id)
@@ -1135,6 +1126,27 @@ impl ControlPlaneService {
                 bindings.sort();
             }
             (false, true) => bindings.retain(|id| id != extension_subagent_id),
+            _ => {}
+        }
+        self.save_and_return(documents)
+    }
+
+    pub fn set_client_mcp_mounted(
+        &self,
+        client_id: &str,
+        mounted: bool,
+    ) -> Result<ControlPlaneState, String> {
+        validate_known_client(client_id)?;
+        let mut documents = self.documents()?;
+        client_agent_mut(&mut documents, client_id);
+        let ids = &mut documents.agents.mcp_mounted_client_ids;
+        let exists = ids.iter().any(|id| id == client_id);
+        match (mounted, exists) {
+            (true, false) => {
+                ids.push(client_id.into());
+                ids.sort();
+            }
+            (false, true) => ids.retain(|id| id != client_id),
             _ => {}
         }
         self.save_and_return(documents)
@@ -1334,6 +1346,56 @@ fn model_slug(value: &str) -> String {
         }
     }
     slug
+}
+
+fn import_native_protocols(
+    provider_id: &str,
+    model: &DiscoveredModel,
+) -> Result<Vec<NativeProtocol>, String> {
+    if !model.native_protocols.is_empty() {
+        let mut protocols = model.native_protocols.clone();
+        protocols.sort();
+        if protocols.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(format!(
+                "duplicate native protocol metadata for model: {}",
+                model.id
+            ));
+        }
+        return Ok(protocols);
+    }
+    // Pinned cc-switch 413c09e documents three different DeepSeek surfaces:
+    // Codex uses native Responses for Flash, Claude uses /anthropic for both
+    // models, and OpenCode uses the OpenAI-compatible Chat API. That revision
+    // also warns that Pro's Responses integration may reject requests. Keep
+    // these model facts separate from the Provider default.
+    if provider_id == "deepseek" {
+        return Ok(match model.id.as_str() {
+            "deepseek-v4-flash" => vec![
+                NativeProtocol::AnthropicMessages,
+                NativeProtocol::OpenAiResponses,
+                NativeProtocol::OpenAiChat,
+            ],
+            "deepseek-v4-pro" => vec![
+                NativeProtocol::AnthropicMessages,
+                NativeProtocol::OpenAiChat,
+            ],
+            _ => Vec::new(),
+        });
+    }
+    let preset = crate::presets::catalog()
+        .map_err(|_| "built-in Provider catalog is invalid".to_string())?
+        .presets
+        .into_iter()
+        .find(|preset| preset.id == provider_id);
+    let Some(preset) = preset.filter(|preset| preset.suggested_models.contains(&model.id)) else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![match preset.protocol {
+        crate::presets::PresetProtocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
+        crate::presets::PresetProtocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
+        crate::presets::PresetProtocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
+        crate::presets::PresetProtocol::GeminiNative => NativeProtocol::GeminiNative,
+    }])
 }
 
 fn claude_agent(documents: &ConfigurationDocuments) -> Result<&AgentRecord, String> {
@@ -1667,7 +1729,7 @@ fn validate_client_model(
                 && provider.endpoint_mode == EndpointMode::BaseUrl
                 && provider.api_key_placement == ApiKeyPlacement::Bearer
         }
-        OPENCODE_AGENT | OPENCLAW_AGENT | HERMES_AGENT | KIMI_CODE_AGENT => {
+        OPENCODE_AGENT | HERMES_AGENT | KIMI_CODE_AGENT => {
             provider.protocol != Protocol::GeminiNative
         }
         _ => false,
@@ -1716,8 +1778,6 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
                         MainRecord::Native => None,
                         MainRecord::Managed(id) => Some(id.clone()),
                     }),
-                    secondary_model_id: agent
-                        .and_then(|agent| agent.model_slots.get("secondary").cloned()),
                     enabled_model_ids: agent
                         .map(|agent| agent.model_pool.clone())
                         .unwrap_or_default(),
@@ -1753,6 +1813,7 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
                 provider_id: model.provider_id.clone(),
                 capabilities: model.capabilities.clone(),
                 protocol_capabilities: model.protocol_capabilities.clone(),
+                native_protocols: model.native_protocols.clone().unwrap_or_default(),
                 route_alias: format!("grillforge/{}", model.id),
             })
             .collect(),
@@ -1811,6 +1872,7 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
             .iter()
             .map(|agent| (agent.id.clone(), agent.extension_subagent_ids.clone()))
             .collect(),
+        mcp_mounted_client_ids: documents.agents.mcp_mounted_client_ids.clone(),
     })
 }
 
@@ -1874,6 +1936,15 @@ pub fn update_model(
     input: ModelInput,
 ) -> Result<ControlPlaneState, String> {
     service.update_model(input)
+}
+
+#[tauri::command]
+pub fn set_model_native_protocols(
+    service: State<'_, ControlPlaneService>,
+    id: String,
+    protocols: Vec<NativeProtocol>,
+) -> Result<ControlPlaneState, String> {
+    service.set_model_native_protocols(&id, protocols)
 }
 
 #[tauri::command]
@@ -1994,15 +2065,6 @@ pub fn set_client_model_enabled(
     enabled: bool,
 ) -> Result<ControlPlaneState, String> {
     service.set_client_model_enabled(client_id, id, enabled)
-}
-
-#[tauri::command]
-pub fn set_client_secondary_model(
-    service: State<'_, ControlPlaneService>,
-    client_id: String,
-    id: Option<String>,
-) -> Result<ControlPlaneState, String> {
-    service.set_client_secondary_model(client_id, id)
 }
 
 #[tauri::command]

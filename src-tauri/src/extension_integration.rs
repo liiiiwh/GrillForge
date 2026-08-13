@@ -4,6 +4,7 @@ use crate::application::{
 use crate::gateway::{AgentRuntimeRoute, AgentSourceRuntime, GatewayStatus};
 use crate::local_agents::{
     discover_claude_builtin_agents, discover_claude_code_agents, discover_codex_agents,
+    discover_kimi_agents, discover_opencode_agents, discover_pi_agents,
 };
 use crate::mcp_mount::McpMountManager;
 use std::collections::{HashMap, HashSet};
@@ -11,12 +12,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientMcpStatus {
+    pub client_id: String,
+    pub desired_mounted: bool,
+    pub mounted: bool,
+    pub configuration_changed: bool,
+}
+
 pub struct ExtensionIntegrationService {
     mounts: McpMountManager,
     claude_root: PathBuf,
     claude_runtime: Option<PathBuf>,
     codex_root: Option<PathBuf>,
     codex_runtime: Option<PathBuf>,
+    pi_root: Option<PathBuf>,
+    pi_runtime: Option<PathBuf>,
+    opencode_root: Option<PathBuf>,
+    opencode_runtime: Option<PathBuf>,
+    kimi_root: Option<PathBuf>,
+    kimi_runtime: Option<PathBuf>,
     pi_settings_path: Option<PathBuf>,
     tokens: Mutex<HashMap<String, String>>,
     operation_lock: Mutex<()>,
@@ -35,6 +51,12 @@ impl ExtensionIntegrationService {
             claude_runtime,
             codex_root: None,
             codex_runtime: None,
+            pi_root: None,
+            pi_runtime: None,
+            opencode_root: None,
+            opencode_runtime: None,
+            kimi_root: None,
+            kimi_runtime: None,
             pi_settings_path,
             tokens: Mutex::new(HashMap::new()),
             operation_lock: Mutex::new(()),
@@ -48,6 +70,32 @@ impl ExtensionIntegrationService {
     ) -> Self {
         self.codex_root = Some(codex_root.into());
         self.codex_runtime = codex_runtime;
+        self
+    }
+
+    pub fn with_pi(mut self, pi_root: impl Into<PathBuf>, pi_runtime: Option<PathBuf>) -> Self {
+        self.pi_root = Some(pi_root.into());
+        self.pi_runtime = pi_runtime;
+        self
+    }
+
+    pub fn with_opencode(
+        mut self,
+        opencode_root: impl Into<PathBuf>,
+        opencode_runtime: Option<PathBuf>,
+    ) -> Self {
+        self.opencode_root = Some(opencode_root.into());
+        self.opencode_runtime = opencode_runtime;
+        self
+    }
+
+    pub fn with_kimi(
+        mut self,
+        kimi_root: impl Into<PathBuf>,
+        kimi_runtime: Option<PathBuf>,
+    ) -> Self {
+        self.kimi_root = Some(kimi_root.into());
+        self.kimi_runtime = kimi_runtime;
         self
     }
 
@@ -69,11 +117,16 @@ impl ExtensionIntegrationService {
             .get(client_id)
             .is_some_and(|ids| ids.iter().any(|id| id == extension_id));
         if was_enabled == enabled {
-            self.reconcile_client(&previous, gateway, client_id)?;
+            if client_mcp_desired(&previous, client_id) {
+                self.reconcile_client(&previous, gateway, client_id)?;
+            }
             return Ok(previous);
         }
         let updated =
             control.set_client_extension_subagent_enabled(client_id, extension_id, enabled)?;
+        if !client_mcp_desired(&updated, client_id) {
+            return Ok(updated);
+        }
         if let Err(error) = self.reconcile_client(&updated, gateway, client_id) {
             let rollback = control
                 .set_client_extension_subagent_enabled(client_id, extension_id, was_enabled)
@@ -108,7 +161,10 @@ impl ExtensionIntegrationService {
             .find(|extension| extension.id == input.id)
             .cloned()
             .ok_or_else(|| format!("unknown extension SubAgent: {}", input.id))?;
-        let bound_clients = bound_clients(&previous, &input.id);
+        let bound_clients = bound_clients(&previous, &input.id)
+            .into_iter()
+            .filter(|client_id| client_mcp_desired(&previous, client_id))
+            .collect::<Vec<_>>();
         let updated = control.update_extension_subagent(input)?;
         let mut reconciled_clients = Vec::new();
         for client_id in &bound_clients {
@@ -162,8 +218,8 @@ impl ExtensionIntegrationService {
         state: &ControlPlaneState,
         gateway: &GatewayStatus,
     ) -> Result<(), String> {
-        for client_id in self.mounts.supported_clients() {
-            self.reconcile_client(state, gateway, &client_id)?;
+        for client_id in &state.mcp_mounted_client_ids {
+            self.reconcile_client(state, gateway, client_id)?;
         }
         Ok(())
     }
@@ -236,9 +292,16 @@ impl ExtensionIntegrationService {
             .operation_lock
             .lock()
             .map_err(|_| "live configuration operation lock is poisoned".to_string())?;
-        self.suspend_client(gateway, client_id)?;
+        let was_mounted = client_mcp_desired(state, client_id);
+        if was_mounted {
+            self.suspend_client(gateway, client_id)?;
+        }
         let result = operation();
-        let reconcile = self.reconcile_client(state, gateway, client_id);
+        let reconcile = if was_mounted {
+            self.reconcile_client(state, gateway, client_id)
+        } else {
+            Ok(())
+        };
         match (result, reconcile) {
             (Ok(value), Ok(())) => Ok(value),
             (Err(error), Ok(())) => Err(error),
@@ -290,15 +353,6 @@ impl ExtensionIntegrationService {
             .get(client_id)
             .cloned()
             .unwrap_or_default();
-        if ids.is_empty() {
-            gateway.deactivate_client_agent_broker(client_id);
-            self.mounts.unmount(client_id)?;
-            self.tokens
-                .lock()
-                .map_err(|_| "extension MCP token lock is poisoned".to_string())?
-                .remove(client_id);
-            return Ok(());
-        }
         if client_id == "pi" {
             let settings = self
                 .pi_settings_path
@@ -317,7 +371,10 @@ impl ExtensionIntegrationService {
                 .iter()
                 .find(|extension| extension.id == id)
                 .ok_or_else(|| format!("unknown extension SubAgent: {id}"))?;
-            if !matches!(extension.source_client_id.as_str(), "claude_code" | "codex") {
+            if !matches!(
+                extension.source_client_id.as_str(),
+                "claude_code" | "codex" | "pi" | "opencode" | "kimi_code"
+            ) {
                 return Err(format!(
                     "extension SubAgent {} uses an unsupported source client: {}",
                     extension.id, extension.source_client_id
@@ -393,6 +450,57 @@ impl ExtensionIntegrationService {
                 config_root: codex_root,
             });
         }
+        if source_ids.contains("pi") {
+            let pi_root = self
+                .pi_root
+                .clone()
+                .ok_or_else(|| "Pi configuration root is not configured".to_string())?;
+            let runtime = self.resolve_pi_runtime()?;
+            let discovered = discover_pi_agents(&pi_root)?
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>();
+            validate_pi_source_agents(&routes, &discovered)?;
+            source_runtimes.push(AgentSourceRuntime {
+                source_client_id: "pi".into(),
+                runtime,
+                config_root: pi_root,
+            });
+        }
+        if source_ids.contains("opencode") {
+            let opencode_root = self
+                .opencode_root
+                .clone()
+                .ok_or_else(|| "OpenCode configuration root is not configured".to_string())?;
+            let runtime = self.resolve_opencode_runtime()?;
+            let discovered = discover_opencode_agents(&opencode_root)?
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>();
+            validate_named_project_source_agents(&routes, "opencode", &discovered)?;
+            source_runtimes.push(AgentSourceRuntime {
+                source_client_id: "opencode".into(),
+                runtime,
+                config_root: opencode_root,
+            });
+        }
+        if source_ids.contains("kimi_code") {
+            let kimi_root = self
+                .kimi_root
+                .clone()
+                .ok_or_else(|| "Kimi Code configuration root is not configured".to_string())?;
+            let runtime = self.resolve_kimi_runtime()?;
+            let discovered = discover_kimi_agents()
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>();
+            validate_source_agents(&routes, "kimi_code", &discovered)?;
+            source_runtimes.push(AgentSourceRuntime {
+                source_client_id: "kimi_code".into(),
+                runtime,
+                config_root: kimi_root,
+            });
+        }
         gateway.activate_client_agent_broker_with_sources(
             client_id,
             state,
@@ -400,6 +508,100 @@ impl ExtensionIntegrationService {
             source_runtimes,
             routes,
         )
+    }
+
+    pub fn mount_client(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+        client_id: &str,
+    ) -> Result<ClientMcpStatus, String> {
+        let _guard = self
+            .operation_lock
+            .lock()
+            .map_err(|_| "live configuration operation lock is poisoned".to_string())?;
+        let previous = control.state()?;
+        let was_desired = client_mcp_desired(&previous, client_id);
+        let updated = if was_desired {
+            previous
+        } else {
+            control.set_client_mcp_mounted(client_id, true)?
+        };
+        if let Err(error) = self.reconcile_client(&updated, gateway, client_id) {
+            let _ = self.suspend_client(gateway, client_id);
+            let rollback = if was_desired {
+                Ok(())
+            } else {
+                control.set_client_mcp_mounted(client_id, false).map(|_| ())
+            };
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    format!("{error}; MCP mount preference rollback failed: {rollback_error}")
+                }
+            });
+        }
+        self.client_status(&updated, client_id)
+    }
+
+    pub fn unmount_client(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+        client_id: &str,
+    ) -> Result<ClientMcpStatus, String> {
+        let _guard = self
+            .operation_lock
+            .lock()
+            .map_err(|_| "live configuration operation lock is poisoned".to_string())?;
+        let previous = control.state()?;
+        let was_desired = client_mcp_desired(&previous, client_id);
+        let updated = if was_desired {
+            control.set_client_mcp_mounted(client_id, false)?
+        } else {
+            previous
+        };
+        if let Err(error) = self.suspend_client(gateway, client_id) {
+            let rollback = if was_desired {
+                control
+                    .set_client_mcp_mounted(client_id, true)
+                    .and_then(|restored| self.reconcile_client(&restored, gateway, client_id))
+            } else {
+                Ok(())
+            };
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    format!("{error}; MCP unmount preference rollback failed: {rollback_error}")
+                }
+            });
+        }
+        self.client_status(&updated, client_id)
+    }
+
+    pub fn client_status(
+        &self,
+        state: &ControlPlaneState,
+        client_id: &str,
+    ) -> Result<ClientMcpStatus, String> {
+        let actual = self.mounts.status(client_id)?;
+        Ok(ClientMcpStatus {
+            client_id: client_id.to_string(),
+            desired_mounted: client_mcp_desired(state, client_id),
+            mounted: actual.mounted,
+            configuration_changed: actual.configuration_changed,
+        })
+    }
+
+    pub fn client_statuses(
+        &self,
+        state: &ControlPlaneState,
+    ) -> Result<Vec<ClientMcpStatus>, String> {
+        self.mounts
+            .supported_clients()
+            .into_iter()
+            .map(|client_id| self.client_status(state, &client_id))
+            .collect()
     }
 
     fn resolve_claude_runtime(&self) -> Result<PathBuf, String> {
@@ -423,6 +625,46 @@ impl ExtensionIntegrationService {
                     .map_err(|error| error.to_string())?
                     .map(|detection| detection.path)
                     .ok_or_else(|| "Codex CLI is required to run Codex SubAgents".to_string())
+            },
+            Ok,
+        )
+    }
+
+    fn resolve_pi_runtime(&self) -> Result<PathBuf, String> {
+        self.pi_runtime.clone().map_or_else(
+            || {
+                crate::adapters::pi::detect_pi_cli()
+                    .map_err(|error| error.to_string())?
+                    .map(|detection| detection.path)
+                    .ok_or_else(|| "Pi CLI is required to run Pi extension Agents".to_string())
+            },
+            Ok,
+        )
+    }
+
+    fn resolve_opencode_runtime(&self) -> Result<PathBuf, String> {
+        self.opencode_runtime.clone().map_or_else(
+            || {
+                crate::adapters::opencode::detect_opencode_cli()
+                    .map_err(|error| error.to_string())?
+                    .map(|detection| detection.path)
+                    .ok_or_else(|| {
+                        "OpenCode CLI is required to run OpenCode extension Agents".to_string()
+                    })
+            },
+            Ok,
+        )
+    }
+
+    fn resolve_kimi_runtime(&self) -> Result<PathBuf, String> {
+        self.kimi_runtime.clone().map_or_else(
+            || {
+                crate::adapters::kimi_code::detect_kimi_code_cli()
+                    .map_err(|error| error.to_string())?
+                    .map(|detection| detection.path)
+                    .ok_or_else(|| {
+                        "Kimi Code CLI is required to run Kimi extension Agents".to_string()
+                    })
             },
             Ok,
         )
@@ -473,6 +715,59 @@ fn validate_codex_source_agents(
     Ok(())
 }
 
+fn validate_pi_source_agents(
+    routes: &[AgentRuntimeRoute],
+    discovered: &HashSet<String>,
+) -> Result<(), String> {
+    for route in routes.iter().filter(|route| route.source_client_id == "pi") {
+        if discovered.contains(&route.source_agent_id) {
+            continue;
+        }
+        if route.source_agent_id.is_empty()
+            || !route.source_agent_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            })
+        {
+            return Err(format!(
+                "extension SubAgent {} has an invalid Pi Agent name: {}",
+                route.extension_id, route.source_agent_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_named_project_source_agents(
+    routes: &[AgentRuntimeRoute],
+    source_client_id: &str,
+    discovered: &HashSet<String>,
+) -> Result<(), String> {
+    for route in routes
+        .iter()
+        .filter(|route| route.source_client_id == source_client_id)
+    {
+        if discovered.contains(&route.source_agent_id) {
+            continue;
+        }
+        if route.source_agent_id.is_empty()
+            || !route.source_agent_id.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'-' | b'_')
+                    })
+            })
+        {
+            return Err(format!(
+                "extension SubAgent {} has an invalid {source_client_id} Agent name: {}",
+                route.extension_id, route.source_agent_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn bound_clients(state: &ControlPlaneState, extension_id: &str) -> Vec<String> {
     state
         .client_extension_subagent_ids
@@ -480,6 +775,13 @@ fn bound_clients(state: &ControlPlaneState, extension_id: &str) -> Vec<String> {
         .filter(|(_, ids)| ids.iter().any(|id| id == extension_id))
         .map(|(client_id, _)| client_id.clone())
         .collect()
+}
+
+fn client_mcp_desired(state: &ControlPlaneState, client_id: &str) -> bool {
+    state
+        .mcp_mounted_client_ids
+        .iter()
+        .any(|candidate| candidate == client_id)
 }
 
 fn extension_input(extension: PublicExtensionSubAgent) -> ExtensionSubAgentInput {
@@ -524,4 +826,41 @@ pub fn update_extension_subagent(
     input: ExtensionSubAgentInput,
 ) -> Result<ControlPlaneState, String> {
     integration.update_extension(&control, &gateway, input)
+}
+
+#[tauri::command]
+pub fn mount_client_mcp(
+    control: tauri::State<'_, ControlPlaneService>,
+    integration: tauri::State<'_, ExtensionIntegrationService>,
+    gateway: tauri::State<'_, GatewayStatus>,
+    client_id: String,
+) -> Result<ClientMcpStatus, String> {
+    integration.mount_client(&control, &gateway, &client_id)
+}
+
+#[tauri::command]
+pub fn unmount_client_mcp(
+    control: tauri::State<'_, ControlPlaneService>,
+    integration: tauri::State<'_, ExtensionIntegrationService>,
+    gateway: tauri::State<'_, GatewayStatus>,
+    client_id: String,
+) -> Result<ClientMcpStatus, String> {
+    integration.unmount_client(&control, &gateway, &client_id)
+}
+
+#[tauri::command]
+pub fn client_mcp_status(
+    control: tauri::State<'_, ControlPlaneService>,
+    integration: tauri::State<'_, ExtensionIntegrationService>,
+    client_id: String,
+) -> Result<ClientMcpStatus, String> {
+    integration.client_status(&control.state()?, &client_id)
+}
+
+#[tauri::command]
+pub fn client_mcp_statuses(
+    control: tauri::State<'_, ControlPlaneService>,
+    integration: tauri::State<'_, ExtensionIntegrationService>,
+) -> Result<Vec<ClientMcpStatus>, String> {
+    integration.client_statuses(&control.state()?)
 }

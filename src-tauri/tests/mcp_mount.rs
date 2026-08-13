@@ -71,7 +71,7 @@ fn claude_mount_is_isolated_updated_and_removed_without_touching_other_servers()
 }
 
 #[test]
-fn claude_desktop_mount_uses_its_verified_http_transport_shape() {
+fn claude_desktop_mount_uses_a_local_stdio_server_that_forwards_to_grillforge() {
     let root = tempfile::tempdir().expect("root");
     let config = root.path().join("claude_desktop_config.json");
     fs::write(
@@ -85,7 +85,8 @@ fn claude_desktop_mount_uses_its_verified_http_transport_shape() {
             "claude_desktop",
             &config,
             McpClientFormat::ClaudeDesktopJson,
-        )],
+        )
+        .with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge")],
     )
     .expect("manager");
 
@@ -100,18 +101,19 @@ fn claude_desktop_mount_uses_its_verified_http_transport_shape() {
         serde_json::from_slice(&fs::read(&config).expect("active config")).expect("JSON");
     assert_eq!(active["deploymentMode"], "1p");
     assert_eq!(active["mcpServers"]["keep"]["command"], "keep");
+    let server = &active["mcpServers"]["grillforge-claude-desktop"];
     assert_eq!(
-        active["mcpServers"]["grillforge-claude-desktop"]["transport"],
-        "http"
+        server["command"],
+        "/Applications/GrillForge.app/Contents/MacOS/grillforge"
     );
+    assert_eq!(server["args"], serde_json::json!(["mcp-stdio"]));
     assert_eq!(
-        active["mcpServers"]["grillforge-claude-desktop"]["url"],
+        server["env"]["GRILLFORGE_MCP_URL"],
         "http://127.0.0.1:15721/mcp/claude_desktop"
     );
-    assert_eq!(
-        active["mcpServers"]["grillforge-claude-desktop"]["headers"]["Authorization"],
-        "Bearer desktop-token"
-    );
+    assert_eq!(server["env"]["GRILLFORGE_MCP_TOKEN"], "desktop-token");
+    assert!(server.get("transport").is_none());
+    assert!(server.get("url").is_none());
 
     let mut changed = active;
     changed["deploymentMode"] = "3p".into();
@@ -126,6 +128,46 @@ fn claude_desktop_mount_uses_its_verified_http_transport_shape() {
         restored["mcpServers"]
             .get("grillforge-claude-desktop")
             .is_none()
+    );
+}
+
+#[test]
+fn claude_desktop_replaces_the_invalid_legacy_http_entry_and_never_restores_it() {
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join("claude_desktop_config.json");
+    fs::write(
+        &config,
+        r#"{"deploymentMode":"1p","mcpServers":{"grillforge-claude-desktop":{"transport":"http","url":"http://127.0.0.1:15721/mcp/claude_desktop","headers":{"Authorization":"Bearer old"}}}}"#,
+    )
+    .expect("legacy fixture");
+    let manager = McpMountManager::new(
+        root.path().join("snapshots"),
+        [McpMountTarget::new(
+            "claude_desktop",
+            &config,
+            McpClientFormat::ClaudeDesktopJson,
+        )
+        .with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge")],
+    )
+    .expect("manager");
+
+    manager
+        .mount(
+            "claude_desktop",
+            "http://127.0.0.1:15721/mcp/claude_desktop",
+            "new-token",
+        )
+        .expect("replace legacy mount");
+    manager.unmount("claude_desktop").expect("unmount");
+
+    let restored: Value =
+        serde_json::from_slice(&fs::read(&config).expect("config")).expect("JSON");
+    assert_eq!(restored["deploymentMode"], "1p");
+    assert!(
+        restored["mcpServers"]
+            .as_object()
+            .expect("servers")
+            .is_empty()
     );
 }
 
@@ -218,11 +260,13 @@ fn json_mcp_clients_use_their_native_remote_server_shapes() {
         let root = tempfile::tempdir().expect("root");
         let config = root.path().join("config.json");
         fs::write(&config, r#"{"keep":true}"#).expect("fixture");
-        let manager = McpMountManager::new(
-            root.path().join("snapshots"),
-            [McpMountTarget::new(client, &config, format)],
-        )
-        .expect("manager");
+        let mut target = McpMountTarget::new(client, &config, format);
+        if format == McpClientFormat::ClaudeDesktopJson {
+            target =
+                target.with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge");
+        }
+        let manager =
+            McpMountManager::new(root.path().join("snapshots"), [target]).expect("manager");
         let url = format!("http://127.0.0.1:15721/mcp/{client}");
         manager.mount(client, &url, "token").expect("mount");
         let active: Value =
@@ -263,11 +307,13 @@ fn unmount_preserves_user_removal_of_the_mcp_section_for_every_client_format() {
         let root = tempfile::tempdir().expect("root");
         let config = root.path().join("config.json");
         fs::write(&config, r#"{"model":"before"}"#).expect("fixture");
-        let manager = McpMountManager::new(
-            root.path().join("snapshots"),
-            [McpMountTarget::new(client, &config, format)],
-        )
-        .expect("manager");
+        let mut target = McpMountTarget::new(client, &config, format);
+        if format == McpClientFormat::ClaudeDesktopJson {
+            target =
+                target.with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge");
+        }
+        let manager =
+            McpMountManager::new(root.path().join("snapshots"), [target]).expect("manager");
         manager
             .mount(
                 client,
@@ -338,11 +384,13 @@ fn unmount_preserves_a_user_replacement_of_the_reserved_server_name() {
         let root = tempfile::tempdir().expect("root");
         let config = root.path().join("config.json");
         fs::write(&config, r#"{"setting":"before"}"#).expect("fixture");
-        let manager = McpMountManager::new(
-            root.path().join("snapshots"),
-            [McpMountTarget::new(client, &config, format)],
-        )
-        .expect("manager");
+        let mut target = McpMountTarget::new(client, &config, format);
+        if format == McpClientFormat::ClaudeDesktopJson {
+            target =
+                target.with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge");
+        }
+        let manager =
+            McpMountManager::new(root.path().join("snapshots"), [target]).expect("manager");
         manager
             .mount(
                 client,

@@ -1,7 +1,8 @@
 use grillforge_lib::local_agents::{
     discover_claude_builtin_agents, discover_claude_code_agents,
     discover_claude_code_agents_for_project, discover_codex_agents,
-    discover_codex_agents_for_project, resolve_codex_custom_agent_file,
+    discover_codex_agents_for_project, discover_kimi_agents, discover_opencode_agents_for_project,
+    discover_pi_agents_for_project, resolve_codex_custom_agent_file, resolve_pi_agent_file,
 };
 use std::fs;
 
@@ -24,6 +25,70 @@ fn discovers_only_valid_user_agents_without_copying_their_prompt() {
     assert_eq!(discovered[0].agent_id, "reviewer");
     assert_eq!(discovered[0].description, "Reviews code");
     assert!(!format!("{discovered:?}").contains("Private instructions"));
+}
+
+#[test]
+fn kimi_exposes_only_the_root_agents_the_cli_can_select_exactly() {
+    let discovered = discover_kimi_agents();
+
+    assert_eq!(
+        discovered
+            .iter()
+            .map(|agent| (agent.runtime, agent.agent_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("kimi_code", "default"), ("kimi_code", "okabe")]
+    );
+}
+
+#[test]
+fn opencode_discovers_builtin_and_configured_agents_with_project_precedence() {
+    let config_root = tempfile::tempdir().unwrap();
+    let project_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(config_root.path().join("agents")).unwrap();
+    fs::create_dir_all(project_root.path().join(".opencode/agents")).unwrap();
+    fs::write(
+        config_root.path().join("agents/reviewer.md"),
+        "---\ndescription: User reviewer\nmode: subagent\n---\nPrivate user prompt\n",
+    )
+    .unwrap();
+    fs::write(
+        project_root.path().join(".opencode/agents/reviewer.md"),
+        "---\ndescription: Project reviewer\nmode: subagent\n---\nPrivate project prompt\n",
+    )
+    .unwrap();
+    fs::write(
+        project_root.path().join(".opencode/agents/architect.md"),
+        "---\ndescription: Architecture agent\nmode: primary\n---\nPrivate prompt\n",
+    )
+    .unwrap();
+    fs::write(
+        project_root.path().join(".opencode/agents/collaborator.md"),
+        "---\ndescription: General collaborator\nmode: all\n---\nPrivate prompt\n",
+    )
+    .unwrap();
+    fs::write(
+        project_root.path().join(".opencode/agents/hidden.md"),
+        "---\nmode: subagent\n---\nMissing description\n",
+    )
+    .unwrap();
+
+    let discovered =
+        discover_opencode_agents_for_project(config_root.path(), project_root.path()).unwrap();
+
+    assert_eq!(
+        discovered
+            .iter()
+            .map(|agent| (agent.agent_id.as_str(), agent.description.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("architect", "Architecture agent"),
+            ("build", "OpenCode 内建构建 Agent"),
+            ("collaborator", "General collaborator"),
+            ("plan", "OpenCode 内建计划 Agent"),
+        ]
+    );
+    assert!(discovered.iter().all(|agent| agent.runtime == "opencode"));
+    assert!(!format!("{discovered:?}").contains("Private"));
 }
 
 #[test]
@@ -249,6 +314,39 @@ fn codex_project_agent_overrides_user_agent_and_resolves_the_effective_file() {
     assert_eq!(
         resolve_codex_custom_agent_file(codex_root.path(), project_root.path(), "reviewer")
             .unwrap(),
+        Some(project_agent)
+    );
+}
+
+#[test]
+fn pi_project_agent_overrides_user_agent_and_resolves_the_effective_file() {
+    let pi_root = tempfile::tempdir().unwrap();
+    let project_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(pi_root.path().join("agents")).unwrap();
+    fs::create_dir_all(project_root.path().join(".pi/agents")).unwrap();
+    fs::write(
+        pi_root.path().join("agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: User reviewer\ntools: read, grep\nmodel: anthropic/claude-sonnet-4\n---\nUser private prompt\n",
+    )
+    .unwrap();
+    let project_agent = project_root.path().join(".pi/agents/reviewer.md");
+    fs::write(
+        &project_agent,
+        "---\nname: reviewer\ndescription: Project reviewer\ntools: read,grep,find\n---\nProject private prompt\n",
+    )
+    .unwrap();
+
+    let nested = project_root.path().join("src/module");
+    fs::create_dir_all(&nested).unwrap();
+    let discovered = discover_pi_agents_for_project(pi_root.path(), &nested).unwrap();
+
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].runtime, "pi");
+    assert_eq!(discovered[0].agent_id, "reviewer");
+    assert_eq!(discovered[0].description, "Project reviewer");
+    assert!(!format!("{discovered:?}").contains("private prompt"));
+    assert_eq!(
+        resolve_pi_agent_file(pi_root.path(), &nested, "reviewer").unwrap(),
         Some(project_agent)
     );
 }

@@ -1,4 +1,13 @@
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("mcp-stdio") {
+        std::process::exit(match grillforge_lib::mcp_stdio::run_from_env() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("GrillForge MCP stdio bridge stopped: {error}");
+                1
+            }
+        });
+    }
     detach_release_gui_console();
     grillforge_lib::run()
 }

@@ -2,6 +2,7 @@ use grillforge_lib::configuration::{
     AgentRecord, AgentsDocument, ConfigDocument, ConfigurationDocuments, ConfigurationFiles,
     MainRecord, ModelRecord, ModelsDocument, ProviderRecord,
 };
+use grillforge_lib::core::model::NativeProtocol;
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use std::fs;
 
@@ -30,11 +31,13 @@ fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
                 display_name: "Local Coder".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
+                native_protocols: Some(vec![NativeProtocol::OpenAiChat]),
             }],
         },
         AgentsDocument {
             version: 2,
             extension_subagents: Vec::new(),
+            mcp_mounted_client_ids: Vec::new(),
             agents: vec![AgentRecord {
                 id: "test-agent".into(),
                 adapter: "test".into(),
@@ -85,6 +88,24 @@ fn invalid_configuration_is_rejected_before_any_file_changes() {
     assert_eq!(
         fs::read(directory.path().join("config.yaml")).expect("preserved config"),
         before
+    );
+}
+
+#[test]
+fn duplicate_verified_native_protocols_are_rejected() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let files = ConfigurationFiles::new(directory.path());
+    let (config, mut models, agents) = valid_documents();
+    models.models[0].native_protocols =
+        Some(vec![NativeProtocol::OpenAiChat, NativeProtocol::OpenAiChat]);
+
+    let error = files
+        .save(&config, &models, &agents)
+        .expect_err("duplicate protocol must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "duplicate native protocol for model: local-coder"
     );
 }
 

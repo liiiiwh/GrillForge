@@ -1,6 +1,6 @@
 use grillforge_lib::adapters::kimi_code::{
     KimiCodeAdapter, KimiCodeModel, KimiCodePaths, KimiCodeRequest, KimiCodeTakeoverStatus,
-    detect_kimi_code_cli_in, discover_kimi_code_agents, set_kimi_code_agent_model_preference,
+    detect_kimi_code_cli_in, discover_kimi_code_agents, paths_from_home,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -11,19 +11,36 @@ fn request() -> KimiCodeRequest {
         "http://127.0.0.1:19191/clients/kimi-code",
         "gateway-token",
         vec![
-            KimiCodeModel::new("grillforge/coder", "Coder", ["tool_use"]).unwrap(),
-            KimiCodeModel::new("grillforge/reviewer", "Reviewer", ["tool_use"]).unwrap(),
+            KimiCodeModel::new("grillforge/coder", ["thinking"]).unwrap(),
+            KimiCodeModel::new("grillforge/reviewer", ["image_in"]).unwrap(),
         ],
         "grillforge/coder",
-        Some("grillforge/reviewer"),
     )
     .unwrap()
 }
 
 #[test]
-fn kimi_code_apply_preserves_user_toml_and_writes_primary_and_secondary_models() {
+fn kimi_code_uses_the_current_share_directory() {
+    let paths = paths_from_home("/Users/tester");
+
+    assert_eq!(
+        paths.config_path,
+        std::path::Path::new("/Users/tester/.kimi/config.toml")
+    );
+}
+
+#[test]
+fn kimi_code_rejects_capabilities_outside_the_current_cli_schema() {
+    let error = KimiCodeModel::new("grillforge/coder", ["tool_use"])
+        .expect_err("Kimi Code 1.49 does not expose a tool_use model capability");
+
+    assert!(error.to_string().contains("capabilities"));
+}
+
+#[test]
+fn kimi_code_apply_preserves_user_toml_and_writes_the_default_model_pool() {
     let temp = tempdir().unwrap();
-    let config = temp.path().join("home/.kimi-code/config.toml");
+    let config = temp.path().join("home/.kimi/config.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     fs::write(
         &config,
@@ -37,14 +54,7 @@ api_key = "user-secret"
 "#,
     )
     .unwrap();
-    let adapter = KimiCodeAdapter::new(
-        KimiCodePaths::new(
-            &config,
-            temp.path().join("home/.kimi-code/agents"),
-            temp.path().join("home/.agents/agents"),
-        ),
-        temp.path().join("grillforge"),
-    );
+    let adapter = KimiCodeAdapter::new(KimiCodePaths::new(&config), temp.path().join("grillforge"));
 
     let status = adapter.apply(request()).unwrap();
     let written = fs::read_to_string(&config)
@@ -66,13 +76,15 @@ api_key = "user-secret"
         Some("http://127.0.0.1:19191/clients/kimi-code")
     );
     assert_eq!(written["default_model"].as_str(), Some("grillforge/coder"));
-    assert_eq!(
-        written["secondary_model"]["model"].as_str(),
-        Some("grillforge/reviewer")
-    );
+    assert!(written.get("secondary_model").is_none());
     assert_eq!(
         written["models"]["grillforge/coder"]["provider"].as_str(),
         Some("grillforge")
+    );
+    assert!(
+        written["models"]["grillforge/coder"]
+            .get("display_name")
+            .is_none()
     );
     assert_eq!(status.takeover, KimiCodeTakeoverStatus::Active);
 }
@@ -80,18 +92,11 @@ api_key = "user-secret"
 #[test]
 fn kimi_code_disable_restores_exact_original_bytes_and_drift_refuses_overwrite() {
     let temp = tempdir().unwrap();
-    let config = temp.path().join("home/.kimi-code/config.toml");
+    let config = temp.path().join("home/.kimi/config.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     let original = b"# keep this comment\ndefault_permission_mode = \"manual\"\n";
     fs::write(&config, original).unwrap();
-    let adapter = KimiCodeAdapter::new(
-        KimiCodePaths::new(
-            &config,
-            temp.path().join("home/.kimi-code/agents"),
-            temp.path().join("home/.agents/agents"),
-        ),
-        temp.path().join("grillforge"),
-    );
+    let adapter = KimiCodeAdapter::new(KimiCodePaths::new(&config), temp.path().join("grillforge"));
 
     adapter.apply(request()).unwrap();
     fs::write(&config, "user_changed = true\n").unwrap();
@@ -141,58 +146,14 @@ fn kimi_code_cli_detection_executes_the_real_candidate() {
 }
 
 #[test]
-fn kimi_code_agent_discovery_syncs_built_in_and_persistent_user_agents() {
-    let temp = tempdir().unwrap();
-    let user = temp.path().join(".kimi-code/agents");
-    let shared = temp.path().join(".agents/agents");
-    fs::create_dir_all(user.join("team")).unwrap();
-    fs::create_dir_all(&shared).unwrap();
-    fs::write(
-        user.join("team/reviewer.md"),
-        "---\nname: reviewer\ndescription: Reviews changes\nmodel_preference: secondary\n---\nReview carefully.\n",
-    )
-    .unwrap();
-    fs::write(
-        shared.join("researcher.md"),
-        "---\nname: researcher\ndescription: Researches APIs\nmodel_preference: primary\n---\nResearch.\n",
-    )
-    .unwrap();
+fn kimi_code_exposes_only_the_two_selectable_builtin_agents() {
+    let agents = discover_kimi_code_agents();
 
-    let agents = discover_kimi_code_agents(&KimiCodePaths::new(
-        temp.path().join(".kimi-code/config.toml"),
-        &user,
-        &shared,
-    ))
-    .unwrap();
-
-    assert!(
+    assert_eq!(
         agents
             .iter()
-            .any(|agent| agent.name == "coder" && agent.built_in)
+            .map(|agent| agent.name.as_str())
+            .collect::<Vec<_>>(),
+        ["default", "okabe"]
     );
-    assert!(agents.iter().any(|agent| {
-        agent.name == "reviewer"
-            && agent.model_preference.as_deref() == Some("secondary")
-            && !agent.built_in
-    }));
-    assert!(agents.iter().any(|agent| agent.name == "researcher"));
-
-    let changed = set_kimi_code_agent_model_preference(
-        &KimiCodePaths::new(temp.path().join(".kimi-code/config.toml"), &user, &shared),
-        "reviewer",
-        "primary",
-    )
-    .unwrap();
-    assert_eq!(changed.model_preference.as_deref(), Some("primary"));
-    let reviewer = fs::read_to_string(user.join("team/reviewer.md")).unwrap();
-    assert!(reviewer.contains("model_preference: primary"));
-    assert!(reviewer.ends_with("Review carefully.\n"));
-
-    let error = set_kimi_code_agent_model_preference(
-        &KimiCodePaths::new(temp.path().join(".kimi-code/config.toml"), &user, &shared),
-        "coder",
-        "secondary",
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("built-in"));
 }

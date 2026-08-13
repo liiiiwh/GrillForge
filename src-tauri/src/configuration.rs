@@ -1,5 +1,5 @@
 use crate::core::agent::{AgentConfiguration, MainSelection};
-use crate::core::model::{Model, ModelDraft, ModelRegistry, ProtocolCapability};
+use crate::core::model::{Model, ModelDraft, ModelRegistry, NativeProtocol, ProtocolCapability};
 use crate::core::provider::{
     ApiKeyPlacement, Auth, EndpointMode, Protocol, Provider, ProviderDraft, ProviderRegistry,
 };
@@ -58,6 +58,8 @@ pub struct ModelRecord {
     pub capabilities: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protocol_capabilities: Vec<ProtocolCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_protocols: Option<Vec<NativeProtocol>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -116,6 +118,8 @@ pub struct AgentsDocument {
     pub agents: Vec<AgentRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extension_subagents: Vec<ExtensionSubAgentRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_mounted_client_ids: Vec<String>,
 }
 
 impl AgentsDocument {
@@ -124,6 +128,7 @@ impl AgentsDocument {
             version: FORMAT_VERSION,
             agents,
             extension_subagents: Vec::new(),
+            mcp_mounted_client_ids: Vec::new(),
         }
     }
 }
@@ -300,6 +305,7 @@ impl Default for ConfigurationDocuments {
             agents: AgentsDocument {
                 version: FORMAT_VERSION,
                 extension_subagents: Vec::new(),
+                mcp_mounted_client_ids: Vec::new(),
                 agents: vec![AgentRecord {
                     id: "claude_code".to_string(),
                     adapter: "claude_code".to_string(),
@@ -367,6 +373,19 @@ fn validate(
         .collect::<Result<Vec<_>, _>>()?;
     let model_registry = ModelRegistry::new(model_values, provider_registry.ids())
         .map_err(|error| ConfigurationError::Invalid(error.to_string()))?;
+
+    for model in &models.models {
+        let Some(protocols) = &model.native_protocols else {
+            continue;
+        };
+        let mut seen = HashSet::new();
+        if protocols.iter().any(|protocol| !seen.insert(*protocol)) {
+            return Err(ConfigurationError::Invalid(format!(
+                "duplicate native protocol for model: {}",
+                model.id
+            )));
+        }
+    }
 
     let mut extension_ids = HashSet::new();
     for extension in &agents.extension_subagents {
@@ -557,6 +576,15 @@ fn validate(
                 &model_registry,
                 &provider_registry,
             )?;
+        }
+    }
+
+    let mut mounted_clients = HashSet::new();
+    for client_id in &agents.mcp_mounted_client_ids {
+        if !mounted_clients.insert(client_id) || !agent_ids.contains(client_id) {
+            return Err(ConfigurationError::Invalid(format!(
+                "invalid or duplicate mounted MCP client: {client_id}"
+            )));
         }
     }
 

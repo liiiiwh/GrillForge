@@ -11,11 +11,6 @@ use crate::adapters::hermes::{
 use crate::adapters::kimi_code::{
     KimiCodeAdapter, KimiCodeAgentProfile, KimiCodeModel, KimiCodePaths, KimiCodeRequest,
     KimiCodeTakeoverStatus, detect_kimi_code_cli, discover_kimi_code_agents,
-    set_kimi_code_agent_model_preference,
-};
-use crate::adapters::openclaw::{
-    OpenClawAdapter, OpenClawModelSpec, OpenClawPaths, OpenClawRequest, OpenClawTakeoverStatus,
-    detect_openclaw_cli,
 };
 use crate::adapters::opencode::{
     OpenCodeAdapter, OpenCodeModel, OpenCodePaths, OpenCodeRequest, OpenCodeTakeoverStatus,
@@ -45,7 +40,6 @@ pub struct ClientIntegrationStatus {
 pub struct KimiCodeIntegrationStatus {
     #[serde(flatten)]
     pub client: ClientIntegrationStatus,
-    pub secondary_model_id: Option<String>,
     pub agents: Vec<KimiCodeAgentProfile>,
 }
 
@@ -387,164 +381,6 @@ impl OpenCodeIntegrationService {
     }
 }
 
-pub struct OpenClawIntegrationService {
-    adapter: OpenClawAdapter,
-    activated: AtomicBool,
-}
-
-impl OpenClawIntegrationService {
-    pub fn new(paths: OpenClawPaths, root: impl Into<PathBuf>) -> Self {
-        Self {
-            adapter: OpenClawAdapter::new(paths, root),
-            activated: AtomicBool::new(false),
-        }
-    }
-
-    pub fn status(&self, control: &ControlPlaneService) -> Result<ClientIntegrationStatus, String> {
-        let detection = detect_openclaw_cli().map_err(|error| error.to_string())?;
-        let adapter = self.adapter.status().map_err(|error| error.to_string())?;
-        let (main_model_id, configured_model_ids) = configured(control, "openclaw")?;
-        let active = adapter.takeover == OpenClawTakeoverStatus::Active;
-        Ok(ClientIntegrationStatus {
-            installed: detection.is_some(),
-            executable_path: detection
-                .as_ref()
-                .map(|value| value.path.display().to_string()),
-            version: detection.map(|value| value.version),
-            snapshot_present: adapter.snapshot_present,
-            takeover: takeover_label(
-                active,
-                !self.activated.load(Ordering::Acquire),
-                adapter.takeover == OpenClawTakeoverStatus::Drifted,
-            ),
-            configured_model_ids,
-            main_model_id,
-        })
-    }
-
-    pub fn apply(
-        &self,
-        control: &ControlPlaneService,
-        gateway: &GatewayStatus,
-    ) -> Result<ClientIntegrationStatus, String> {
-        if detect_openclaw_cli()
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Err("未检测到 OpenClaw CLI；安装后才能应用配置".into());
-        }
-        self.activate(control, gateway)?;
-        self.status(control)
-    }
-
-    fn activate(
-        &self,
-        control: &ControlPlaneService,
-        gateway: &GatewayStatus,
-    ) -> Result<(), String> {
-        let selection = control.client_selection("openclaw")?;
-        let token = uuid::Uuid::new_v4().to_string();
-        let models = selection
-            .enabled_models
-            .iter()
-            .map(|model| {
-                let mut input = vec!["text".into()];
-                if model
-                    .capabilities
-                    .iter()
-                    .any(|value| matches!(value.as_str(), "image" | "vision"))
-                {
-                    input.push("image".into());
-                }
-                OpenClawModelSpec::new(
-                    format!("grillforge/{}", model.id),
-                    &model.display_name,
-                    model.capabilities.iter().any(|value| value == "reasoning")
-                        || !model.protocol_capabilities.is_empty(),
-                    input,
-                    128_000,
-                    16_384,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
-        let primary = format!("grillforge/{}", selection.main_model.id);
-        let fallbacks = selection
-            .enabled_models
-            .iter()
-            .filter(|model| model.id != selection.main_model.id)
-            .map(|model| format!("grillforge/{}", model.id))
-            .collect();
-        let request = OpenClawRequest::new(
-            format!(
-                "{}/clients/openclaw",
-                gateway.base_url.trim_end_matches('/')
-            ),
-            &token,
-            models,
-            primary,
-            fallbacks,
-        )
-        .map_err(|error| error.to_string())?;
-        self.adapter
-            .apply(request)
-            .map_err(|error| error.to_string())?;
-        let ids = selection
-            .enabled_models
-            .iter()
-            .map(|model| model.id.clone())
-            .collect();
-        if let Err(error) = gateway.activate_client("openclaw", ids, &token) {
-            let restore = self
-                .adapter
-                .disable()
-                .map_err(|restore| restore.to_string());
-            return Err(match restore {
-                Ok(_) => error,
-                Err(restore) => format!("{error}; OpenClaw 配置回滚也失败: {restore}"),
-            });
-        }
-        self.activated.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    pub fn disable(
-        &self,
-        control: &ControlPlaneService,
-        gateway: &GatewayStatus,
-    ) -> Result<ClientIntegrationStatus, String> {
-        self.adapter.disable().map_err(|error| error.to_string())?;
-        gateway.deactivate_client("openclaw");
-        self.activated.store(false, Ordering::Release);
-        self.status(control)
-    }
-
-    pub fn recovery_pending(&self) -> bool {
-        self.adapter
-            .status()
-            .is_ok_and(|status| status.snapshot_present)
-    }
-
-    pub fn resume_if_applied(
-        &self,
-        control: &ControlPlaneService,
-        gateway: &GatewayStatus,
-    ) -> Result<bool, String> {
-        match self
-            .adapter
-            .status()
-            .map_err(|error| error.to_string())?
-            .takeover
-        {
-            OpenClawTakeoverStatus::Inactive | OpenClawTakeoverStatus::Drifted => Ok(false),
-            OpenClawTakeoverStatus::Active => {
-                self.activate(control, gateway)?;
-                Ok(true)
-            }
-        }
-    }
-}
-
 pub struct HermesIntegrationService {
     adapter: HermesAdapter,
     activated: AtomicBool,
@@ -679,15 +515,13 @@ impl HermesIntegrationService {
 
 pub struct KimiCodeIntegrationService {
     adapter: KimiCodeAdapter,
-    paths: KimiCodePaths,
     activated: AtomicBool,
 }
 
 impl KimiCodeIntegrationService {
     pub fn new(paths: KimiCodePaths, root: impl Into<PathBuf>) -> Self {
         Self {
-            adapter: KimiCodeAdapter::new(paths.clone(), root),
-            paths,
+            adapter: KimiCodeAdapter::new(paths, root),
             activated: AtomicBool::new(false),
         }
     }
@@ -699,11 +533,6 @@ impl KimiCodeIntegrationService {
         let detection = detect_kimi_code_cli().map_err(|error| error.to_string())?;
         let adapter = self.adapter.status().map_err(|error| error.to_string())?;
         let (main_model_id, configured_model_ids) = configured(control, "kimi_code")?;
-        let secondary_model_id = control
-            .state()?
-            .client_configurations
-            .get("kimi_code")
-            .and_then(|configuration| configuration.secondary_model_id.clone());
         let active = adapter.takeover == KimiCodeTakeoverStatus::Active;
         Ok(KimiCodeIntegrationStatus {
             client: ClientIntegrationStatus {
@@ -721,8 +550,7 @@ impl KimiCodeIntegrationService {
                 configured_model_ids,
                 main_model_id,
             },
-            secondary_model_id,
-            agents: discover_kimi_code_agents(&self.paths).map_err(|error| error.to_string())?,
+            agents: discover_kimi_code_agents(),
         })
     }
 
@@ -741,34 +569,18 @@ impl KimiCodeIntegrationService {
         self.status(control)
     }
 
-    pub fn set_agent_model_preference(
-        &self,
-        name: &str,
-        preference: &str,
-    ) -> Result<Vec<KimiCodeAgentProfile>, String> {
-        set_kimi_code_agent_model_preference(&self.paths, name, preference)
-            .map_err(|error| error.to_string())?;
-        discover_kimi_code_agents(&self.paths).map_err(|error| error.to_string())
-    }
-
     fn activate(
         &self,
         control: &ControlPlaneService,
         gateway: &GatewayStatus,
     ) -> Result<(), String> {
         let selection = control.client_selection("kimi_code")?;
-        let configuration = control
-            .state()?
-            .client_configurations
-            .get("kimi_code")
-            .cloned()
-            .ok_or_else(|| "Kimi Code configuration is missing".to_string())?;
         let token = uuid::Uuid::new_v4().to_string();
         let models = selection
             .enabled_models
             .iter()
             .map(|model| {
-                let mut capabilities = vec!["tool_use"];
+                let mut capabilities = Vec::new();
                 if model
                     .capabilities
                     .iter()
@@ -787,15 +599,10 @@ impl KimiCodeIntegrationService {
                     .capabilities
                     .iter()
                     .any(|capability| matches!(capability.as_str(), "reasoning" | "thinking"))
-                    || !model.protocol_capabilities.is_empty()
                 {
                     capabilities.push("thinking");
                 }
-                KimiCodeModel::new(
-                    format!("grillforge/{}", model.id),
-                    &model.display_name,
-                    capabilities,
-                )
+                KimiCodeModel::new(format!("grillforge/{}", model.id), capabilities)
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
@@ -807,9 +614,6 @@ impl KimiCodeIntegrationService {
             &token,
             models,
             format!("grillforge/{}", selection.main_model.id),
-            configuration
-                .secondary_model_id
-                .map(|id| format!("grillforge/{id}")),
         )
         .map_err(|error| error.to_string())?;
         self.adapter
@@ -987,39 +791,6 @@ pub fn disable_opencode(
 }
 
 #[tauri::command]
-pub async fn openclaw_status(
-    service: State<'_, OpenClawIntegrationService>,
-    control: State<'_, ControlPlaneService>,
-) -> Result<ClientIntegrationStatus, String> {
-    service.status(&control)
-}
-
-#[tauri::command]
-pub fn apply_openclaw(
-    service: State<'_, OpenClawIntegrationService>,
-    control: State<'_, ControlPlaneService>,
-    gateway: State<'_, GatewayStatus>,
-) -> Result<ClientIntegrationStatus, String> {
-    let status = service.apply(&control, &gateway)?;
-    if let Err(error) = control.set_client_integration_enabled("openclaw", true) {
-        let _ = service.disable(&control, &gateway);
-        return Err(error);
-    }
-    Ok(status)
-}
-
-#[tauri::command]
-pub fn disable_openclaw(
-    service: State<'_, OpenClawIntegrationService>,
-    control: State<'_, ControlPlaneService>,
-    gateway: State<'_, GatewayStatus>,
-) -> Result<ClientIntegrationStatus, String> {
-    let status = service.disable(&control, &gateway)?;
-    control.set_client_integration_enabled("openclaw", false)?;
-    Ok(status)
-}
-
-#[tauri::command]
 pub async fn hermes_status(
     service: State<'_, HermesIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -1085,15 +856,6 @@ pub fn disable_kimi_code(
     Ok(status)
 }
 
-#[tauri::command]
-pub fn set_kimi_code_agent_model_preference_command(
-    service: State<'_, KimiCodeIntegrationService>,
-    name: String,
-    preference: String,
-) -> Result<Vec<KimiCodeAgentProfile>, String> {
-    service.set_agent_model_preference(&name, &preference)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1127,7 +889,7 @@ mod tests {
                 protocol_capabilities: vec![],
             })
             .unwrap();
-        for client in ["opencode", "openclaw", "hermes", "kimi_code"] {
+        for client in ["opencode", "hermes", "kimi_code"] {
             control
                 .set_client_model_enabled(client.into(), "coder".into(), true)
                 .unwrap();
@@ -1186,33 +948,6 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let openclaw = OpenClawIntegrationService::new(
-            OpenClawPaths::new(temp.path().join("home/openclaw.json")),
-            &root,
-        );
-        openclaw
-            .adapter
-            .apply(
-                OpenClawRequest::new(
-                    "http://127.0.0.1:15721/clients/openclaw",
-                    "old-token",
-                    vec![
-                        OpenClawModelSpec::new(
-                            "grillforge/coder",
-                            "Coder",
-                            false,
-                            vec!["text".into()],
-                            128_000,
-                            16_384,
-                        )
-                        .unwrap(),
-                    ],
-                    "grillforge/coder",
-                    vec![],
-                )
-                .unwrap(),
-            )
-            .unwrap();
         let hermes = HermesIntegrationService::new(
             HermesPaths::new(temp.path().join("home/hermes.yaml")),
             &root,
@@ -1231,10 +966,8 @@ mod tests {
             .unwrap();
 
         assert!(opencode.resume_if_applied(&control, &gateway).unwrap());
-        assert!(openclaw.resume_if_applied(&control, &gateway).unwrap());
         assert!(hermes.resume_if_applied(&control, &gateway).unwrap());
         assert!(opencode.activated.load(Ordering::Acquire));
-        assert!(openclaw.activated.load(Ordering::Acquire));
         assert!(hermes.activated.load(Ordering::Acquire));
     }
 
@@ -1267,19 +1000,12 @@ mod tests {
     }
 
     #[test]
-    fn kimi_code_activation_writes_primary_secondary_and_rebuilds_gateway_routes() {
+    fn kimi_code_activation_writes_default_model_and_rebuilds_gateway_routes() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("grillforge");
         let control = gateway_control(&root);
-        control
-            .set_client_secondary_model("kimi_code".into(), Some("coder".into()))
-            .unwrap();
         let gateway = Gateway::new(&root).status("http://127.0.0.1:15721".into());
-        let paths = KimiCodePaths::new(
-            temp.path().join("home/.kimi-code/config.toml"),
-            temp.path().join("home/.kimi-code/agents"),
-            temp.path().join("home/.agents/agents"),
-        );
+        let paths = KimiCodePaths::new(temp.path().join("home/.kimi/config.toml"));
         let service = KimiCodeIntegrationService::new(paths.clone(), &root);
 
         service.activate(&control, &gateway).unwrap();
@@ -1289,10 +1015,7 @@ mod tests {
             .parse::<toml_edit::DocumentMut>()
             .unwrap();
         assert_eq!(config["default_model"].as_str(), Some("grillforge/coder"));
-        assert_eq!(
-            config["secondary_model"]["model"].as_str(),
-            Some("grillforge/coder")
-        );
+        assert!(config.get("secondary_model").is_none());
         assert!(service.activated.load(Ordering::Acquire));
     }
 }

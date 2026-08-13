@@ -12,6 +12,7 @@ pub mod gateway;
 pub mod integration;
 pub mod local_agents;
 pub mod mcp_mount;
+pub mod mcp_stdio;
 pub mod model_discovery;
 pub mod pi_integration;
 pub mod pi_mcp_extension;
@@ -27,6 +28,7 @@ pub fn run() {
         .setup(|app| {
             let home = app.path().home_dir()?;
             let root = home.join(".grillforge");
+            let executable = std::env::current_exe()?;
             app.manage(application::ControlPlaneService::new(&root));
             app.manage(integration::IntegrationService::new(
                 integration::default_claude_config_root(&home),
@@ -58,10 +60,6 @@ pub fn run() {
                 adapters::opencode::paths_from_home(&home),
                 &root,
             ));
-            app.manage(client_integrations::OpenClawIntegrationService::new(
-                adapters::openclaw::paths_from_home(&home),
-                &root,
-            ));
             app.manage(client_integrations::HermesIntegrationService::new(
                 adapters::hermes::paths_from_home(&home),
                 &root,
@@ -83,7 +81,8 @@ pub fn run() {
                         claude_desktop_integration::default_claude_desktop_paths(&home)
                             .normal_config_path,
                         mcp_mount::McpClientFormat::ClaudeDesktopJson,
-                    ),
+                    )
+                    .with_stdio_command(&executable),
                     mcp_mount::McpMountTarget::new(
                         "codex",
                         adapters::codex::paths_from_home(&home).config_path,
@@ -118,7 +117,10 @@ pub fn run() {
                     None,
                     Some(home.join(".pi/agent/settings.json")),
                 )
-                .with_codex(home.join(".codex"), None),
+                .with_codex(home.join(".codex"), None)
+                .with_pi(home.join(".pi/agent"), None)
+                .with_opencode(home.join(".config/opencode"), None)
+                .with_kimi(home.join(".kimi"), None),
             );
 
             let listener = std::net::TcpListener::bind(gateway::DEFAULT_GATEWAY_ADDRESS)?;
@@ -152,6 +154,7 @@ pub fn run() {
             application::import_provider_models,
             application::save_model,
             application::update_model,
+            application::set_model_native_protocols,
             application::delete_model,
             application::set_main_model,
             application::set_claude_native_model,
@@ -167,11 +170,14 @@ pub fn run() {
             application::set_codex_native_custom_agent_model,
             application::set_client_main_model,
             application::set_client_model_enabled,
-            application::set_client_secondary_model,
             application::save_extension_subagent,
             extension_integration::update_extension_subagent,
             application::delete_extension_subagent,
             extension_integration::set_client_extension_binding,
+            extension_integration::mount_client_mcp,
+            extension_integration::unmount_client_mcp,
+            extension_integration::client_mcp_status,
+            extension_integration::client_mcp_statuses,
             local_agents::discover_local_agents,
             application::test_model_connection,
             application::query_provider_usage,
@@ -184,6 +190,7 @@ pub fn run() {
             claude_desktop_integration::claude_desktop_status,
             claude_desktop_integration::apply_claude_desktop,
             claude_desktop_integration::disable_claude_desktop,
+            claude_desktop_integration::restart_claude_client,
             pi_integration::pi_status,
             pi_integration::apply_pi,
             pi_integration::disable_pi,
@@ -201,16 +208,12 @@ pub fn run() {
             client_integrations::opencode_status,
             client_integrations::apply_opencode,
             client_integrations::disable_opencode,
-            client_integrations::openclaw_status,
-            client_integrations::apply_openclaw,
-            client_integrations::disable_openclaw,
             client_integrations::hermes_status,
             client_integrations::apply_hermes,
             client_integrations::disable_hermes,
             client_integrations::kimi_code_status,
             client_integrations::apply_kimi_code,
             client_integrations::disable_kimi_code,
-            client_integrations::set_kimi_code_agent_model_preference_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -385,20 +388,6 @@ fn restore_enabled_model_clients(
         ),
     );
 
-    let openclaw = app.state::<client_integrations::OpenClawIntegrationService>();
-    remember_restore(
-        &mut failures,
-        "OpenClaw",
-        restore_one(
-            "OpenClaw",
-            control.client_integration_enabled("openclaw")?,
-            control.client_has_managed_configuration("openclaw")?,
-            openclaw.recovery_pending(),
-            || openclaw.resume_if_applied(control, gateway),
-            || openclaw.apply(control, gateway),
-        ),
-    );
-
     let hermes = app.state::<client_integrations::HermesIntegrationService>();
     remember_restore(
         &mut failures,
@@ -476,10 +465,6 @@ fn restore_live_configs_before_exit(app: &tauri::AppHandle) -> Result<(), String
     let opencode = app.state::<client_integrations::OpenCodeIntegrationService>();
     if opencode.recovery_pending() {
         opencode.disable(&control, &gateway)?;
-    }
-    let openclaw = app.state::<client_integrations::OpenClawIntegrationService>();
-    if openclaw.recovery_pending() {
-        openclaw.disable(&control, &gateway)?;
     }
     let hermes = app.state::<client_integrations::HermesIntegrationService>();
     if hermes.recovery_pending() {

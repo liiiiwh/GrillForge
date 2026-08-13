@@ -3,6 +3,7 @@
 //! otherwise the endpoint is derived deterministically from the Provider URL.
 
 use crate::configuration::ProviderRecord;
+use crate::core::model::NativeProtocol;
 use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,8 @@ const COMPAT_SUFFIXES: &[&str] = &[
 pub struct DiscoveredModel {
     pub id: String,
     pub owned_by: Option<String>,
+    #[serde(default)]
+    pub native_protocols: Vec<NativeProtocol>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +42,8 @@ struct ModelsResponse {
 struct ModelEntry {
     id: String,
     owned_by: Option<String>,
+    #[serde(default, alias = "protocols")]
+    supported_protocols: Vec<NativeProtocol>,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +112,7 @@ pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>,
                     .unwrap_or(&entry.name)
                     .to_string(),
                 owned_by: Some("google".into()),
+                supported_protocols: vec![NativeProtocol::GeminiNative],
             })
             .collect()
     } else {
@@ -125,6 +131,7 @@ pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>,
             models.push(DiscoveredModel {
                 id: id.to_string(),
                 owned_by: entry.owned_by,
+                native_protocols: entry.supported_protocols,
             });
         }
     }

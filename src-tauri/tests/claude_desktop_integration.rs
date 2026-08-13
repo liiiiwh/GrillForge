@@ -31,6 +31,19 @@ fn model() -> ModelInput {
     }
 }
 
+fn configure_complete_third_party_mode(control: &ControlPlaneService) {
+    control.save_provider(provider()).expect("provider");
+    control.save_model(model()).expect("model");
+    for slot in ["sonnet", "opus", "fable", "haiku"] {
+        control
+            .set_claude_desktop_model_slot(slot.into(), Some("desktop-model".into()))
+            .expect("Desktop role slot");
+    }
+    control
+        .set_model_slot("subagent_default".into(), Some("desktop-model".into()))
+        .expect("Code SubAgent slot");
+}
+
 #[test]
 fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
     let directory = tempfile::tempdir().expect("temp directory");
@@ -43,11 +56,7 @@ fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
         .expect("Claude Code settings");
 
     let control = ControlPlaneService::new(&grillforge);
-    control.save_provider(provider()).expect("provider");
-    control.save_model(model()).expect("model");
-    control
-        .set_claude_desktop_model_slot("opus".into(), Some("desktop-model".into()))
-        .expect("Desktop slot");
+    configure_complete_third_party_mode(&control);
     let state = control.state().expect("state");
     let paths = macos_paths_from_home(&home);
     let profile_path = paths.profile_path.clone();
@@ -57,7 +66,7 @@ fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
     let active = integration.apply(&state, &gateway).expect("Desktop apply");
 
     assert_eq!(active.takeover, IntegrationTakeover::Active);
-    assert_eq!(active.configured_routes, ["claude-opus-5"]);
+    assert_eq!(active.configured_routes.len(), 4);
     let profile: serde_json::Value =
         serde_json::from_slice(&fs::read(&profile_path).expect("Desktop profile"))
             .expect("Desktop profile JSON");
@@ -65,8 +74,7 @@ fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
         profile["inferenceGatewayBaseUrl"],
         "http://127.0.0.1:15721/claude-desktop"
     );
-    assert_eq!(profile["inferenceModels"][0]["name"], "claude-opus-5");
-    assert_eq!(profile["inferenceModels"].as_array().unwrap().len(), 1);
+    assert_eq!(profile["inferenceModels"].as_array().unwrap().len(), 4);
     assert_eq!(
         fs::read_to_string(&claude_code_settings).expect("Claude Code settings unchanged"),
         r#"{"env":{"UNCHANGED":"yes"}}"#
@@ -78,16 +86,12 @@ fn desktop_apply_writes_only_desktop_profile_and_restores_it() {
 }
 
 #[test]
-fn desktop_conversation_routes_depend_only_on_desktop_slots() {
+fn desktop_conversation_routes_include_every_required_role() {
     let directory = tempfile::tempdir().expect("temp directory");
     let home = directory.path().join("home");
     let grillforge = directory.path().join("grillforge");
     let control = ControlPlaneService::new(&grillforge);
-    control.save_provider(provider()).expect("provider");
-    control.save_model(model()).expect("model");
-    control
-        .set_claude_desktop_model_slot("sonnet".into(), Some("desktop-model".into()))
-        .expect("Desktop slot");
+    configure_complete_third_party_mode(&control);
     let state = control.state().expect("state");
     let paths = macos_paths_from_home(&home);
     let profile_path = paths.profile_path.clone();
@@ -97,7 +101,7 @@ fn desktop_conversation_routes_depend_only_on_desktop_slots() {
         .apply(&state, &gateway)
         .expect("Desktop apply");
 
-    assert_eq!(active.configured_routes, ["claude-sonnet-5"]);
+    assert_eq!(active.configured_routes.len(), 4);
     assert!(profile_path.exists());
 }
 
@@ -107,11 +111,8 @@ fn restarted_desktop_integration_resumes_automatically() {
     let home = directory.path().join("home");
     let grillforge = directory.path().join("grillforge");
     let control = ControlPlaneService::new(&grillforge);
-    control.save_provider(provider()).expect("provider");
-    control.save_model(model()).expect("model");
-    let state = control
-        .set_claude_desktop_model_slot("sonnet".into(), Some("desktop-model".into()))
-        .expect("Desktop slot");
+    configure_complete_third_party_mode(&control);
+    let state = control.state().expect("state");
     let paths = macos_paths_from_home(&home);
     let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
     ClaudeDesktopIntegrationService::new(paths.clone(), &grillforge)
@@ -135,11 +136,8 @@ fn changed_desktop_profile_is_reported_and_explicit_reapply_overwrites_it() {
     let home = directory.path().join("home");
     let grillforge = directory.path().join("grillforge");
     let control = ControlPlaneService::new(&grillforge);
-    control.save_provider(provider()).expect("provider");
-    control.save_model(model()).expect("model");
-    let state = control
-        .set_claude_desktop_model_slot("sonnet".into(), Some("desktop-model".into()))
-        .expect("Desktop slot");
+    configure_complete_third_party_mode(&control);
+    let state = control.state().expect("state");
     let paths = macos_paths_from_home(&home);
     let profile = paths.profile_path.clone();
     let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
@@ -171,10 +169,53 @@ fn empty_desktop_role_mapping_fails_before_writing_any_profile() {
     let profile_path = paths.profile_path.clone();
     let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
 
+    let status = ClaudeDesktopIntegrationService::new(paths, &grillforge)
+        .apply(&control.state().expect("state"), &gateway)
+        .expect("all-native Desktop mode");
+
+    assert_eq!(status.takeover, IntegrationTakeover::Inactive);
+    assert!(!profile_path.exists());
+}
+
+#[test]
+fn desktop_third_party_mode_requires_all_role_and_code_subagent_slots() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let home = directory.path().join("home");
+    let grillforge = directory.path().join("grillforge");
+    let control = ControlPlaneService::new(&grillforge);
+    control.save_provider(provider()).expect("provider");
+    control.save_model(model()).expect("model");
+    control
+        .set_claude_desktop_model_slot("sonnet".into(), Some("desktop-model".into()))
+        .expect("Desktop slot");
+    let paths = macos_paths_from_home(&home);
+    let profile_path = paths.profile_path.clone();
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+
     let error = ClaudeDesktopIntegrationService::new(paths, &grillforge)
         .apply(&control.state().expect("state"), &gateway)
-        .expect_err("empty Desktop routes");
+        .expect_err("mixed 1P/3P mapping");
 
-    assert_eq!(error, "Claude Client 至少需要配置一个对话/Cowork 模型槽位");
+    assert_eq!(
+        error,
+        "Claude Client 不能混合 1P 与 3P 模型；请同时配置 Sonnet、Opus、Fable、Haiku 和 Code SubAgent 默认模型，或全部恢复跟随原生"
+    );
     assert!(!profile_path.exists());
+}
+
+#[test]
+fn desktop_third_party_mode_accepts_four_roles_and_code_subagent_model() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let home = directory.path().join("home");
+    let grillforge = directory.path().join("grillforge");
+    let control = ControlPlaneService::new(&grillforge);
+    configure_complete_third_party_mode(&control);
+    let paths = macos_paths_from_home(&home);
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+
+    let active = ClaudeDesktopIntegrationService::new(paths, &grillforge)
+        .apply(&control.state().expect("state"), &gateway)
+        .expect("complete 3P mapping");
+
+    assert_eq!(active.configured_routes.len(), 4);
 }

@@ -10,6 +10,7 @@ use crate::gateway::{GatewayStatus, RouteSpec};
 use crate::integration::IntegrationTakeover;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::State;
@@ -61,6 +62,20 @@ impl ClaudeDesktopIntegrationService {
         state: &ControlPlaneState,
         gateway: &GatewayStatus,
     ) -> Result<ClaudeDesktopIntegrationStatus, String> {
+        let configured_roles = DESKTOP_MODEL_SLOTS
+            .iter()
+            .filter(|(slot, _)| state.claude_desktop_model_slots.contains_key(*slot))
+            .count();
+        let code_subagent_configured = state.model_slots.contains_key("subagent_default");
+        if configured_roles == 0 && !code_subagent_configured {
+            return self.disable(gateway);
+        }
+        if configured_roles != DESKTOP_MODEL_SLOTS.len() || !code_subagent_configured {
+            return Err(
+                "Claude Client 不能混合 1P 与 3P 模型；请同时配置 Sonnet、Opus、Fable、Haiku 和 Code SubAgent 默认模型，或全部恢复跟随原生"
+                    .into(),
+            );
+        }
         let mut gateway_routes = Vec::new();
         let mut profile_routes = Vec::new();
         for (slot, route_id) in DESKTOP_MODEL_SLOTS {
@@ -83,10 +98,6 @@ impl ClaudeDesktopIntegrationService {
             });
             profile_routes.push(ClaudeDesktopRouteSpec::new(route_id, Some(label), false));
         }
-        if gateway_routes.is_empty() {
-            return Err("Claude Client 至少需要配置一个对话/Cowork 模型槽位".into());
-        }
-
         let token = Uuid::new_v4().simple().to_string();
         let previous = self
             .active
@@ -245,7 +256,8 @@ pub fn apply_claude_desktop(
     let status = extensions.with_suspended_client(&state, &gateway, "claude_desktop", || {
         integration.apply(&state, &gateway)
     })?;
-    if let Err(error) = control_plane.set_client_integration_enabled("claude_desktop", true) {
+    let enabled = status.takeover != IntegrationTakeover::Inactive;
+    if let Err(error) = control_plane.set_client_integration_enabled("claude_desktop", enabled) {
         let restore = extensions.with_suspended_client(
             &control_plane.state()?,
             &gateway,
@@ -275,4 +287,44 @@ pub fn disable_claude_desktop(
     })?;
     control_plane.set_client_integration_enabled("claude_desktop", false)?;
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn restart_claude_client() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let quit = Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                "tell application id \"com.anthropic.claudefordesktop\" to quit",
+            ])
+            .status()
+            .map_err(|error| format!("无法请求 Claude Client 正常退出: {error}"))?;
+        if !quit.success() {
+            return Err("Claude Client 未接受正常退出请求，请手动退出后重开".into());
+        }
+        for _ in 0..30 {
+            let running = Command::new("/usr/bin/pgrep")
+                .args(["-x", "Claude"])
+                .status()
+                .map_err(|error| format!("无法确认 Claude Client 是否退出: {error}"))?
+                .success();
+            if !running {
+                let opened = Command::new("/usr/bin/open")
+                    .args(["-b", "com.anthropic.claudefordesktop"])
+                    .status()
+                    .map_err(|error| format!("无法重新打开 Claude Client: {error}"))?;
+                return opened
+                    .success()
+                    .then_some(())
+                    .ok_or_else(|| "系统未能重新打开 Claude Client".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        Err("Claude Client 在 15 秒内没有正常退出；未强制终止，请手动重启".into())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("当前系统暂不支持自动重启 Claude Client，请手动重启".into())
+    }
 }

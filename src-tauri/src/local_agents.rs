@@ -96,6 +96,184 @@ pub fn resolve_codex_custom_agent_file(
     Ok(None)
 }
 
+pub fn discover_pi_agents(pi_root: &Path) -> Result<Vec<LocalAgent>, String> {
+    Ok(discover_pi_agents_in(&pi_root.join("agents"))?
+        .into_iter()
+        .map(|(agent, _)| agent)
+        .collect())
+}
+
+pub fn discover_pi_agents_for_project(
+    pi_root: &Path,
+    project_root: &Path,
+) -> Result<Vec<LocalAgent>, String> {
+    let mut agents = discover_pi_agents(pi_root)?
+        .into_iter()
+        .map(|agent| (agent.agent_id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    if let Some(directory) = nearest_pi_agents_directory(project_root) {
+        for (agent, _) in discover_pi_agents_in(&directory)? {
+            agents.insert(agent.agent_id.clone(), agent);
+        }
+    }
+    Ok(agents.into_values().collect())
+}
+
+pub fn resolve_pi_agent_file(
+    pi_root: &Path,
+    project_root: &Path,
+    agent_id: &str,
+) -> Result<Option<PathBuf>, String> {
+    let mut directories = Vec::with_capacity(2);
+    if let Some(directory) = nearest_pi_agents_directory(project_root) {
+        directories.push(directory);
+    }
+    directories.push(pi_root.join("agents"));
+    for directory in directories {
+        if let Some((_, path)) = discover_pi_agents_in(&directory)?
+            .into_iter()
+            .find(|(agent, _)| agent.agent_id == agent_id)
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenCodeAgentMode {
+    Primary,
+    Subagent,
+    All,
+}
+
+pub fn discover_opencode_agents(config_root: &Path) -> Result<Vec<LocalAgent>, String> {
+    let mut agents = opencode_builtin_agents()
+        .into_iter()
+        .map(|agent| (agent.agent_id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    for (agent, mode, _) in discover_opencode_agents_in(&config_root.join("agents"))? {
+        if mode != OpenCodeAgentMode::Subagent {
+            agents.insert(agent.agent_id.clone(), agent);
+        }
+    }
+    Ok(agents.into_values().collect())
+}
+
+pub fn discover_kimi_agents() -> Vec<LocalAgent> {
+    [
+        ("default", "Kimi Code 内建默认 Agent"),
+        ("okabe", "Kimi Code 内建实验 Agent"),
+    ]
+    .into_iter()
+    .map(|(agent_id, description)| LocalAgent {
+        runtime: "kimi_code",
+        agent_id: agent_id.into(),
+        description: description.into(),
+    })
+    .collect()
+}
+
+pub fn discover_opencode_agents_for_project(
+    config_root: &Path,
+    project_root: &Path,
+) -> Result<Vec<LocalAgent>, String> {
+    let mut agents = discover_opencode_agents(config_root)?
+        .into_iter()
+        .map(|agent| (agent.agent_id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    for (agent, mode, _) in discover_opencode_agents_in(&project_root.join(".opencode/agents"))? {
+        if mode != OpenCodeAgentMode::Subagent {
+            agents.insert(agent.agent_id.clone(), agent);
+        }
+    }
+    Ok(agents.into_values().collect())
+}
+
+pub(crate) fn resolve_opencode_agent(
+    config_root: &Path,
+    project_root: &Path,
+    agent_id: &str,
+) -> Result<Option<(OpenCodeAgentMode, Option<PathBuf>)>, String> {
+    let builtin = match agent_id {
+        "build" | "plan" => Some(OpenCodeAgentMode::Primary),
+        "general" | "explore" | "scout" => Some(OpenCodeAgentMode::Subagent),
+        _ => None,
+    };
+    for directory in [
+        project_root.join(".opencode/agents"),
+        config_root.join("agents"),
+    ] {
+        if let Some((_, mode, path)) = discover_opencode_agents_in(&directory)?
+            .into_iter()
+            .find(|(agent, _, _)| agent.agent_id == agent_id)
+        {
+            return Ok(Some((mode, Some(path))));
+        }
+    }
+    Ok(builtin.map(|mode| (mode, None)))
+}
+
+fn nearest_pi_agents_directory(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .map(|ancestor| ancestor.join(".pi/agents"))
+        .find(|candidate| candidate.is_dir())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PiAgentDefinition {
+    pub tools: Vec<String>,
+    pub model: Option<String>,
+    pub system_prompt: String,
+}
+
+pub(crate) fn read_pi_agent_definition(path: &Path) -> Result<PiAgentDefinition, String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let (frontmatter, system_prompt) = contents
+        .strip_prefix("---\n")
+        .and_then(|contents| contents.split_once("\n---\n"))
+        .ok_or_else(|| format!("invalid Pi Agent frontmatter: {}", path.display()))?;
+    let value: serde_yaml::Value = serde_yaml::from_str(frontmatter)
+        .map_err(|error| format!("invalid Pi Agent frontmatter {}: {error}", path.display()))?;
+    let object = value
+        .as_mapping()
+        .ok_or_else(|| format!("invalid Pi Agent frontmatter: {}", path.display()))?;
+    let tools = object
+        .get(serde_yaml::Value::String("tools".into()))
+        .and_then(serde_yaml::Value::as_str)
+        .map(|tools| {
+            tools
+                .split(',')
+                .map(str::trim)
+                .filter(|tool| !tool.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if tools.iter().any(|tool| {
+        tool.bytes().any(|byte| {
+            !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+        })
+    }) {
+        return Err(format!("Pi Agent tools are invalid: {}", path.display()));
+    }
+    let model = object
+        .get(serde_yaml::Value::String("model".into()))
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::to_string);
+    if model.as_ref().is_some_and(|model| {
+        model.trim().is_empty() || model.trim() != model || model.chars().any(char::is_control)
+    }) {
+        return Err(format!("Pi Agent model is invalid: {}", path.display()));
+    }
+    Ok(PiAgentDefinition {
+        tools,
+        model,
+        system_prompt: system_prompt.to_string(),
+    })
+}
+
 pub(crate) fn is_codex_builtin_agent(agent_id: &str) -> bool {
     matches!(agent_id, "default" | "worker" | "explorer")
 }
@@ -113,6 +291,121 @@ fn codex_builtin_agents() -> Vec<LocalAgent> {
         description: description.into(),
     })
     .collect()
+}
+
+fn opencode_builtin_agents() -> Vec<LocalAgent> {
+    [
+        ("build", "OpenCode 内建构建 Agent"),
+        ("plan", "OpenCode 内建计划 Agent"),
+    ]
+    .into_iter()
+    .map(|(agent_id, description)| LocalAgent {
+        runtime: "opencode",
+        agent_id: agent_id.into(),
+        description: description.into(),
+    })
+    .collect()
+}
+
+fn discover_opencode_agents_in(
+    directory: &Path,
+) -> Result<Vec<(LocalAgent, OpenCodeAgentMode, PathBuf)>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", directory.display())),
+    };
+    let mut pending = Vec::new();
+    for entry in entries {
+        pending.push(
+            entry
+                .map_err(|error| format!("could not read OpenCode Agent entry: {error}"))?
+                .path(),
+        );
+    }
+    let mut agents = Vec::new();
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            let entries = fs::read_dir(&path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            for entry in entries {
+                pending.push(
+                    entry
+                        .map_err(|error| format!("could not read OpenCode Agent entry: {error}"))?
+                        .path(),
+                );
+            }
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let Some(frontmatter) = contents
+            .strip_prefix("---\n")
+            .and_then(|contents| contents.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+        else {
+            continue;
+        };
+        let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) else {
+            continue;
+        };
+        let Some(object) = value.as_mapping() else {
+            continue;
+        };
+        let Some(description) = object
+            .get(serde_yaml::Value::String("description".into()))
+            .and_then(serde_yaml::Value::as_str)
+            .filter(|description| !description.trim().is_empty())
+        else {
+            continue;
+        };
+        let mode = match object
+            .get(serde_yaml::Value::String("mode".into()))
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or("all")
+        {
+            "primary" => OpenCodeAgentMode::Primary,
+            "subagent" => OpenCodeAgentMode::Subagent,
+            "all" => OpenCodeAgentMode::All,
+            _ => continue,
+        };
+        let Ok(relative) = path.strip_prefix(directory) else {
+            continue;
+        };
+        let mut agent_id = relative.with_extension("").to_string_lossy().to_string();
+        if std::path::MAIN_SEPARATOR != '/' {
+            agent_id = agent_id.replace(std::path::MAIN_SEPARATOR, "/");
+        }
+        if !valid_opencode_agent_name(&agent_id) {
+            continue;
+        }
+        agents.push((
+            LocalAgent {
+                runtime: "opencode",
+                agent_id,
+                description: description.to_string(),
+            },
+            mode,
+            path,
+        ));
+    }
+    agents.sort_by(|left, right| left.0.agent_id.cmp(&right.0.agent_id));
+    Ok(agents)
+}
+
+fn valid_opencode_agent_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'-' | b'_')
+                })
+        })
 }
 
 fn discover_codex_agents_in(directory: &Path) -> Result<Vec<(LocalAgent, PathBuf)>, String> {
@@ -159,6 +452,69 @@ fn discover_codex_agents_in(directory: &Path) -> Result<Vec<(LocalAgent, PathBuf
     }
     agents.sort_by(|left, right| left.0.agent_id.cmp(&right.0.agent_id));
     Ok(agents)
+}
+
+fn discover_pi_agents_in(directory: &Path) -> Result<Vec<(LocalAgent, PathBuf)>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", directory.display())),
+    };
+    let mut agents = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("could not read Pi Agent entry: {error}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let Some(frontmatter) = contents
+            .strip_prefix("---\n")
+            .and_then(|contents| contents.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+        else {
+            continue;
+        };
+        let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) else {
+            continue;
+        };
+        let Some(object) = value.as_mapping() else {
+            continue;
+        };
+        let Some(name) = object
+            .get(serde_yaml::Value::String("name".into()))
+            .and_then(serde_yaml::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(description) = object
+            .get(serde_yaml::Value::String("description".into()))
+            .and_then(serde_yaml::Value::as_str)
+        else {
+            continue;
+        };
+        if !valid_pi_agent_name(name) || description.trim().is_empty() {
+            continue;
+        }
+        agents.push((
+            LocalAgent {
+                runtime: "pi",
+                agent_id: name.into(),
+                description: description.into(),
+            },
+            path,
+        ));
+    }
+    agents.sort_by(|left, right| left.0.agent_id.cmp(&right.0.agent_id));
+    Ok(agents)
+}
+
+fn valid_pi_agent_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
 }
 
 fn valid_codex_agent_name(value: &str) -> bool {
@@ -414,6 +770,42 @@ pub async fn discover_local_agents(
             None => discover_codex_agents(&codex_root)?,
         };
         for agent in codex_agents {
+            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+        }
+    }
+    if crate::adapters::pi::detect_pi_cli()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        let pi_root = home.join(".pi/agent");
+        let pi_agents = match &project_root {
+            Some(project_root) => discover_pi_agents_for_project(&pi_root, project_root)?,
+            None => discover_pi_agents(&pi_root)?,
+        };
+        for agent in pi_agents {
+            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+        }
+    }
+    if crate::adapters::opencode::detect_opencode_cli()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        let opencode_root = home.join(".config/opencode");
+        let opencode_agents = match &project_root {
+            Some(project_root) => {
+                discover_opencode_agents_for_project(&opencode_root, project_root)?
+            }
+            None => discover_opencode_agents(&opencode_root)?,
+        };
+        for agent in opencode_agents {
+            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+        }
+    }
+    if crate::adapters::kimi_code::detect_kimi_code_cli()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        for agent in discover_kimi_agents() {
             agents.insert((agent.runtime, agent.agent_id.clone()), agent);
         }
     }

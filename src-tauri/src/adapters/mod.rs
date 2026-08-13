@@ -5,6 +5,5 @@ pub mod gemini;
 pub mod grok_build;
 pub mod hermes;
 pub mod kimi_code;
-pub mod openclaw;
 pub mod opencode;
 pub mod pi;

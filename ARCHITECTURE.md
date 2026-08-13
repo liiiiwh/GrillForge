@@ -20,7 +20,7 @@ Status: Canonical architecture
               |              |              |
        Claude adapters   Codex adapter   Pi / Kimi adapters
               |              |              |
-       Gemini / Grok / OpenCode / OpenClaw / Hermes adapters
+       Gemini / Grok / OpenCode / Hermes adapters
                              |
                        Provider Layer
                              |
@@ -162,7 +162,6 @@ src-tauri/src/
     gemini/
     grok_build/
     opencode/
-    openclaw/
     hermes/
   bridge/
   application.rs

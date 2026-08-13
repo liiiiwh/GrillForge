@@ -14,8 +14,9 @@ The project follows [Semantic Versioning](https://semver.org/).
   local runtime source; managed routes preserve the source Agent instructions.
 - Pi can detect and install the reviewed `pi-mcp-extension` package with one
   click before mounting its MCP configuration.
-- Extension bindings update the mounted MCP tool list immediately and are
-  restored automatically when GrillForge starts.
+- Each client can mount or unmount MCP independently. Extension bindings update
+  a mounted MCP tool list immediately without controlling its lifecycle, and
+  the saved mount choice is restored automatically when GrillForge starts.
 - Claude Client can use its client-scoped MCP in both 1P and 3P inference
   modes; model routing and extension bindings remain independent.
 
@@ -118,7 +119,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Applied the same multi-install discovery behavior to Claude Code, Codex, Pi,
-  Kimi Code, Gemini CLI, Grok Build, OpenCode, OpenClaw, and Hermes.
+  Kimi Code, Gemini CLI, Grok Build, OpenCode, and Hermes.
 
 ## [0.1.2] - 2026-08-11
 
@@ -164,7 +165,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Anthropic Messages, OpenAI Responses, OpenAI Chat Compatible, and Gemini
   Native protocol support.
 - Adapters for Claude Code, Claude Client, Codex, Pi, Kimi Code, Gemini CLI,
-  Grok Build, OpenCode, OpenClaw, and Hermes.
+  Grok Build, OpenCode, and Hermes.
 - Claude Code model-family mapping and named SubAgent model routing.
 - Codex main model, default SubAgent model, and custom Agent model mapping.
 - Local authenticated model gateway with streaming and tool-call translation.

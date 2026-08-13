@@ -7,7 +7,7 @@ use crate::bridge::{
     codex_response_to_chat,
 };
 use crate::configuration::{ConfigurationDocuments, ConfigurationFiles, ProviderRecord};
-use crate::core::model::ProtocolCapability;
+use crate::core::model::{NativeProtocol, ProtocolCapability};
 use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol, build_request_endpoint};
 use axum::Json;
 use axum::Router;
@@ -161,7 +161,10 @@ impl GatewayStatus {
         }
         let mut runtimes = HashMap::new();
         for source in source_runtimes {
-            if !matches!(source.source_client_id.as_str(), "claude_code" | "codex") {
+            if !matches!(
+                source.source_client_id.as_str(),
+                "claude_code" | "codex" | "pi" | "opencode" | "kimi_code"
+            ) {
                 return Err(format!(
                     "unsupported Agent source client: {}",
                     source.source_client_id
@@ -174,7 +177,10 @@ impl GatewayStatus {
                     source.runtime.display()
                 ));
             }
-            if !source.config_root.is_absolute() || !source.config_root.is_dir() {
+            if !source.config_root.is_absolute()
+                || (!source.config_root.is_dir()
+                    && !matches!(source.source_client_id.as_str(), "opencode" | "kimi_code"))
+            {
                 return Err(format!(
                     "{} configuration root does not exist: {}",
                     source.source_client_id,
@@ -187,9 +193,6 @@ impl GatewayStatus {
             {
                 return Err("duplicate Agent source runtime".into());
             }
-        }
-        if routes.is_empty() {
-            return Err("Agent broker requires at least one configured Agent".into());
         }
         let documents = self.files.read().map_err(|error| error.to_string())?;
         let mut extension_ids = HashSet::new();
@@ -495,12 +498,8 @@ impl GatewayStatus {
         model_ids: Vec<String>,
         token: &str,
     ) -> Result<(), String> {
-        if client_id.is_empty()
-            || !client_id
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        {
-            return Err(format!("invalid gateway client id: {client_id}"));
+        if !matches!(client_id, "opencode" | "hermes" | "kimi-code") {
+            return Err(format!("unsupported gateway client: {client_id}"));
         }
         if token.is_empty() || token.trim() != token || token.chars().any(char::is_control) {
             return Err(format!("{client_id} gateway token is empty or invalid"));
@@ -913,7 +912,13 @@ impl Gateway {
         }
 
         request["model"] = Value::String(model.upstream_id.clone());
-        match provider.protocol {
+        let protocol = select_model_protocol(
+            &documents,
+            model_id,
+            provider.protocol,
+            NativeProtocol::AnthropicMessages,
+        )?;
+        match protocol {
             Protocol::OpenAiResponses => {
                 let base = Url::parse(&provider.endpoint).map_err(|_| {
                     GatewayError::Configuration(format!(
@@ -1088,7 +1093,13 @@ impl Gateway {
         let base = Url::parse(&provider.endpoint).map_err(|_| {
             GatewayError::Configuration(format!("invalid provider endpoint: {}", provider.endpoint))
         })?;
-        match provider.protocol {
+        let protocol = select_model_protocol(
+            &documents,
+            model_id,
+            provider.protocol,
+            NativeProtocol::OpenAiResponses,
+        )?;
+        match protocol {
             Protocol::OpenAiResponses => {
                 let endpoint =
                     build_request_endpoint(&base, provider.endpoint_mode, "/v1/responses")
@@ -1221,8 +1232,8 @@ impl Gateway {
                 Ok((StatusCode::OK, Json(response)).into_response())
             }
             Protocol::GeminiNative => Err(GatewayError::Configuration(format!(
-                "Codex local routing does not yet support provider protocol {:?}: {}",
-                provider.protocol, provider.id
+                "Codex local routing does not yet support model protocol {:?}: {}",
+                protocol, provider.id
             ))),
         }
     }
@@ -1233,9 +1244,15 @@ impl Gateway {
         headers: HeaderMap,
         request: Value,
     ) -> Result<Response, GatewayError> {
-        let base = Url::parse(&provider.endpoint).map_err(|_| {
+        let mut base = Url::parse(&provider.endpoint).map_err(|_| {
             GatewayError::Configuration(format!("invalid provider endpoint: {}", provider.endpoint))
         })?;
+        if provider.id == "deepseek"
+            && provider.endpoint_mode == EndpointMode::BaseUrl
+            && base.path().trim_matches('/').is_empty()
+        {
+            base.set_path("/anthropic");
+        }
         let endpoint = build_request_endpoint(&base, provider.endpoint_mode, "/v1/messages")
             .map_err(|_| {
                 GatewayError::Configuration(format!(
@@ -1369,11 +1386,14 @@ fn validate_extension_id(value: &str) -> Result<(), String> {
 
 fn validate_source_agent_id(value: &str) -> Result<(), String> {
     if value.is_empty()
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || !value.split(['/', ':']).all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
     {
-        return Err(format!("invalid Claude Code Agent id: {value}"));
+        return Err(format!("invalid source Agent id: {value}"));
     }
     Ok(())
 }
@@ -1903,6 +1923,39 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
             )
             .await
         }
+        "pi" => {
+            run_pi_agent_runtime(
+                &source_runtime,
+                &cwd,
+                &route.source_agent_id,
+                &prompt,
+                managed_route.as_ref(),
+                &active.base_url,
+            )
+            .await
+        }
+        "opencode" => {
+            run_opencode_agent_runtime(
+                &source_runtime,
+                &cwd,
+                &route.source_agent_id,
+                &prompt,
+                managed_route.as_ref(),
+                &active.base_url,
+            )
+            .await
+        }
+        "kimi_code" => {
+            run_kimi_agent_runtime(
+                &source_runtime,
+                &cwd,
+                &route.source_agent_id,
+                &prompt,
+                managed_route.as_ref(),
+                &active.base_url,
+            )
+            .await
+        }
         source => Err(format!("unsupported Agent source client: {source}")),
     };
     if let (Some(cleanup_token), Ok(mut routes)) = (cleanup_token, runtime_routes.lock()) {
@@ -1918,8 +1971,12 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
             safe_single_line(&message)
         ));
     }
-    if route.source_client_id == "codex" {
-        return codex_last_agent_message(&output.stdout);
+    match route.source_client_id.as_str() {
+        "codex" => return codex_last_agent_message(&output.stdout),
+        "pi" => return pi_last_agent_message(&output.stdout),
+        "opencode" => return opencode_last_agent_message(&output.stdout),
+        "kimi_code" => return kimi_last_agent_message(&output.stdout),
+        _ => {}
     }
     let response: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| "Claude Code Agent runtime returned invalid JSON".to_string())?;
@@ -2064,6 +2121,157 @@ async fn run_codex_agent_runtime(
     output
 }
 
+async fn run_pi_agent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    managed_route: Option<&(String, String, String)>,
+    base_url: &str,
+) -> Result<std::process::Output, String> {
+    let agent_file =
+        crate::local_agents::resolve_pi_agent_file(&source.config_root, cwd, agent_id)?
+            .ok_or_else(|| {
+                format!("Pi Agent does not exist in the user or project configuration: {agent_id}")
+            })?;
+    let agent = crate::local_agents::read_pi_agent_definition(&agent_file)?;
+    let scratch = PiAgentScratch::new(&agent.system_prompt)?;
+    let managed_config = managed_route
+        .map(|(model_route, runtime_token, _)| {
+            PiManagedConfigScratch::new(base_url, runtime_token, model_route)
+        })
+        .transpose()?;
+    let mut command = tokio::process::Command::new(&source.runtime);
+    command
+        .current_dir(cwd)
+        .env(
+            "PI_CODING_AGENT_DIR",
+            managed_config
+                .as_ref()
+                .map(PiManagedConfigScratch::root)
+                .unwrap_or(&source.config_root),
+        )
+        .args(["--mode", "json", "-p", "--no-session"]);
+    if let Some((model_route, _, _)) = managed_route {
+        command.args(["--model", &format!("grillforge_agent/{model_route}")]);
+        command.env("GRILLFORGE_AGENT_CHILD", "1");
+    } else if let Some(model) = &agent.model {
+        command.args(["--model", model]);
+    }
+    if !agent.tools.is_empty() {
+        command.args(["--tools", &agent.tools.join(",")]);
+    }
+    if let Some(system_prompt) = scratch.system_prompt_path() {
+        command.arg("--append-system-prompt").arg(system_prompt);
+    }
+    command.arg(format!("Task: {prompt}"));
+    let output = run_agent_command(command, "Pi").await;
+    drop(scratch);
+    drop(managed_config);
+    output
+}
+
+async fn run_opencode_agent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    managed_route: Option<&(String, String, String)>,
+    base_url: &str,
+) -> Result<std::process::Output, String> {
+    let (mode, _) =
+        crate::local_agents::resolve_opencode_agent(&source.config_root, cwd, agent_id)?
+            .ok_or_else(|| {
+                format!(
+                    "OpenCode Agent does not exist in the user or project configuration: {agent_id}"
+                )
+            })?;
+    let mut command = tokio::process::Command::new(&source.runtime);
+    command
+        .current_dir(cwd)
+        .env("OPENCODE_CONFIG_DIR", &source.config_root)
+        .args(["run", "--format", "json"]);
+    if let Some((model_route, runtime_token, _)) = managed_route {
+        let provider_model = format!("grillforge_agent/{model_route}");
+        let config = json!({
+            "provider": {
+                "grillforge_agent": {
+                    "id": "grillforge_agent",
+                    "name": "GrillForge",
+                    "npm": "@ai-sdk/anthropic",
+                    "env": [],
+                    "options": {
+                        "apiKey": runtime_token,
+                        "baseURL": format!("{}/agent-runtime/v1", base_url.trim_end_matches('/'))
+                    },
+                    "models": {
+                        (model_route): {
+                            "id": model_route,
+                            "name": format!("GrillForge {}", model_route.trim_start_matches("grillforge/"))
+                        }
+                    }
+                }
+            },
+            "agent": {
+                (agent_id): { "model": provider_model }
+            }
+        });
+        command
+            .args(["--model", &provider_model])
+            .env("OPENCODE_CONFIG_CONTENT", config.to_string())
+            .env("GRILLFORGE_AGENT_CHILD", "1");
+    }
+    match mode {
+        crate::local_agents::OpenCodeAgentMode::Primary
+        | crate::local_agents::OpenCodeAgentMode::All => {
+            command.args(["--agent", agent_id]).arg(prompt);
+        }
+        crate::local_agents::OpenCodeAgentMode::Subagent => {
+            return Err(format!(
+                "OpenCode subagent cannot be selected exactly by the CLI: {agent_id}"
+            ));
+        }
+    }
+    run_agent_command(command, "OpenCode").await
+}
+
+async fn run_kimi_agent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    managed_route: Option<&(String, String, String)>,
+    base_url: &str,
+) -> Result<std::process::Output, String> {
+    if !matches!(agent_id, "default" | "okabe") {
+        return Err(format!(
+            "Kimi Code Agent cannot be selected exactly by the CLI: {agent_id}"
+        ));
+    }
+    let managed_config = managed_route
+        .map(|(model_route, runtime_token, _)| {
+            KimiManagedConfigScratch::new(&source.config_root, base_url, runtime_token, model_route)
+        })
+        .transpose()?;
+    let mut command = tokio::process::Command::new(&source.runtime);
+    command
+        .current_dir(cwd)
+        .args(["--agent", agent_id, "--work-dir"])
+        .arg(cwd);
+    if let (Some((model_route, _, _)), Some(config)) = (managed_route, &managed_config) {
+        command
+            .arg("--config-file")
+            .arg(config.path())
+            .args(["--model", model_route])
+            .env("KIMI_SHARE_DIR", config.root())
+            .env("GRILLFORGE_AGENT_CHILD", "1");
+    }
+    command.args(["--quiet", "--prompt", prompt]);
+    let output = run_agent_command(command, "Kimi Code").await;
+    drop(managed_config);
+    output
+}
+
 async fn run_agent_command(
     mut command: tokio::process::Command,
     runtime_name: &str,
@@ -2154,6 +2362,261 @@ fn codex_last_agent_message(stdout: &[u8]) -> Result<String, String> {
         }
     }
     last_message.ok_or_else(|| "Codex Agent runtime returned no final Agent message".to_string())
+}
+
+fn pi_last_agent_message(stdout: &[u8]) -> Result<String, String> {
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|_| "Pi Agent runtime returned non-UTF-8 output".to_string())?;
+    let mut last_message = None;
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = serde_json::from_str(line)
+            .map_err(|_| "Pi Agent runtime returned invalid JSONL".to_string())?;
+        if event.get("type").and_then(Value::as_str) != Some("message_end") {
+            continue;
+        }
+        let message = event
+            .get("message")
+            .ok_or_else(|| "Pi Agent runtime returned message_end without a message".to_string())?;
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if matches!(
+            message.get("stopReason").and_then(Value::as_str),
+            Some("error" | "aborted")
+        ) {
+            return Err(message
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .map(|message| format!("Pi Agent runtime failed: {}", safe_single_line(message)))
+                .unwrap_or_else(|| "Pi Agent runtime stopped before completion".into()));
+        }
+        let content = message
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                "Pi Agent runtime returned an assistant message without content".to_string()
+            })?;
+        if let Some(text) = content.iter().find_map(|part| {
+            (part.get("type").and_then(Value::as_str) == Some("text"))
+                .then(|| part.get("text").and_then(Value::as_str))
+                .flatten()
+        }) {
+            last_message = Some(text.to_string());
+        }
+    }
+    last_message.ok_or_else(|| "Pi Agent runtime returned no final Agent message".to_string())
+}
+
+fn opencode_last_agent_message(stdout: &[u8]) -> Result<String, String> {
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|_| "OpenCode Agent runtime returned non-UTF-8 output".to_string())?;
+    let mut last_message = None;
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = serde_json::from_str(line)
+            .map_err(|_| "OpenCode Agent runtime returned invalid JSONL".to_string())?;
+        if event.get("type").and_then(Value::as_str) != Some("text") {
+            continue;
+        }
+        let Some(text) = event
+            .get("part")
+            .and_then(|part| part.get("text"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+        else {
+            continue;
+        };
+        last_message = Some(text.to_string());
+    }
+    last_message.ok_or_else(|| "OpenCode Agent runtime returned no final Agent message".to_string())
+}
+
+fn kimi_last_agent_message(stdout: &[u8]) -> Result<String, String> {
+    let output = std::str::from_utf8(stdout)
+        .map_err(|_| "Kimi Code Agent runtime returned non-UTF-8 output".to_string())?
+        .trim();
+    if output.is_empty() {
+        Err("Kimi Code Agent runtime returned no final Agent message".to_string())
+    } else {
+        Ok(output.to_string())
+    }
+}
+
+struct PiAgentScratch {
+    root: Option<PathBuf>,
+    system_prompt: Option<PathBuf>,
+}
+
+impl PiAgentScratch {
+    fn new(system_prompt: &str) -> Result<Self, String> {
+        if system_prompt.trim().is_empty() {
+            return Ok(Self {
+                root: None,
+                system_prompt: None,
+            });
+        }
+        let root =
+            std::env::temp_dir().join(format!("grillforge-pi-agent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)
+            .map_err(|error| format!("could not create Pi Agent scratch directory: {error}"))?;
+        let path = root.join("system-prompt.md");
+        if let Err(error) = crate::storage::atomic_replace(&path, system_prompt.as_bytes()) {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(format!("could not write Pi Agent system prompt: {error}"));
+        }
+        Ok(Self {
+            root: Some(root),
+            system_prompt: Some(path),
+        })
+    }
+
+    fn system_prompt_path(&self) -> Option<&Path> {
+        self.system_prompt.as_deref()
+    }
+}
+
+impl Drop for PiAgentScratch {
+    fn drop(&mut self) {
+        if let Some(root) = &self.root {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+struct PiManagedConfigScratch {
+    root: PathBuf,
+}
+
+impl PiManagedConfigScratch {
+    fn new(base_url: &str, runtime_token: &str, model_route: &str) -> Result<Self, String> {
+        let root = std::env::temp_dir().join(format!(
+            "grillforge-pi-managed-agent-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)
+            .map_err(|error| format!("could not create Pi Agent configuration: {error}"))?;
+        let models = json!({
+            "providers": {
+                "grillforge_agent": {
+                    "baseUrl": format!("{}/agent-runtime", base_url.trim_end_matches('/')),
+                    "api": "anthropic-messages",
+                    "apiKey": runtime_token,
+                    "models": [{
+                        "id": model_route,
+                        "name": "GrillForge Agent",
+                        "reasoning": true,
+                        "input": ["text", "image"],
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        "contextWindow": 200000,
+                        "maxTokens": 64000
+                    }]
+                }
+            }
+        });
+        let bytes = serde_json::to_vec_pretty(&models)
+            .map_err(|error| format!("could not encode Pi Agent configuration: {error}"))?;
+        if let Err(error) = crate::storage::atomic_replace(&root.join("models.json"), &bytes) {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(format!("could not write Pi Agent configuration: {error}"));
+        }
+        Ok(Self { root })
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for PiManagedConfigScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+struct KimiManagedConfigScratch {
+    root: PathBuf,
+    path: PathBuf,
+}
+
+impl KimiManagedConfigScratch {
+    fn new(
+        source_root: &Path,
+        base_url: &str,
+        runtime_token: &str,
+        model_route: &str,
+    ) -> Result<Self, String> {
+        let source = source_root.join("config.toml");
+        let contents = if source.exists() {
+            std::fs::read_to_string(&source)
+                .map_err(|error| format!("could not read {}: {error}", source.display()))?
+        } else {
+            String::new()
+        };
+        let mut document = contents
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| format!("invalid Kimi Code TOML {}: {error}", source.display()))?;
+        document["default_model"] = toml_edit::value(model_route);
+        document["telemetry"] = toml_edit::value(false);
+
+        if document.get("providers").is_none() {
+            document["providers"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let providers = document["providers"]
+            .as_table_mut()
+            .ok_or_else(|| format!("invalid Kimi Code providers table: {}", source.display()))?;
+        let mut provider = toml_edit::Table::new();
+        provider["type"] = toml_edit::value("anthropic");
+        provider["base_url"] = toml_edit::value(format!(
+            "{}/agent-runtime/v1",
+            base_url.trim_end_matches('/')
+        ));
+        provider["api_key"] = toml_edit::value(runtime_token);
+        providers.insert("grillforge_agent", toml_edit::Item::Table(provider));
+
+        if document.get("models").is_none() {
+            document["models"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let models = document["models"]
+            .as_table_mut()
+            .ok_or_else(|| format!("invalid Kimi Code models table: {}", source.display()))?;
+        let mut model = toml_edit::Table::new();
+        model["provider"] = toml_edit::value("grillforge_agent");
+        model["model"] = toml_edit::value(model_route);
+        model["display_name"] = toml_edit::value(format!(
+            "GrillForge {}",
+            model_route.trim_start_matches("grillforge/")
+        ));
+        model["max_context_size"] = toml_edit::value(200_000);
+        models.insert(model_route, toml_edit::Item::Table(model));
+
+        let root = std::env::temp_dir().join(format!(
+            "grillforge-kimi-managed-agent-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)
+            .map_err(|error| format!("could not create Kimi Code Agent configuration: {error}"))?;
+        let path = root.join("config.toml");
+        if let Err(error) = crate::storage::atomic_replace(&path, document.to_string().as_bytes()) {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(format!(
+                "could not write Kimi Code Agent configuration: {error}"
+            ));
+        }
+        Ok(Self { root, path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for KimiManagedConfigScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
 }
 
 fn required_mcp_string(
@@ -2340,6 +2803,79 @@ async fn messages(
         Ok(response) => response,
         Err(error) => error_response(error),
     }
+}
+
+fn select_model_protocol(
+    documents: &ConfigurationDocuments,
+    model_id: &str,
+    legacy_provider_protocol: Protocol,
+    inbound: NativeProtocol,
+) -> Result<Protocol, GatewayError> {
+    let protocols = documents
+        .models
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .and_then(|model| model.native_protocols.as_ref());
+    let Some(protocols) = protocols else {
+        return Ok(legacy_provider_protocol);
+    };
+    if protocols.is_empty() {
+        return Err(GatewayError::Configuration(format!(
+            "model {model_id} has no verified native protocol"
+        )));
+    }
+    let provider_default = match legacy_provider_protocol {
+        Protocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
+        Protocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
+        Protocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
+        Protocol::GeminiNative => NativeProtocol::GeminiNative,
+    };
+    let selected = if protocols.contains(&inbound) {
+        inbound
+    } else if protocols.contains(&provider_default) {
+        provider_default
+    } else {
+        match inbound {
+            NativeProtocol::AnthropicMessages => [
+                NativeProtocol::OpenAiResponses,
+                NativeProtocol::OpenAiChat,
+                NativeProtocol::GeminiNative,
+                NativeProtocol::AnthropicMessages,
+            ],
+            NativeProtocol::OpenAiResponses => [
+                NativeProtocol::OpenAiChat,
+                NativeProtocol::AnthropicMessages,
+                NativeProtocol::GeminiNative,
+                NativeProtocol::OpenAiResponses,
+            ],
+            NativeProtocol::OpenAiChat => [
+                NativeProtocol::OpenAiResponses,
+                NativeProtocol::AnthropicMessages,
+                NativeProtocol::GeminiNative,
+                NativeProtocol::OpenAiChat,
+            ],
+            NativeProtocol::GeminiNative => [
+                NativeProtocol::OpenAiResponses,
+                NativeProtocol::OpenAiChat,
+                NativeProtocol::AnthropicMessages,
+                NativeProtocol::GeminiNative,
+            ],
+        }
+        .into_iter()
+        .find(|candidate| protocols.contains(candidate))
+        .ok_or_else(|| {
+            GatewayError::Configuration(format!(
+                "model {model_id} has no usable verified native protocol"
+            ))
+        })?
+    };
+    Ok(match selected {
+        NativeProtocol::AnthropicMessages => Protocol::AnthropicMessages,
+        NativeProtocol::OpenAiResponses => Protocol::OpenAiResponses,
+        NativeProtocol::OpenAiChat => Protocol::OpenAiChatCompletions,
+        NativeProtocol::GeminiNative => Protocol::GeminiNative,
+    })
 }
 
 fn response_to_axum(response: reqwest::Response) -> Response {

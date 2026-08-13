@@ -46,7 +46,7 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 - **以客户端为中心**：先选择 Claude Code、Codex、Pi、Kimi Code 等客户端，再配置该客户端真实支持的模型结构。
 - **槽位独立选模**：同一个 Coding Agent 的不同槽位可分别选择不同的 Provider 与模型；GrillForge 会按客户端的真实能力呈现槽位，并保留 Codex 内置 SubAgent 必须与主模型同 Provider 等原生约束。
 - **共享模型资产**：Provider 和 Model 只维护一次，可被多个客户端独立使用。
-- **扩展 SubAgent**：把本机已有的 Agent 保存到统一库，再按客户端独立授权；存在绑定时自动挂载 MCP，最后一个绑定关闭后自动恢复客户端原配置。
+- **扩展 SubAgent**：把本机已有的 Agent 保存到统一库，再按客户端独立授权；每个客户端可独立挂载或卸载 MCP，绑定列表为空时也保持用户选择的挂载状态。
 - **多协议桥接**：支持 Anthropic Messages、OpenAI Responses、OpenAI Chat Compatible 与 Gemini Native。
 - **安全接管与恢复**：原子写入、单一恢复快照、配置差异检测和精确恢复。
 - **失败即停止**：认证、配额、模型、Endpoint 或协议错误直接返回，不静默降级、不自动切换 Provider。
@@ -62,11 +62,10 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 | Claude Client | 对话 / Cowork 安全角色映射；1P / 3P 均可独立使用扩展 SubAgent MCP | 已实现并完成本机配置链路测试 |
 | Codex | 主模型、内置 SubAgent 默认模型、自定义 Agent 独立模型；支持独立 CLI 与 ChatGPT 内置 CLI | 已实现并完成真实 CLI 配置验收 |
 | Pi | 默认模型、可用模型池；通过社区 `pi-mcp-extension` 使用扩展 SubAgent | 已实现并完成真实 CLI、扩展安装、鉴权与网关链路测试 |
-| Kimi Code | Primary、Secondary、模型池，以及内置/全局永久 Agent 同步 | 已实现；配置与网关集成测试通过，真实 CLI E2E 待验证 |
+| Kimi Code | 默认模型、模型池，以及可精确选择的 `default` / `okabe` 内置 Agent | 已实现；使用当前 `~/.kimi/config.toml` 配置结构，配置与网关集成测试通过 |
 | Gemini CLI | 默认模型 | 已实现 |
 | Grok Build | 默认模型 | 已实现 |
 | OpenCode | 默认模型与模型池 | 已实现 |
-| OpenClaw | Primary 与有序 Fallback 模型池 | 已实现 |
 | Hermes | 默认模型与模型池 | 已实现 |
 
 客户端检测会依次检查应用 PATH、标准安装目录、NVM/fnm/Volta/asdf/mise/pnpm/Bun/npm 等动态目录，以及用户的交互式登录 Shell。存在多个同名 CLI 时会逐个执行 `--version`，忽略失效候选并使用第一个有效版本。每次进入“客户端”页面都会重新检测，无需重启 GrillForge。
@@ -140,12 +139,12 @@ pnpm tauri dev
 
 ### 扩展 SubAgent
 
-1. 在“扩展 SubAgent”页面选择 GrillForge 已发现的本机 Agent。目前执行源开放经过验证的 Claude Code 与 Codex Agent。
+1. 在“扩展 SubAgent”页面选择 GrillForge 已发现的本机 Agent。目前执行源开放经过验证的 Claude Code、Codex、Pi、OpenCode 与 Kimi Code Agent。
 2. 可选择跟随来源 Agent 原生模型，或绑定一个 GrillForge 模型。
-3. 在目标客户端页面开启该扩展 SubAgent。该客户端从零个绑定变为一个时，GrillForge 自动挂载客户端专属 MCP；关闭最后一个绑定时自动卸载并恢复原文件。
+3. 在目标客户端页面挂载客户端专属 MCP，再开启允许该客户端使用的扩展 SubAgent。绑定变化会实时更新已挂载 MCP 的 Agent 列表；关闭全部绑定不会自动卸载 MCP。
 4. Pi 本身没有原生 MCP。GrillForge 会检测社区 `pi-mcp-extension`；缺失时可在 Pi 页面确认后，一键安装固定版本 `1.5.0`。新 Pi 会话会加载挂载配置。
 
-模型配置与扩展 SubAgent 绑定彼此独立：停用客户端的模型配置不会解绑 MCP，解绑 MCP 也不会改变模型槽位。Claude Client 的扩展 SubAgent MCP 在 1P 与 3P 模式下都可使用。
+模型配置、MCP 挂载和扩展 SubAgent 绑定彼此独立。正常退出时 GrillForge 恢复客户端 MCP 文件，但保留挂载选择；下次启动会在后台重新挂载。Claude Client 的扩展 SubAgent MCP 在 1P 与 3P 模式下都可使用。
 
 MCP 只暴露固定的 Agent 列表与调用入口。模型、Runtime 和来源 Agent 均由 GrillForge 根据当前绑定解析，调用方不能自行注入；实际 Agent Loop 和工具仍由本机 Coding Agent Runtime 执行。
 
@@ -228,7 +227,7 @@ macOS Universal（`arm64` + `x86_64`）发布包已通过 Developer ID Applicati
 
 ## 后续计划
 
-- 使用真实 Kimi Code CLI 完成 Primary、Secondary 与持久 Agent 端到端验收。
+- 补充 Kimi Code CLI 的真实在线模型调用验收。
 - 在 Windows/MSVC 环境生成并验证原生安装包。
 - 补充贡献指南、安全策略和正式 Release 自动化。
 
