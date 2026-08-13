@@ -82,7 +82,7 @@ fn binding_and_mcp_lifecycle_are_independent_and_empty_routes_stay_mounted() {
     let active: serde_json::Value =
         serde_json::from_slice(&fs::read(&claude_json).expect("active")).expect("JSON");
     assert_eq!(
-        active["mcpServers"]["grillforge-claude-code"]["url"],
+        active["mcpServers"]["grillforge-claude-code"]["env"]["GRILLFORGE_MCP_URL"],
         "http://127.0.0.1:15721/mcp/claude_code"
     );
     assert_eq!(
@@ -880,6 +880,13 @@ fn crash_restart_removes_the_old_mcp_layer_before_restoring_models_then_remounts
     first
         .mount_client(&control, &gateway, "claude_desktop")
         .expect("mount before crash");
+    let first_live: serde_json::Value =
+        serde_json::from_slice(&fs::read(&desktop_config).expect("first live")).expect("JSON");
+    let first_token =
+        first_live["mcpServers"]["grillforge-claude-desktop"]["env"]["GRILLFORGE_MCP_TOKEN"]
+            .as_str()
+            .expect("first token")
+            .to_string();
 
     let restarted = ExtensionIntegrationService::new(manager(), &claude, Some(runtime), None);
     restarted
@@ -900,6 +907,10 @@ fn crash_restart_removes_the_old_mcp_layer_before_restoring_models_then_remounts
     assert_eq!(
         live["mcpServers"]["grillforge-claude-desktop"]["args"],
         serde_json::json!(["mcp-stdio"])
+    );
+    assert_eq!(
+        live["mcpServers"]["grillforge-claude-desktop"]["env"]["GRILLFORGE_MCP_TOKEN"],
+        first_token
     );
     restarted.restore_live_mounts(&gateway).expect("exit");
     let restored: serde_json::Value =

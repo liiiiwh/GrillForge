@@ -4,13 +4,14 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## [0.2.2] - 2026-08-13
+## [0.2.3] - 2026-08-13
 
 ### Changed
 
-- Extension Agent execution is asynchronous: `run_agent` immediately returns
-  a task ID, while `get_agent_task` long-polls or reads the final result. Native
-  Agent runtimes may run for up to one hour without hitting a host MCP timeout.
+- Extension Agent execution uses one synchronous `run_agent` call that returns
+  only the native Agent's final result. Claude Code and Claude Client use stdio
+  mounts to avoid the one-minute HTTP first-byte timer; each runtime may run for
+  up to three hours, and workflows may invoke independent calls concurrently.
 
 ### Fixed
 

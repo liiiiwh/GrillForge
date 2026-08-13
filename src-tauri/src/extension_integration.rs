@@ -8,10 +8,9 @@ use crate::local_agents::{
     kimi_user_home,
 };
 use crate::mcp_mount::McpMountManager;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -37,7 +36,6 @@ pub struct ExtensionIntegrationService {
     kimi_root: Option<PathBuf>,
     kimi_runtime: Option<PathBuf>,
     pi_settings_path: Option<PathBuf>,
-    tokens: Mutex<HashMap<String, String>>,
     operation_lock: Mutex<()>,
 }
 
@@ -63,7 +61,6 @@ impl ExtensionIntegrationService {
             kimi_root: None,
             kimi_runtime: None,
             pi_settings_path,
-            tokens: Mutex::new(HashMap::new()),
             operation_lock: Mutex::new(()),
         }
     }
@@ -287,12 +284,11 @@ impl ExtensionIntegrationService {
     fn restore_live_mounts_unlocked(&self, gateway: &GatewayStatus) -> Result<(), String> {
         for client_id in self.mounts.supported_clients() {
             gateway.deactivate_client_agent_broker(&client_id);
+            if self.mounts.is_mounted(&client_id)? {
+                self.mounts.credential(&client_id)?;
+            }
             self.mounts.unmount(&client_id)?;
         }
-        self.tokens
-            .lock()
-            .map_err(|_| "extension MCP token lock is poisoned".to_string())?
-            .clear();
         Ok(())
     }
 
@@ -340,10 +336,6 @@ impl ExtensionIntegrationService {
         }
         gateway.deactivate_client_agent_broker(client_id);
         self.mounts.unmount(client_id)?;
-        self.tokens
-            .lock()
-            .map_err(|_| "extension MCP token lock is poisoned".to_string())?
-            .remove(client_id);
         Ok(())
     }
 
@@ -402,16 +394,7 @@ impl ExtensionIntegrationService {
                 model_id: extension.model_id.clone(),
             });
         }
-        let token = {
-            let mut tokens = self
-                .tokens
-                .lock()
-                .map_err(|_| "extension MCP token lock is poisoned".to_string())?;
-            tokens
-                .entry(client_id.to_string())
-                .or_insert_with(|| Uuid::new_v4().to_string())
-                .clone()
-        };
+        let token = self.mounts.credential(client_id)?;
         let url = format!("{}/mcp/{client_id}", gateway.base_url.trim_end_matches('/'));
         self.mounts.mount(client_id, &url, &token)?;
         let source_ids = routes

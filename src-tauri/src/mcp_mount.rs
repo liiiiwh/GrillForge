@@ -144,6 +144,7 @@ impl McpMountManager {
                 client_id,
                 url,
                 token,
+                target.stdio_command.as_deref(),
             )?,
             McpClientFormat::ClaudeDesktopJson => update_claude_desktop_json(
                 current.as_deref(),
@@ -218,6 +219,31 @@ impl McpMountManager {
             ));
         }
         Ok(())
+    }
+
+    pub fn credential(&self, client_id: &str) -> Result<String, String> {
+        let target = self.target(client_id)?;
+        let path = self.credential_path(client_id);
+        match fs::read_to_string(&path) {
+            Ok(token) => {
+                validate_token(&token)?;
+                Ok(token)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let token =
+                    mounted_credential(target)?.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                fs::create_dir_all(&self.snapshot_root).map_err(|error| {
+                    format!(
+                        "could not create MCP credential directory {}: {error}",
+                        self.snapshot_root.display()
+                    )
+                })?;
+                crate::storage::atomic_replace(&path, token.as_bytes())
+                    .map_err(|error| format!("could not write MCP credential: {error}"))?;
+                Ok(token)
+            }
+            Err(error) => Err(format!("could not read MCP credential: {error}")),
+        }
     }
 
     pub fn unmount(&self, client_id: &str) -> Result<(), String> {
@@ -308,6 +334,57 @@ impl McpMountManager {
     fn snapshot_path(&self, client_id: &str) -> PathBuf {
         self.snapshot_root.join(format!("mcp-{client_id}.json"))
     }
+
+    fn credential_path(&self, client_id: &str) -> PathBuf {
+        self.snapshot_root.join(format!("mcp-{client_id}.token"))
+    }
+}
+
+fn mounted_credential(target: &McpMountTarget) -> Result<Option<String>, String> {
+    let current = read_optional(&target.config_path)?;
+    let name = server_name(&target.client_id);
+    let token = if target.format == McpClientFormat::CodexToml {
+        parse_toml(current.as_deref(), &target.config_path)?
+            .get("mcp_servers")
+            .and_then(toml_edit::Item::as_table_like)
+            .and_then(|servers| servers.get(&name))
+            .and_then(|entry| entry.get("http_headers"))
+            .and_then(|headers| headers.get("Authorization"))
+            .and_then(toml_edit::Item::as_str)
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::to_string)
+    } else {
+        let root = parse_json_object(current.as_deref(), &target.config_path)?;
+        let entry = root
+            .get(json_section(target.format))
+            .and_then(Value::as_object)
+            .and_then(|servers| servers.get(&name));
+        if matches!(
+            target.format,
+            McpClientFormat::ClaudeJson | McpClientFormat::ClaudeDesktopJson
+        ) {
+            entry
+                .and_then(|entry| entry.pointer("/env/GRILLFORGE_MCP_TOKEN"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    entry
+                        .and_then(|entry| entry.pointer("/headers/Authorization"))
+                        .and_then(Value::as_str)
+                        .and_then(|value| value.strip_prefix("Bearer "))
+                        .map(str::to_string)
+                })
+        } else {
+            entry
+                .and_then(|entry| entry.pointer("/headers/Authorization"))
+                .and_then(Value::as_str)
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .map(str::to_string)
+        }
+    };
+    token
+        .map(|token| validate_token(&token).map(|()| token))
+        .transpose()
 }
 
 fn update_claude_json(
@@ -316,7 +393,9 @@ fn update_claude_json(
     client_id: &str,
     url: &str,
     token: &str,
+    stdio_command: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
+    let stdio_command = resolve_stdio_command(stdio_command, "Claude Code")?;
     let mut root = parse_json_object(current, path)?;
     let servers = root
         .entry("mcpServers")
@@ -324,10 +403,9 @@ fn update_claude_json(
         .as_object_mut()
         .ok_or_else(|| format!("mcpServers must be an object: {}", path.display()))?;
     let name = server_name(client_id);
-    if servers
-        .get(&name)
-        .is_some_and(|existing| existing.get("url").and_then(Value::as_str) != Some(url))
-    {
+    if servers.get(&name).is_some_and(|existing| {
+        mounted_json_url(McpClientFormat::ClaudeJson, existing) != Some(url)
+    }) {
         return Err(format!(
             "refusing to overwrite non-GrillForge MCP server: {name}"
         ));
@@ -335,10 +413,13 @@ fn update_claude_json(
     servers.insert(
         name,
         json!({
-            "type": "http",
-            "url": url,
+            "command": &stdio_command,
+            "args": ["mcp-stdio"],
+            "env": {
+                "GRILLFORGE_MCP_URL": url,
+                "GRILLFORGE_MCP_TOKEN": token
+            },
             "alwaysLoad": true,
-            "headers": {"Authorization": format!("Bearer {token}")}
         }),
     );
     serde_json::to_vec_pretty(&Value::Object(root))
@@ -353,12 +434,7 @@ fn update_claude_desktop_json(
     token: &str,
     stdio_command: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
-    let stdio_command = stdio_command.ok_or_else(|| {
-        "Claude Client MCP mount requires the GrillForge executable path".to_string()
-    })?;
-    if !stdio_command.is_absolute() {
-        return Err("Claude Client MCP stdio command must be an absolute path".into());
-    }
+    let stdio_command = resolve_stdio_command(stdio_command, "Claude Client")?;
     let mut root = parse_json_object(current, path)?;
     let servers = root
         .entry("mcpServers")
@@ -377,7 +453,7 @@ fn update_claude_desktop_json(
     servers.insert(
         name,
         json!({
-            "command": stdio_command,
+            "command": &stdio_command,
             "args": ["mcp-stdio"],
             "env": {
                 "GRILLFORGE_MCP_URL": url,
@@ -387,6 +463,20 @@ fn update_claude_desktop_json(
     );
     serde_json::to_vec_pretty(&Value::Object(root))
         .map_err(|error| format!("could not serialize {}: {error}", path.display()))
+}
+
+fn resolve_stdio_command(command: Option<&Path>, client: &str) -> Result<PathBuf, String> {
+    let command = match command {
+        Some(command) => command.to_path_buf(),
+        None => std::env::current_exe()
+            .map_err(|error| format!("could not resolve the GrillForge executable: {error}"))?,
+    };
+    if !command.is_absolute() {
+        return Err(format!(
+            "{client} MCP stdio command must be an absolute path"
+        ));
+    }
+    Ok(command)
 }
 
 fn capture_mount_snapshot(
@@ -530,18 +620,22 @@ fn remove_codex_mount(
 }
 
 fn mounted_json_url(format: McpClientFormat, entry: &Value) -> Option<&str> {
-    if format == McpClientFormat::ClaudeDesktopJson {
+    if matches!(
+        format,
+        McpClientFormat::ClaudeJson | McpClientFormat::ClaudeDesktopJson
+    ) {
         return entry
             .pointer("/env/GRILLFORGE_MCP_URL")
-            .and_then(Value::as_str);
+            .and_then(Value::as_str)
+            .or_else(|| entry.get("url").and_then(Value::as_str));
     }
     let key = match format {
         McpClientFormat::GeminiJson => "httpUrl",
-        McpClientFormat::ClaudeJson
-        | McpClientFormat::OpenCodeJson
+        McpClientFormat::OpenCodeJson
         | McpClientFormat::KimiJson
         | McpClientFormat::PiExtensionJson => "url",
-        McpClientFormat::ClaudeDesktopJson
+        McpClientFormat::ClaudeJson
+        | McpClientFormat::ClaudeDesktopJson
         | McpClientFormat::CodexToml
         | McpClientFormat::Unsupported => return None,
     };
@@ -618,7 +712,6 @@ fn update_codex_toml(
     let mut enabled_tools = toml_edit::Array::new();
     enabled_tools.push("list_agents");
     enabled_tools.push("run_agent");
-    enabled_tools.push("get_agent_task");
     server["enabled_tools"] = toml_edit::value(enabled_tools);
     let mut omitted_surfaces = toml_edit::Array::new();
     omitted_surfaces.push("deferred");

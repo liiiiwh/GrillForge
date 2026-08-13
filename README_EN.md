@@ -121,7 +121,7 @@ pnpm tauri dev
 1. Sync and choose a local Agent on Extension SubAgents.
 2. Keep the source Agent's native model or bind a GrillForge model.
 3. Mount the client-scoped MCP on the destination client, then enable the extensions it may use. Binding changes update the mounted Agent list immediately; removing all bindings does not unmount MCP.
-4. `run_agent` immediately returns a task ID. The primary Agent waits for or reads the result with `get_agent_task`; long-running work continues in the background for up to one hour without occupying one MCP tool-call window.
+4. `run_agent` waits for the local Agent and returns only its final result, without polling or replaying intermediate output. Workflows may call multiple Extension SubAgents concurrently; each task may run for up to three hours.
 5. Pi connects through community `pi-mcp-extension`; GrillForge installs a pinned version only after user confirmation.
 
 Model configuration, MCP mounting, and Extension SubAgent bindings remain independent. MCP exposes only fixed Agent-list and invocation entries; the source client's local Runtime always executes the Agent Loop and tools.

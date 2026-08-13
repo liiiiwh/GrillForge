@@ -13,11 +13,10 @@ fn claude_mount_is_isolated_updated_and_removed_without_touching_other_servers()
     .expect("fixture");
     let manager = McpMountManager::new(
         root.path().join("snapshots"),
-        [McpMountTarget::new(
-            "claude_code",
-            &config,
-            McpClientFormat::ClaudeJson,
-        )],
+        [
+            McpMountTarget::new("claude_code", &config, McpClientFormat::ClaudeJson)
+                .with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge"),
+        ],
     )
     .expect("manager");
 
@@ -41,12 +40,20 @@ fn claude_mount_is_isolated_updated_and_removed_without_touching_other_servers()
     assert_eq!(active["theme"], "dark");
     assert_eq!(active["mcpServers"]["keep"]["command"], "keep");
     assert_eq!(
-        active["mcpServers"]["grillforge-claude-code"]["url"],
+        active["mcpServers"]["grillforge-claude-code"]["env"]["GRILLFORGE_MCP_URL"],
         "http://127.0.0.1:15721/mcp/claude_code"
     );
     assert_eq!(
-        active["mcpServers"]["grillforge-claude-code"]["headers"]["Authorization"],
-        "Bearer second-token"
+        active["mcpServers"]["grillforge-claude-code"]["env"]["GRILLFORGE_MCP_TOKEN"],
+        "second-token"
+    );
+    assert_eq!(
+        active["mcpServers"]["grillforge-claude-code"]["command"],
+        "/Applications/GrillForge.app/Contents/MacOS/grillforge"
+    );
+    assert_eq!(
+        active["mcpServers"]["grillforge-claude-code"]["args"],
+        serde_json::json!(["mcp-stdio"])
     );
     assert_eq!(
         active["mcpServers"]["grillforge-claude-code"]["alwaysLoad"],
@@ -210,7 +217,7 @@ fn codex_mount_uses_the_real_http_mcp_toml_shape() {
             .iter()
             .filter_map(toml_edit::Value::as_str)
             .collect::<Vec<_>>(),
-        vec!["list_agents", "run_agent", "get_agent_task"]
+        vec!["list_agents", "run_agent"]
     );
     assert_eq!(
         server["omit_tools_from"]
@@ -238,6 +245,40 @@ fn codex_mount_uses_the_real_http_mcp_toml_shape() {
         Some("http://127.0.0.1:9999/mcp")
     );
     assert!(parsed["mcp_servers"].get("grillforge-codex").is_none());
+}
+
+#[test]
+fn credential_adopts_an_existing_managed_mount_and_survives_a_restart() {
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join("config.toml");
+    fs::write(
+        &config,
+        r#"[mcp_servers.grillforge-codex]
+url = "http://127.0.0.1:15721/mcp/codex"
+http_headers = { Authorization = "Bearer existing-client-token" }
+"#,
+    )
+    .expect("existing mount");
+    let make_manager = || {
+        McpMountManager::new(
+            root.path().join("snapshots"),
+            [McpMountTarget::new(
+                "codex",
+                &config,
+                McpClientFormat::CodexToml,
+            )],
+        )
+        .expect("manager")
+    };
+
+    assert_eq!(
+        make_manager().credential("codex").expect("adopt token"),
+        "existing-client-token"
+    );
+    assert_eq!(
+        make_manager().credential("codex").expect("reuse token"),
+        "existing-client-token"
+    );
 }
 
 #[test]

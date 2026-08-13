@@ -83,7 +83,8 @@ pub fn run() {
                         "claude_code",
                         home.join(".claude.json"),
                         mcp_mount::McpClientFormat::ClaudeJson,
-                    ),
+                    )
+                    .with_stdio_command(&executable),
                     mcp_mount::McpMountTarget::new(
                         "claude_desktop",
                         claude_desktop_integration::default_claude_desktop_paths(&home)

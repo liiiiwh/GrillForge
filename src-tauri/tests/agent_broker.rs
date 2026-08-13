@@ -9,47 +9,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use tokio::net::TcpListener;
 
-async fn await_agent_task(base_url: &str, client_id: &str, token: &str, started: Value) -> Value {
-    if started["result"]["isError"] == true {
-        return started;
-    }
-    let task: Value = serde_json::from_str(
-        started["result"]["content"][0]["text"]
-            .as_str()
-            .expect("started task JSON"),
-    )
-    .expect("started task");
-    let task_id = task["taskId"].as_str().expect("task id");
-    let completed: Value = reqwest::Client::new()
-        .post(format!("{base_url}/mcp/{client_id}"))
-        .bearer_auth(token)
-        .json(&json!({
-            "jsonrpc":"2.0","id":999,"method":"tools/call",
-            "params":{"name":"get_agent_task","arguments":{"taskId":task_id,"waitSeconds":10}}
-        }))
-        .send()
-        .await
-        .expect("get task response")
-        .json()
-        .await
-        .expect("get task JSON");
-    let task: Value = serde_json::from_str(
-        completed["result"]["content"][0]["text"]
-            .as_str()
-            .expect("completed task JSON"),
-    )
-    .expect("completed task");
-    match task["status"].as_str() {
-        Some("completed") => json!({
-            "result":{"isError":false,"content":[{"type":"text","text":task["result"]}]}
-        }),
-        Some("failed") => json!({
-            "result":{"isError":true,"content":[{"type":"text","text":task["error"]}]}
-        }),
-        status => panic!("task did not finish: {status:?}: {task}"),
-    }
-}
-
 #[tokio::test]
 async fn client_scoped_mcp_broker_resolves_the_extension_and_launches_child_only_routing() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -180,7 +139,7 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
         tools["result"]["tools"][1]["inputSchema"]["properties"]["webAccess"]["type"],
         "boolean"
     );
-    assert_eq!(tools["result"]["tools"][2]["name"], "get_agent_task");
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 2);
 
     let listed: Value = client
         .post(format!("{base_url}/mcp/claude_code"))
@@ -199,7 +158,6 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
         serde_json::from_str(listed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(listed[0]["webAccessSupported"], true);
 
-    let started_at = std::time::Instant::now();
     let response = client
         .post(format!("{base_url}/mcp/claude_code"))
         .bearer_auth("broker-secret")
@@ -222,76 +180,87 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = response.json().await.expect("MCP JSON");
     assert_eq!(body["result"]["isError"], false);
-    assert!(started_at.elapsed() < std::time::Duration::from_millis(500));
-    let task: Value = serde_json::from_str(
-        body["result"]["content"][0]["text"]
-            .as_str()
-            .expect("task JSON"),
-    )
-    .expect("task object");
-    assert_eq!(task["status"], "running");
-    let task_id = task["taskId"].as_str().expect("task id");
+    assert_eq!(
+        body["result"]["content"][0]["text"],
+        "child runtime completed"
+    );
+}
 
-    let completed: Value = client
-        .post(format!("{base_url}/mcp/claude_code"))
-        .bearer_auth("broker-secret")
-        .json(&json!({
-            "jsonrpc":"2.0",
-            "id":4,
-            "method":"tools/call",
-            "params": {
-                "name":"get_agent_task",
-                "arguments":{"taskId":task_id,"waitSeconds":10}
-            }
-        }))
-        .send()
-        .await
-        .expect("task response")
-        .json()
-        .await
-        .expect("task JSON response");
-    let completed: Value = serde_json::from_str(
-        completed["result"]["content"][0]["text"]
-            .as_str()
-            .expect("completed task JSON"),
+#[tokio::test]
+async fn workflow_can_run_independent_extension_agents_concurrently() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    let starts = directory.path().join("starts");
+    fs::write(
+        &runtime,
+        format!(
+            r#"#!/bin/sh
+printf 'started\n' >> '{}'
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50; do
+  [ "$(wc -l < '{}')" -ge 2 ] && break
+  sleep 0.1
+done
+[ "$(wc -l < '{}')" -ge 2 ] || exit 31
+printf '%s' '{{"type":"result","result":"parallel child completed"}}'
+"#,
+            starts.display(),
+            starts.display(),
+            starts.display()
+        ),
     )
-    .expect("completed task object");
-    assert_eq!(completed["result"], "child runtime completed");
-    assert_eq!(completed["status"], "completed");
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
 
-    status
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
         .activate_client_agent_broker(
             "codex",
-            &service.state().expect("state"),
-            "other-client-secret",
+            &service.state().unwrap(),
+            "parallel-token",
             &runtime,
             directory.path(),
             vec![AgentRuntimeRoute {
-                extension_id: "deepseek-reviewer".into(),
+                extension_id: "parallel-worker".into(),
                 source_client_id: "claude_code".into(),
-                source_agent_id: "reviewer".into(),
-                model_id: Some("worker".into()),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
             }],
         )
-        .expect("activate second broker");
-    let isolated: Value = client
-        .post(format!("{base_url}/mcp/codex"))
-        .bearer_auth("other-client-secret")
-        .json(&json!({
-            "jsonrpc":"2.0","id":5,"method":"tools/call",
-            "params":{"name":"get_agent_task","arguments":{"taskId":task_id}}
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
-    assert_eq!(isolated["result"]["isError"], true, "{isolated}");
-    assert_eq!(
-        isolated["result"]["content"][0]["text"],
-        format!("unknown Agent task: {task_id}")
-    );
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |id| {
+        reqwest::Client::new()
+            .post(format!("{base_url}/mcp/codex"))
+            .bearer_auth("parallel-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"run_agent","arguments":{
+                    "extensionId":"parallel-worker","cwd":directory.path(),"prompt":"Inspect"
+                }}
+            }))
+            .send()
+    };
+    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        tokio::join!(call(1), call(2))
+    })
+    .await
+    .expect("parallel calls did not overlap");
+    for response in [first.unwrap(), second.unwrap()] {
+        let response: Value = response.json().await.unwrap();
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert_eq!(
+            response["result"]["content"][0]["text"],
+            "parallel child completed"
+        );
+    }
 }
 
 #[tokio::test]
@@ -356,8 +325,6 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "codex", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     let argv = fs::read_to_string(&argv_log).unwrap();
     assert!(
@@ -382,7 +349,6 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .json()
         .await
         .unwrap();
-    let response = await_agent_task(&base_url, "codex", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     let argv = fs::read_to_string(&argv_log).unwrap();
     assert!(!argv.contains("WebSearch"), "{argv}");
@@ -499,7 +465,6 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
         .json()
         .await
         .unwrap();
-    let response = await_agent_task(&base_url, "claude_code", "native-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -609,8 +574,6 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -738,8 +701,6 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
         .bearer_auth("broker-token")
         .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"extensionId":"pi-reviewer","cwd":project,"prompt":"Review"}}}))
         .send().await.unwrap().json().await.unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         fs::read_to_string(&original_models).unwrap(),
@@ -873,7 +834,6 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .json()
         .await
         .unwrap();
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -904,7 +864,6 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .json()
         .await
         .unwrap();
-    let unsupported = await_agent_task(&base_url, "claude_code", "broker-token", unsupported).await;
     assert_eq!(unsupported["result"]["isError"], true, "{unsupported}");
     assert!(
         unsupported["result"]["content"][0]["text"]
@@ -989,7 +948,6 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .json()
         .await
         .unwrap();
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -1230,8 +1188,6 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -1325,8 +1281,6 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -1448,8 +1402,6 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -1544,8 +1496,6 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi native child completed"}}'
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -1660,8 +1610,6 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],
@@ -1756,8 +1704,6 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi custom child completed"}}'
         .json()
         .await
         .unwrap();
-
-    let response = await_agent_task(&base_url, "claude_code", "broker-token", response).await;
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
         response["result"]["content"][0]["text"],

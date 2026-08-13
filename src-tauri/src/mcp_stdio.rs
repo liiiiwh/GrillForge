@@ -7,6 +7,7 @@ use std::time::Duration;
 const URL_ENV: &str = "GRILLFORGE_MCP_URL";
 const TOKEN_ENV: &str = "GRILLFORGE_MCP_TOKEN";
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+const FORWARD_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60 + 60);
 
 pub fn run_from_env() -> Result<(), String> {
     let url = std::env::var(URL_ENV).map_err(|_| format!("{URL_ENV} is required"))?;
@@ -16,15 +17,20 @@ pub fn run_from_env() -> Result<(), String> {
     forward(io::stdin().lock(), io::stdout().lock(), &url, &token)
 }
 
-fn forward(
+fn forward(input: impl BufRead, output: impl Write, url: &str, token: &str) -> Result<(), String> {
+    forward_with_timeout(input, output, url, token, FORWARD_TIMEOUT)
+}
+
+fn forward_with_timeout(
     input: impl BufRead,
     mut output: impl Write,
     url: &str,
     token: &str,
+    timeout: Duration,
 ) -> Result<(), String> {
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(60))
+        .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("could not create local MCP client: {error}"))?;
@@ -73,4 +79,66 @@ fn forward(
             .map_err(|error| format!("could not write MCP stdout: {error}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::forward_with_timeout;
+    use std::io::{BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    fn delayed_server(delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("request");
+            thread::sleep(delay);
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("response");
+        });
+        format!("http://{address}/mcp")
+    }
+
+    #[test]
+    fn stdio_forward_timeout_is_an_explicit_boundary_not_a_fixed_minute() {
+        let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+        let short_url = delayed_server(Duration::from_millis(80));
+        let short = forward_with_timeout(
+            BufReader::new(request.as_slice()),
+            Vec::new(),
+            &short_url,
+            "token",
+            Duration::from_millis(20),
+        );
+        assert!(
+            short
+                .unwrap_err()
+                .contains("could not reach GrillForge MCP service")
+        );
+
+        let long_url = delayed_server(Duration::from_millis(40));
+        let mut output = Vec::new();
+        forward_with_timeout(
+            BufReader::new(request.as_slice()),
+            &mut output,
+            &long_url,
+            "token",
+            Duration::from_millis(500),
+        )
+        .expect("long request stays open");
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{}}\n"
+        );
+    }
 }
