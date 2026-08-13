@@ -104,7 +104,14 @@ pub fn gemini_request_to_anthropic(
         .ok_or_else(|| invalid_request("generationConfig must be an object"))?;
     reject_unknown(
         generation,
-        &["maxOutputTokens", "temperature", "topP", "stopSequences"],
+        &[
+            "maxOutputTokens",
+            "temperature",
+            "thinkingConfig",
+            "topK",
+            "topP",
+            "stopSequences",
+        ],
     )?;
     let max_tokens = generation
         .get("maxOutputTokens")
@@ -127,6 +134,24 @@ pub fn gemini_request_to_anthropic(
     }
     if let Some(value) = generation.get("temperature") {
         target.insert("temperature".into(), finite_number(value, "temperature")?);
+    }
+    if let Some(value) = generation.get("thinkingConfig") {
+        let thinking = value
+            .as_object()
+            .ok_or_else(|| invalid_request("thinkingConfig must be an object"))?;
+        reject_unknown(thinking, &["includeThoughts"])?;
+        if let Some(include_thoughts) = thinking.get("includeThoughts") {
+            include_thoughts.as_bool().ok_or_else(|| {
+                invalid_request("thinkingConfig.includeThoughts must be a boolean")
+            })?;
+        }
+    }
+    if let Some(value) = generation.get("topK") {
+        let top_k = value
+            .as_u64()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| invalid_request("generationConfig.topK must be a positive integer"))?;
+        target.insert("top_k".into(), Value::from(top_k));
     }
     if let Some(value) = generation.get("topP") {
         target.insert("top_p".into(), finite_number(value, "topP")?);

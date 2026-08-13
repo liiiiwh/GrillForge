@@ -372,6 +372,59 @@ fn pi_source_binding_activates_the_pi_runtime_from_a_real_agent_definition() {
 }
 
 #[test]
+fn grok_build_source_binding_uses_the_cli_inspection_result() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let grillforge = root.path().join(".grillforge");
+    let claude = root.path().join(".claude");
+    let grok = root.path().join(".grok");
+    fs::create_dir_all(&claude).unwrap();
+    fs::create_dir_all(&grok).unwrap();
+    let runtime = root.path().join("grok");
+    fs::write(
+        &runtime,
+        "#!/bin/sh\nif [ \"$1\" = inspect ]; then printf '%s\\n' '{\"agents\":[{\"name\":\"plan\",\"description\":\"Plans\",\"source\":{\"type\":\"builtin\"}}]}'; exit 0; fi\nexit 1\n",
+    ).unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+    let config = root.path().join(".claude.json");
+    let control = ControlPlaneService::new(&grillforge);
+    control
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "grok-plan".into(),
+            name: "Grok Plan".into(),
+            source_client_id: "grok_build".into(),
+            source_agent_id: "plan".into(),
+            model_id: None,
+            capabilities: vec![],
+        })
+        .unwrap();
+    control.set_client_mcp_mounted("claude_code", true).unwrap();
+    let mounts = McpMountManager::new(
+        grillforge.join("mcp-snapshots"),
+        [McpMountTarget::new(
+            "claude_code",
+            config,
+            McpClientFormat::ClaudeJson,
+        )],
+    )
+    .unwrap();
+    let integration = ExtensionIntegrationService::new(mounts, claude, None, None)
+        .with_grok_build(grok, Some(runtime));
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+
+    integration
+        .set_binding(&control, &gateway, "claude_code", "grok-plan", true)
+        .unwrap();
+
+    let routes = gateway
+        .agent_broker_routes_for_client("claude_code")
+        .unwrap();
+    assert_eq!(routes[0].source_client_id, "grok_build");
+    assert_eq!(routes[0].source_agent_id, "plan");
+}
+
+#[test]
 fn opencode_source_binding_activates_the_installed_runtime_and_named_agent() {
     let root = tempfile::tempdir().unwrap();
     let grillforge = root.path().join(".grillforge");

@@ -44,9 +44,9 @@ GrillForge is a lightweight, local-first model and SubAgent control plane for mu
 | Codex | Main model, built-in SubAgent default, and per-custom-Agent models; standalone and ChatGPT-bundled CLI support | Implemented and verified with real CLI configuration |
 | Pi | Default model, available model pool, and extension SubAgents through community `pi-mcp-extension` | Implemented with real CLI, extension-install, authentication, and gateway verification |
 | Kimi Code | Default model, SubAgent model pool, `agent` / `coder` / `explore` / `plan`, and custom Agents | Implemented with the current `~/.kimi-code/config.toml`, `mcp.json`, and Agent directory structure |
-| Gemini CLI | Default model | Implemented |
-| Grok Build | Default model | Implemented |
-| OpenCode | Default model and model pool | Implemented |
+| Gemini CLI | Default model; built-in and local custom Agents can be used as Extension SubAgents | Implemented and verified with official CLI 0.55.1, exact Agent selection, and isolated model routing |
+| Grok Build | Default model; Agents returned by local `inspect --json` can be used as Extension SubAgents | Implemented and verified with official CLI 1.0.3, exact Agent selection, and isolated model routing |
+| OpenCode | Default model and model pool; built-in and local custom SubAgents can be used as Extension SubAgents | Implemented with official CLI exact-SubAgent and isolated-model-route verification |
 | Hermes | Default model and model pool | Implemented |
 
 Client discovery covers PATH, standard installation locations, and common Node version managers. When duplicate CLIs exist, GrillForge validates each candidate and uses the first working version. Opening Clients refreshes status in the background.

@@ -2,11 +2,69 @@ use grillforge_lib::local_agents::{
     LocalAgent, LocalAgentDiscovery, discover_claude_builtin_agents, discover_claude_code_agents,
     discover_claude_code_agents_for_project, discover_codex_agents,
     discover_codex_agents_for_project, discover_gemini_agents, discover_gemini_agents_for_project,
-    discover_kimi_agents, discover_kimi_agents_for_project, discover_opencode_agents_for_project,
-    discover_pi_agents_for_project, resolve_codex_custom_agent_file, resolve_kimi_agent_file,
-    resolve_pi_agent_file,
+    discover_grok_build_agents, discover_kimi_agents, discover_kimi_agents_for_project,
+    discover_opencode_agents_for_project, discover_pi_agents_for_project,
+    resolve_codex_custom_agent_file, resolve_kimi_agent_file, resolve_pi_agent_file,
 };
 use std::fs;
+
+#[cfg(unix)]
+#[test]
+fn grok_build_discovers_exactly_the_agents_reported_by_inspect_json() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let runtime = directory.path().join("grok");
+    fs::write(
+        &runtime,
+        format!(
+            r#"#!/bin/sh
+test "$(pwd -P)" = "{}" || exit 71
+test "$1" = inspect || exit 72
+test "$2" = --json || exit 73
+printf '%s\n' '{{"agents":[{{"name":"general-purpose","description":"General agent","source":{{"type":"builtin"}}}},{{"name":"project-reviewer","description":"Project reviewer","source":{{"type":"project","path":"/private/prompt.md"}}}}]}}'
+"#,
+            fs::canonicalize(&project).unwrap().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let discovered = discover_grok_build_agents(&runtime, &project).unwrap();
+
+    assert_eq!(
+        discovered
+            .iter()
+            .map(|agent| (
+                agent.runtime,
+                agent.agent_id.as_str(),
+                agent.description.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("grok_build", "general-purpose", "General agent"),
+            ("grok_build", "project-reviewer", "Project reviewer"),
+        ]
+    );
+    assert!(!format!("{discovered:?}").contains("/private/prompt.md"));
+}
+
+#[cfg(unix)]
+#[test]
+fn grok_build_inspection_rejects_invalid_json_without_hiding_the_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("grok");
+    fs::write(&runtime, "#!/bin/sh\nprintf 'not-json'\n").unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let error = discover_grok_build_agents(&runtime, directory.path()).unwrap_err();
+
+    assert_eq!(error, "Grok Build Agent inspection returned invalid JSON");
+}
 
 #[test]
 fn one_broken_runtime_preserves_other_discovered_agents_and_reports_its_error() {

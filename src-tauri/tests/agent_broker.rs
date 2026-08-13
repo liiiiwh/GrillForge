@@ -724,6 +724,117 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
 }
 
 #[tokio::test]
+async fn managed_grok_build_extension_selects_the_exact_agent_with_isolated_responses_config() {
+    let directory = tempfile::tempdir().unwrap();
+    let grok_root = directory.path().join("grok-home");
+    let project = directory.path().join("project");
+    fs::create_dir_all(&grok_root).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    let original_config = grok_root.join("config.toml");
+    fs::write(&original_config, "[user]\nmarker = true\n").unwrap();
+    let effective_config = directory.path().join("effective-grok.toml");
+    let argv_log = directory.path().join("grok-argv.log");
+    let runtime = directory.path().join("grok");
+    fs::write(
+        &runtime,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = inspect ]; then
+  printf '%s\n' '{{"agents":[{{"name":"plan","description":"Plans changes","source":{{"type":"builtin"}}}}]}}'
+  exit 0
+fi
+test "$GROK_HOME" != "{grok_root}" || exit 51
+test -n "$GRILLFORGE_GROK_BUILD_API_KEY" || exit 52
+cp "$GROK_HOME/config.toml" {config}
+printf '%s\n' "$*" > {argv}
+printf '%s\n' '{{"text":"grok child completed","stopReason":"end_turn","num_turns":1}}'
+"#,
+            grok_root = grok_root.display(),
+            config = effective_config.display(),
+            argv = argv_log.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    service
+        .save_provider(ProviderInput {
+            id: "local".into(),
+            name: "Local".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: "http://127.0.0.1:9".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "worker".into(),
+            name: "Worker".into(),
+            upstream_id: "worker-upstream".into(),
+            provider_id: "local".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "claude_code",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "grok_build".into(),
+                runtime,
+                config_root: grok_root.clone(),
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "grok-reviewer".into(),
+                source_client_id: "grok_build".into(),
+                source_agent_id: "plan".into(),
+                model_id: Some("worker".into()),
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response: Value = reqwest::Client::new().post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-token")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"extensionId":"grok-reviewer","cwd":project,"prompt":"Plan this"}}}))
+        .send().await.unwrap().json().await.unwrap();
+
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["content"][0]["text"],
+        "grok child completed"
+    );
+    assert_eq!(
+        fs::read_to_string(original_config).unwrap(),
+        "[user]\nmarker = true\n"
+    );
+    let config = fs::read_to_string(effective_config).unwrap();
+    assert!(config.contains("base_url = \"http://127.0.0.1:"));
+    assert!(config.contains("/agent-runtime/v1\""));
+    assert!(config.contains("model = \"grillforge/worker\""));
+    assert!(config.contains("api_backend = \"responses\""));
+    assert!(config.contains("env_key = \"GRILLFORGE_GROK_BUILD_API_KEY\""));
+    assert!(!config.contains("broker-token"));
+    let argv = fs::read_to_string(argv_log).unwrap();
+    assert_eq!(
+        argv,
+        "--agent plan --disable-web-search -p Plan this --output-format json --model grillforge\n"
+    );
+}
+
+#[tokio::test]
 async fn codex_extension_uses_the_selected_role_config_and_managed_model_route() {
     let directory = tempfile::tempdir().unwrap();
     let codex_root = directory.path().join("home/.codex");
@@ -1617,7 +1728,7 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
     );
     assert_eq!(
         fs::read_to_string(argv_log).unwrap(),
-        "--output-format\njson\n-p\n@reviewer Review this\n"
+        "--skip-trust\n--output-format\njson\n-p\n@reviewer Review this\n"
     );
     assert_eq!(
         fs::read_to_string(home_log).unwrap(),
@@ -1625,9 +1736,23 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
     );
     let settings: Value = serde_json::from_str(&fs::read_to_string(settings_log).unwrap()).unwrap();
     assert_eq!(settings["model"]["name"], "grillforge--worker");
+    assert_eq!(settings["general"]["maxAttempts"], 1);
+    assert_eq!(settings["general"]["retryFetchErrors"], false);
+    assert_eq!(
+        settings["modelConfigs"]["customOverrides"][0]["match"]["model"],
+        "grillforge--worker"
+    );
+    assert_eq!(
+        settings["modelConfigs"]["customOverrides"][0]["modelConfig"]["generateContentConfig"]["maxOutputTokens"],
+        8192
+    );
     assert_eq!(
         settings["agents"]["overrides"]["reviewer"]["modelConfig"]["model"],
         "grillforge--worker"
+    );
+    assert_eq!(
+        settings["agents"]["overrides"]["reviewer"]["modelConfig"]["generateContentConfig"]["maxOutputTokens"],
+        8192
     );
     assert_eq!(
         settings["security"]["auth"]["selectedType"],

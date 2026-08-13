@@ -44,9 +44,9 @@ GrillForge 是一个轻量、本地优先的多客户端模型与 SubAgent 控�
 | Codex | 主模型、内置 SubAgent 默认模型、自定义 Agent 独立模型；支持独立 CLI 与 ChatGPT 内置 CLI | 已实现并完成真实 CLI 配置验收 |
 | Pi | 默认模型、可用模型池；通过社区 `pi-mcp-extension` 使用扩展 SubAgent | 已实现并完成真实 CLI、扩展安装、鉴权与网关链路测试 |
 | Kimi Code | 默认模型、SubAgent 模型池，以及 `agent` / `coder` / `explore` / `plan` 和自定义 Agent | 已实现；使用当前 `~/.kimi-code/config.toml`、`mcp.json` 与 Agent 目录结构 |
-| Gemini CLI | 默认模型 | 已实现 |
-| Grok Build | 默认模型 | 已实现 |
-| OpenCode | 默认模型与模型池 | 已实现 |
+| Gemini CLI | 默认模型；内建与本机自定义 Agent 可作为扩展 SubAgent | 已实现，并使用官方 CLI 0.55.1 验证精确 Agent 调用与隔离模型路由 |
+| Grok Build | 默认模型；可将 `inspect --json` 返回的本机 Agent 用作扩展 SubAgent | 已实现，并使用官方 CLI 1.0.3 验证精确 Agent 调用与隔离模型路由 |
+| OpenCode | 默认模型、模型池；内建与本机自定义 SubAgent 可作为扩展 SubAgent | 已实现，并完成官方 CLI 精确 SubAgent 调用与隔离模型路由测试 |
 | Hermes | 默认模型与模型池 | 已实现 |
 
 客户端检测覆盖 PATH、标准安装目录和常见 Node 版本管理器；存在多个同名 CLI 时逐个验证并使用第一个有效版本。进入“客户端”页面会在后台刷新状态。

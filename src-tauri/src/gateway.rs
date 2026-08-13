@@ -169,7 +169,7 @@ impl GatewayStatus {
         for source in source_runtimes {
             if !matches!(
                 source.source_client_id.as_str(),
-                "claude_code" | "codex" | "gemini" | "pi" | "opencode" | "kimi_code"
+                "claude_code" | "codex" | "gemini" | "pi" | "opencode" | "kimi_code" | "grok_build"
             ) {
                 return Err(format!(
                     "unsupported Agent source client: {}",
@@ -2135,7 +2135,7 @@ fn list_agents(active: &ActiveAgentBroker, arguments: Option<&Value>) -> Result<
                     "sourceClientId": route.source_client_id,
                     "sourceAgentId": route.source_agent_id,
                     "modelId": route.model_id,
-                    "webAccessSupported": matches!(route.source_client_id.as_str(), "claude_code" | "codex"),
+                    "webAccessSupported": matches!(route.source_client_id.as_str(), "claude_code" | "codex" | "grok_build"),
                 })
             })
             .collect::<Vec<_>>(),
@@ -2200,7 +2200,12 @@ fn prepare_agent_invocation(
                 route.source_client_id
             )
         })?;
-    if web_access && !matches!(route.source_client_id.as_str(), "claude_code" | "codex") {
+    if web_access
+        && !matches!(
+            route.source_client_id.as_str(),
+            "claude_code" | "codex" | "grok_build"
+        )
+    {
         return Err(format!(
             "{} does not expose a scoped native web permission for this runtime",
             route.source_client_id
@@ -2329,6 +2334,18 @@ async fn execute_agent(
             )
             .await
         }
+        "grok_build" => {
+            run_grok_build_agent_runtime(
+                &source_runtime,
+                &cwd,
+                &route.source_agent_id,
+                &prompt,
+                managed_route.as_ref(),
+                &active.base_url,
+                web_access,
+            )
+            .await
+        }
         source => Err(format!("unsupported Agent source client: {source}")),
     };
     if let (Some(cleanup_token), Ok(mut routes)) = (cleanup_token, runtime_routes.lock()) {
@@ -2350,6 +2367,7 @@ async fn execute_agent(
         "pi" => return pi_last_agent_message(&output.stdout),
         "opencode" => return opencode_last_agent_message(&output.stdout),
         "kimi_code" => return kimi_last_agent_message(&output.stdout),
+        "grok_build" => return grok_build_agent_message(&output.stdout),
         _ => {}
     }
     let response: Value = serde_json::from_slice(&output.stdout)
@@ -2396,7 +2414,7 @@ async fn run_gemini_agent_runtime(
     command
         .current_dir(cwd)
         .env("GEMINI_CLI_HOME", home)
-        .args(["--output-format", "json", "-p"])
+        .args(["--skip-trust", "--output-format", "json", "-p"])
         .arg(format!("@{agent_id} {prompt}"));
     if let (Some((_, runtime_token, model_id)), Some(config)) = (managed_route, &managed_config) {
         let model_route = format!("grillforge--{model_id}");
@@ -2776,6 +2794,49 @@ async fn run_kimi_agent_runtime(
     output
 }
 
+async fn run_grok_build_agent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    managed_route: Option<&(String, String, String)>,
+    base_url: &str,
+    web_access: bool,
+) -> Result<std::process::Output, String> {
+    let discovered = crate::local_agents::discover_grok_build_agents(&source.runtime, cwd)?;
+    if !discovered.iter().any(|agent| agent.agent_id == agent_id) {
+        return Err(format!(
+            "Grok Build Agent is not available for this project: {agent_id}"
+        ));
+    }
+    let managed_config = managed_route
+        .map(|(model_route, runtime_token, _)| {
+            GrokBuildManagedConfigScratch::new(base_url, runtime_token, model_route)
+        })
+        .transpose()?;
+    let mut command = tokio::process::Command::new(&source.runtime);
+    command.current_dir(cwd).args(["--agent", agent_id]);
+    if !web_access {
+        command.arg("--disable-web-search");
+    }
+    command
+        .arg("-p")
+        .arg(prompt)
+        .args(["--output-format", "json"]);
+    if let (Some(_), Some(config)) = (managed_route, &managed_config) {
+        command
+            .args(["--model", "grillforge"])
+            .env("GROK_HOME", config.root())
+            .env("GRILLFORGE_GROK_BUILD_API_KEY", config.runtime_token())
+            .env("GRILLFORGE_AGENT_CHILD", "1");
+    } else {
+        command.env("GROK_HOME", &source.config_root);
+    }
+    let output = run_agent_command(command, "Grok Build").await;
+    drop(managed_config);
+    output
+}
+
 async fn run_agent_command(
     mut command: tokio::process::Command,
     runtime_name: &str,
@@ -2946,6 +3007,81 @@ fn kimi_last_agent_message(stdout: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "Kimi Code Agent runtime returned no final Agent message".to_string())
 }
 
+fn grok_build_agent_message(stdout: &[u8]) -> Result<String, String> {
+    let response: Value = serde_json::from_slice(stdout)
+        .map_err(|_| "Grok Build Agent runtime returned invalid JSON".to_string())?;
+    if response.get("type").and_then(Value::as_str) == Some("error") {
+        return Err(response
+            .get("message")
+            .and_then(Value::as_str)
+            .map(|message| {
+                format!(
+                    "Grok Build Agent runtime failed: {}",
+                    safe_single_line(message)
+                )
+            })
+            .unwrap_or_else(|| "Grok Build Agent runtime failed without a message".into()));
+    }
+    response
+        .get("result")
+        .or_else(|| response.get("text"))
+        .or_else(|| response.get("message"))
+        .and_then(Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Grok Build Agent runtime returned no final Agent message".to_string())
+}
+
+struct GrokBuildManagedConfigScratch {
+    root: PathBuf,
+    runtime_token: String,
+}
+
+impl GrokBuildManagedConfigScratch {
+    fn new(base_url: &str, runtime_token: &str, model_route: &str) -> Result<Self, String> {
+        let root = std::env::temp_dir().join(format!(
+            "grillforge-grok-build-agent-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)
+            .map_err(|error| format!("could not create Grok Build Agent configuration: {error}"))?;
+        let config = format!(
+            "[models]\ndefault = \"grillforge\"\nsession_summary = \"grillforge\"\n\n[model.grillforge]\nmodel = {}\nbase_url = {}\nname = \"GrillForge Agent\"\nenv_key = \"GRILLFORGE_GROK_BUILD_API_KEY\"\napi_backend = \"responses\"\ncontext_window = 500000\n",
+            toml_edit::Value::from(model_route),
+            toml_edit::Value::from(format!(
+                "{}/agent-runtime/v1",
+                base_url.trim_end_matches('/')
+            )),
+        );
+        if let Err(error) =
+            crate::storage::atomic_replace(&root.join("config.toml"), config.as_bytes())
+        {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(format!(
+                "could not write Grok Build Agent configuration: {error}"
+            ));
+        }
+        Ok(Self {
+            root,
+            runtime_token: runtime_token.to_string(),
+        })
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn runtime_token(&self) -> &str {
+        &self.runtime_token
+    }
+}
+
+impl Drop for GrokBuildManagedConfigScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 struct PiAgentScratch {
     root: Option<PathBuf>,
     system_prompt: Option<PathBuf>,
@@ -3006,10 +3142,18 @@ impl GeminiManagedConfigScratch {
             .map_err(|error| format!("could not create Gemini Agent configuration: {error}"))?;
         let path = root.join("settings.json");
         let settings = json!({
+            "general": {"maxAttempts": 1, "retryFetchErrors": false},
             "security": {"auth": {"selectedType": "gemini-api-key"}},
             "model": {"name": model_route},
+            "modelConfigs": {"customOverrides": [{
+                "match": {"model": model_route},
+                "modelConfig": {"generateContentConfig": {"maxOutputTokens": 8192}}
+            }]},
             "agents": {"overrides": {
-                (agent_id): {"modelConfig": {"model": model_route}}
+                (agent_id): {"modelConfig": {
+                    "model": model_route,
+                    "generateContentConfig": {"maxOutputTokens": 8192}
+                }}
             }}
         });
         let bytes = serde_json::to_vec_pretty(&settings)

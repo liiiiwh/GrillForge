@@ -12,6 +12,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   only the native Agent's final result. Claude Code and Claude Client use stdio
   mounts to avoid the one-minute HTTP first-byte timer; each runtime may run for
   up to three hours, and workflows may invoke independent calls concurrently.
+- Gemini CLI and Grok Build now expose only Agents reported by their installed
+  native CLIs and execute the selected Agent with isolated, process-local model
+  routing. Hermes remains a model-configured client rather than an extension
+  Agent source because its profile runtime cannot be isolated without copying
+  user state.
 
 ### Fixed
 
@@ -25,6 +30,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - The ChatGPT-bundled Codex CLI completed a loopback-only external-model task
   through GrillForge and sent the configured upstream model to a local
   Responses service without contacting a paid provider.
+- Official Gemini CLI 0.55.1 and Grok Build 1.0.3 completed exact-Agent,
+  loopback-only managed-model tasks without changing user configuration.
 
 ## [0.2.1] - 2026-08-13
 

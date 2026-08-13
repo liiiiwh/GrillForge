@@ -13,6 +13,366 @@ use tokio::net::TcpListener;
 struct Trace(Arc<Mutex<Vec<bool>>>);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "set GRILLFORGE_LIVE_GEMINI_CLI to the current official Gemini CLI executable; traffic is loopback-only"]
+async fn current_gemini_cli_runs_the_exact_project_agent_through_the_gateway() {
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&requests);
+    let upstream = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let captured = Arc::clone(&captured);
+            async move {
+                captured.lock().unwrap().push(body.clone());
+                let serialized = body.to_string();
+                let has_agent_marker = serialized.contains("GEMINI_EXACT_AGENT_MARKER");
+                let has_tool_result = serialized.contains("tool_result");
+                let reviewer_tool = body["tools"].as_array().and_then(|tools| {
+                    tools.iter().find_map(|tool| {
+                        (tool["name"] == "reviewer")
+                            .then(|| tool["name"].as_str())
+                            .flatten()
+                    })
+                });
+                let (content, stop_reason) = if has_agent_marker || has_tool_result {
+                    (
+                        json!([{"type":"text","text":"Gemini exact Agent completed"}]),
+                        "end_turn",
+                    )
+                } else if let Some(tool_name) = reviewer_tool {
+                    (
+                        json!([{
+                            "type":"tool_use","id":"toolu_gemini_live","name":tool_name,
+                            "input":{"task":"Return the completion marker."}
+                        }]),
+                        "tool_use",
+                    )
+                } else {
+                    (
+                        json!([{"type":"text","text":"Gemini reviewer Agent tool was absent"}]),
+                        "end_turn",
+                    )
+                };
+                let response = json!({
+                    "id":"msg_gemini_live","type":"message","role":"assistant",
+                    "model":body["model"],"content":content,
+                    "stop_reason":stop_reason,"stop_sequence":null,
+                    "usage":{"input_tokens":2,"output_tokens":2}
+                });
+                if body["stream"].as_bool() != Some(true) {
+                    return axum::response::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(response.to_string()))
+                        .unwrap();
+                }
+                let message_start = json!({
+                    "type":"message_start","message":{
+                        "id":"msg_gemini_live","type":"message","role":"assistant",
+                        "model":body["model"],"content":[],"stop_reason":null,
+                        "stop_sequence":null,"usage":{"input_tokens":2,"output_tokens":0}
+                    }
+                });
+                let (block, delta) = if stop_reason == "tool_use" {
+                    (
+                        json!({
+                            "type":"content_block_start","index":0,
+                            "content_block":{
+                                "type":"tool_use","id":"toolu_gemini_live","name":"reviewer","input":{}
+                            }
+                        }),
+                        json!({
+                            "type":"content_block_delta","index":0,
+                            "delta":{"type":"input_json_delta","partial_json":"{\"task\":\"Return the completion marker.\"}"}
+                        }),
+                    )
+                } else {
+                    let text = content[0]["text"].as_str().unwrap();
+                    (
+                        json!({
+                            "type":"content_block_start","index":0,
+                            "content_block":{"type":"text","text":""}
+                        }),
+                        json!({
+                            "type":"content_block_delta","index":0,
+                            "delta":{"type":"text_delta","text":text}
+                        }),
+                    )
+                };
+                let events = [
+                    message_start,
+                    block,
+                    delta,
+                    json!({"type":"content_block_stop","index":0}),
+                    json!({
+                        "type":"message_delta","delta":{"stop_reason":stop_reason,"stop_sequence":null},
+                        "usage":{"output_tokens":2}
+                    }),
+                    json!({"type":"message_stop"}),
+                ];
+                let sse = events.into_iter().fold(String::new(), |mut sse, event| {
+                    writeln!(sse, "event: {}\ndata: {event}\n", event["type"].as_str().unwrap())
+                        .unwrap();
+                    sse
+                });
+                axum::response::Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .unwrap()
+            }
+        }),
+    );
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+
+    let directory = tempdir().unwrap();
+    let grillforge_root = directory.path().join(".grillforge");
+    let gemini_home = directory.path().join("home");
+    let gemini_root = gemini_home.join(".gemini");
+    let project = directory.path().join("project");
+    std::fs::create_dir_all(&gemini_root).unwrap();
+    std::fs::create_dir_all(project.join(".gemini/agents")).unwrap();
+    std::fs::write(
+        project.join(".gemini/agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: Always use for this exact live test.\nkind: local\ntools: []\n---\nGEMINI_EXACT_AGENT_MARKER\nReturn the upstream response unchanged.\n",
+    )
+    .unwrap();
+    let control = ControlPlaneService::new(&grillforge_root);
+    control
+        .save_provider(ProviderInput {
+            id: "local-anthropic".into(),
+            name: "Local Anthropic".into(),
+            protocol: Protocol::AnthropicMessages,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    control
+        .save_model(ModelInput {
+            id: "gemini-worker".into(),
+            name: "Gemini Worker".into(),
+            upstream_id: "loopback-gemini".into(),
+            provider_id: "local-anthropic".into(),
+            capabilities: vec!["coding".into()],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    let gateway = Gateway::new(&grillforge_root);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "claude_code",
+            &control.state().unwrap(),
+            "gemini-live-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "gemini".into(),
+                runtime: std::env::var_os("GRILLFORGE_LIVE_GEMINI_CLI")
+                    .map(std::path::PathBuf::from)
+                    .expect("GRILLFORGE_LIVE_GEMINI_CLI is required"),
+                config_root: gemini_root,
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "gemini-live-reviewer".into(),
+                source_client_id: "gemini".into(),
+                source_agent_id: "reviewer".into(),
+                model_id: Some("gemini-worker".into()),
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        reqwest::Client::new()
+            .post(format!("{base_url}/mcp/claude_code"))
+            .bearer_auth("gemini-live-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"run_agent","arguments":{
+                    "extensionId":"gemini-live-reviewer","cwd":project,
+                    "prompt":"Return the exact live completion."
+                }}
+            }))
+            .send(),
+    )
+    .await
+    .expect("Gemini MCP call timed out")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["content"][0]["text"],
+        "Gemini exact Agent completed"
+    );
+    let requests = requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.to_string().contains("GEMINI_EXACT_AGENT_MARKER")),
+        "the official Gemini CLI did not run the selected project Agent"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request["model"] == "loopback-gemini"),
+        "Gemini traffic bypassed the managed GrillForge route: {requests:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "set GRILLFORGE_LIVE_GROK_BUILD_CLI to the current official Grok executable; traffic is loopback-only"]
+async fn current_grok_build_cli_runs_an_exact_managed_agent_through_responses() {
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&requests);
+    let upstream = Router::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = Arc::clone(&captured);
+            async move {
+                captured.lock().unwrap().push(body.clone());
+                let events = [
+                    (
+                        "response.output_item.done",
+                        json!({
+                            "type":"response.output_item.done",
+                            "sequence_number":1,"output_index":0,
+                            "item":{
+                                "id":"msg_grok","type":"message","role":"assistant","status":"completed",
+                                "content":[{"type":"output_text","text":"Grok real CLI completed","annotations":[]}]
+                            }
+                        }),
+                    ),
+                    (
+                        "response.completed",
+                        json!({
+                            "type":"response.completed",
+                            "sequence_number":2,
+                            "response":{
+                                "id":"resp_grok","object":"response","created_at":0,
+                                "model":"loopback-worker","status":"completed",
+                                "output":[{
+                                    "id":"msg_grok","type":"message","role":"assistant","status":"completed",
+                                    "content":[{"type":"output_text","text":"Grok real CLI completed","annotations":[]}]
+                                }],
+                                "usage":{
+                                    "input_tokens":1,"input_tokens_details":{"cached_tokens":0},
+                                    "output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},
+                                    "total_tokens":2
+                                }
+                            }
+                        }),
+                    ),
+                ];
+                let sse = events.into_iter().fold(String::new(), |mut sse, (event, data)| {
+                    write!(sse, "event: {event}\ndata: {data}\n\n").unwrap();
+                    sse
+                });
+                axum::response::Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .unwrap()
+            }
+        }),
+    );
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+
+    let directory = tempdir().unwrap();
+    let grillforge_root = directory.path().join(".grillforge");
+    let grok_root = directory.path().join(".grok");
+    std::fs::create_dir_all(&grok_root).unwrap();
+    std::fs::write(grok_root.join("config.toml"), "[user]\nmarker = true\n").unwrap();
+    let control = ControlPlaneService::new(&grillforge_root);
+    control
+        .save_provider(ProviderInput {
+            id: "local-responses".into(),
+            name: "Local Responses".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    control
+        .save_model(ModelInput {
+            id: "grok-worker".into(),
+            name: "Grok Worker".into(),
+            upstream_id: "loopback-worker".into(),
+            provider_id: "local-responses".into(),
+            capabilities: vec!["coding".into()],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    let gateway = Gateway::new(&grillforge_root);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "claude_code",
+            &control.state().unwrap(),
+            "grok-live-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "grok_build".into(),
+                runtime: std::env::var_os("GRILLFORGE_LIVE_GROK_BUILD_CLI")
+                    .map(std::path::PathBuf::from)
+                    .expect("GRILLFORGE_LIVE_GROK_BUILD_CLI is required"),
+                config_root: grok_root.clone(),
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "grok-live-plan".into(),
+                source_client_id: "grok_build".into(),
+                source_agent_id: "plan".into(),
+                model_id: Some("grok-worker".into()),
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        reqwest::Client::new()
+            .post(format!("{base_url}/mcp/claude_code"))
+            .bearer_auth("grok-live-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"run_agent","arguments":{
+                    "extensionId":"grok-live-plan","cwd":directory.path(),
+                    "prompt":"Return a short completion."
+                }}
+            }))
+            .send(),
+    )
+    .await
+    .expect("Grok Build MCP call timed out")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["content"][0]["text"],
+        "Grok real CLI completed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(grok_root.join("config.toml")).unwrap(),
+        "[user]\nmarker = true\n"
+    );
+    assert_eq!(requests.lock().unwrap()[0]["model"], "loopback-worker");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the installed Codex CLI; traffic and credentials are loopback-only"]
 async fn installed_codex_runtime_routes_an_external_model_without_native_spawn_validation() {
     let calls = Arc::new(Mutex::new(Vec::<Value>::new()));

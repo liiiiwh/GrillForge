@@ -53,6 +53,95 @@ impl LocalAgentDiscovery {
     }
 }
 
+pub fn discover_grok_build_agents(
+    runtime: &Path,
+    project_root: &Path,
+) -> Result<Vec<LocalAgent>, String> {
+    let mut command = crate::cli_discovery::version_command(runtime)
+        .map_err(|error| format!("could not inspect {}: {error}", runtime.display()))?;
+    let mut child = command
+        .current_dir(project_root)
+        .args(["inspect", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not inspect {} Agents: {error}", runtime.display()))?;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if child
+            .try_wait()
+            .map_err(|error| format!("could not inspect {} Agents: {error}", runtime.display()))?
+            .is_some()
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Grok Build Agent inspection timed out: {}",
+                runtime.display()
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("could not inspect {} Agents: {error}", runtime.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Grok Build Agent inspection exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Grok Build Agent inspection returned invalid JSON".to_string())?;
+    let reported = report
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Grok Build Agent inspection did not return agents".to_string())?;
+    let mut agents = Vec::with_capacity(reported.len());
+    for agent in reported {
+        let agent_id = agent
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "Grok Build Agent inspection returned an Agent without name".to_string()
+            })?;
+        let description = agent
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                format!("Grok Build Agent inspection returned {agent_id} without description")
+            })?;
+        if !valid_grok_build_agent_name(agent_id) || description.trim().is_empty() {
+            return Err(format!(
+                "Grok Build Agent inspection returned an invalid Agent: {agent_id}"
+            ));
+        }
+        agents.push(LocalAgent {
+            runtime: "grok_build",
+            agent_id: agent_id.into(),
+            description: description.into(),
+        });
+    }
+    agents.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    agents.dedup_by(|left, right| left.agent_id == right.agent_id);
+    Ok(agents)
+}
+
+fn valid_grok_build_agent_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
 pub fn discover_claude_code_agents(claude_root: &Path) -> Result<Vec<LocalAgent>, String> {
     let mut agents = discover_agents_in(&claude_root.join("agents"), None)?;
     let enabled_plugins = read_plugin_settings(&claude_root.join("settings.json"))?;
@@ -1458,6 +1547,16 @@ pub async fn discover_local_agents(
         }
     })();
 
+    let grok_build = (|| {
+        let Some(runtime) = crate::adapters::grok_build::detect_grok_build_cli()
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
+        let root = project_root.as_deref().unwrap_or(Path::new("."));
+        discover_grok_build_agents(&runtime.path, root)
+    })();
+
     Ok(LocalAgentDiscovery::from_runtime_results([
         ("claude_code", claude),
         ("codex", codex),
@@ -1465,6 +1564,7 @@ pub async fn discover_local_agents(
         ("pi", pi),
         ("opencode", opencode),
         ("kimi_code", kimi),
+        ("grok_build", grok_build),
     ]))
 }
 

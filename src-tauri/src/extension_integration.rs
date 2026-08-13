@@ -4,8 +4,8 @@ use crate::application::{
 use crate::gateway::{AgentRuntimeRoute, AgentSourceRuntime, GatewayStatus};
 use crate::local_agents::{
     discover_claude_builtin_agents, discover_claude_code_agents, discover_codex_agents,
-    discover_gemini_agents, discover_kimi_agents, discover_opencode_agents, discover_pi_agents,
-    kimi_user_home,
+    discover_gemini_agents, discover_grok_build_agents, discover_kimi_agents,
+    discover_opencode_agents, discover_pi_agents, kimi_user_home,
 };
 use crate::mcp_mount::McpMountManager;
 use std::collections::HashSet;
@@ -35,6 +35,8 @@ pub struct ExtensionIntegrationService {
     opencode_runtime: Option<PathBuf>,
     kimi_root: Option<PathBuf>,
     kimi_runtime: Option<PathBuf>,
+    grok_build_root: Option<PathBuf>,
+    grok_build_runtime: Option<PathBuf>,
     pi_settings_path: Option<PathBuf>,
     operation_lock: Mutex<()>,
 }
@@ -60,6 +62,8 @@ impl ExtensionIntegrationService {
             opencode_runtime: None,
             kimi_root: None,
             kimi_runtime: None,
+            grok_build_root: None,
+            grok_build_runtime: None,
             pi_settings_path,
             operation_lock: Mutex::new(()),
         }
@@ -108,6 +112,16 @@ impl ExtensionIntegrationService {
     ) -> Self {
         self.kimi_root = Some(kimi_root.into());
         self.kimi_runtime = kimi_runtime;
+        self
+    }
+
+    pub fn with_grok_build(
+        mut self,
+        grok_build_root: impl Into<PathBuf>,
+        grok_build_runtime: Option<PathBuf>,
+    ) -> Self {
+        self.grok_build_root = Some(grok_build_root.into());
+        self.grok_build_runtime = grok_build_runtime;
         self
     }
 
@@ -380,7 +394,7 @@ impl ExtensionIntegrationService {
                 .ok_or_else(|| format!("unknown extension SubAgent: {id}"))?;
             if !matches!(
                 extension.source_client_id.as_str(),
-                "claude_code" | "codex" | "gemini" | "pi" | "opencode" | "kimi_code"
+                "claude_code" | "codex" | "gemini" | "pi" | "opencode" | "kimi_code" | "grok_build"
             ) {
                 return Err(format!(
                     "extension SubAgent {} uses an unsupported source client: {}",
@@ -515,6 +529,25 @@ impl ExtensionIntegrationService {
                 source_client_id: "kimi_code".into(),
                 runtime,
                 config_root: kimi_root,
+            });
+        }
+        if source_ids.contains("grok_build") {
+            let grok_build_root = self
+                .grok_build_root
+                .clone()
+                .ok_or_else(|| "Grok Build configuration root is not configured".to_string())?;
+            let runtime = self.resolve_grok_build_runtime()?;
+            let cwd = std::env::current_dir()
+                .map_err(|error| format!("current project directory is unavailable: {error}"))?;
+            let discovered = discover_grok_build_agents(&runtime, &cwd)?
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>();
+            validate_named_project_source_agents(&routes, "grok_build", &discovered)?;
+            source_runtimes.push(AgentSourceRuntime {
+                source_client_id: "grok_build".into(),
+                runtime,
+                config_root: grok_build_root,
             });
         }
         gateway.activate_client_agent_broker_with_sources(
@@ -694,6 +727,20 @@ impl ExtensionIntegrationService {
                     .map(|detection| detection.path)
                     .ok_or_else(|| {
                         "Gemini CLI is required to run Gemini extension Agents".to_string()
+                    })
+            },
+            Ok,
+        )
+    }
+
+    fn resolve_grok_build_runtime(&self) -> Result<PathBuf, String> {
+        self.grok_build_runtime.clone().map_or_else(
+            || {
+                crate::adapters::grok_build::detect_grok_build_cli()
+                    .map_err(|error| error.to_string())?
+                    .map(|detection| detection.path)
+                    .ok_or_else(|| {
+                        "Grok Build CLI is required to run Grok Build extension Agents".to_string()
                     })
             },
             Ok,

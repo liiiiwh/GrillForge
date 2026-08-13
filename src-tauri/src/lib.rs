@@ -130,7 +130,8 @@ pub fn run() {
                 .with_gemini(home.join(".gemini"), None)
                 .with_pi(home.join(".pi/agent"), None)
                 .with_opencode(home.join(".config/opencode"), None)
-                .with_kimi(kimi_root, None),
+                .with_kimi(kimi_root, None)
+                .with_grok_build(home.join(".grok"), None),
             );
 
             let listener = std::net::TcpListener::bind(gateway::DEFAULT_GATEWAY_ADDRESS)?;

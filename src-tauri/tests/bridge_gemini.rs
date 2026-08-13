@@ -122,6 +122,31 @@ fn gemini_client_request_and_anthropic_response_round_trip_tools() {
     assert_eq!(gemini["usageMetadata"]["totalTokenCount"], 19);
 }
 
+#[test]
+fn current_gemini_cli_generation_config_maps_without_losing_top_k() {
+    let anthropic = gemini_request_to_anthropic(
+        "grillforge/reviewer",
+        json!({
+            "contents":[{"role":"user","parts":[{"text":"Review this."}]}],
+            "generationConfig":{
+                "maxOutputTokens":8192,
+                "temperature":1,
+                "thinkingConfig":{"includeThoughts":true},
+                "topK":64,
+                "topP":0.95
+            }
+        }),
+        true,
+    )
+    .expect("current Gemini CLI generation config");
+
+    assert_eq!(anthropic["max_tokens"], 8192);
+    assert_eq!(anthropic["temperature"], 1.0);
+    assert_eq!(anthropic["top_k"], 64);
+    assert_eq!(anthropic["top_p"], 0.95);
+    assert_eq!(anthropic["stream"], true);
+}
+
 #[tokio::test]
 async fn anthropic_text_round_trips_through_gemini_native_with_usage() {
     let capture = Capture::default();
