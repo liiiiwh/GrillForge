@@ -1,3 +1,4 @@
+use crate::adapters::claude_code::is_claude_native_model;
 use crate::core::agent::{AgentConfiguration, MainSelection};
 use crate::core::model::{Model, ModelDraft, ModelRegistry, NativeProtocol, ProtocolCapability};
 use crate::core::provider::{
@@ -24,6 +25,16 @@ pub struct ProviderRecord {
     pub api_key_placement: ApiKeyPlacement,
     pub api_key: String,
     pub models_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocol_endpoints: Vec<ProviderProtocolEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderProtocolEndpoint {
+    pub protocol: NativeProtocol,
+    pub endpoint: String,
+    pub endpoint_mode: EndpointMode,
+    pub api_key_placement: ApiKeyPlacement,
 }
 
 impl Debug for ProviderRecord {
@@ -39,6 +50,7 @@ impl Debug for ProviderRecord {
             .field("api_key_placement", &self.api_key_placement)
             .field("api_key", &"[REDACTED]")
             .field("models_url", &self.models_url)
+            .field("protocol_endpoints", &self.protocol_endpoints)
             .finish()
     }
 }
@@ -60,6 +72,8 @@ pub struct ModelRecord {
     pub protocol_capabilities: Vec<ProtocolCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_protocols: Option<Vec<NativeProtocol>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsupported_native_protocols: Vec<NativeProtocol>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -355,6 +369,35 @@ fn validate(
     let provider_registry = ProviderRegistry::new(providers)
         .map_err(|error| ConfigurationError::Invalid(error.to_string()))?;
 
+    for provider in &config.providers {
+        let mut protocols = HashSet::new();
+        for surface in &provider.protocol_endpoints {
+            if !protocols.insert(surface.protocol) {
+                return Err(ConfigurationError::Invalid(format!(
+                    "duplicate protocol endpoint for provider {}: {:?}",
+                    provider.id, surface.protocol
+                )));
+            }
+            url::Url::parse(&surface.endpoint).map_err(|_| {
+                ConfigurationError::Invalid(format!(
+                    "invalid protocol endpoint for provider {}: {:?}",
+                    provider.id, surface.protocol
+                ))
+            })?;
+            match (surface.protocol, surface.api_key_placement) {
+                (NativeProtocol::GeminiNative, ApiKeyPlacement::Bearer)
+                | (NativeProtocol::OpenAiResponses, ApiKeyPlacement::XApiKey)
+                | (NativeProtocol::OpenAiChat, ApiKeyPlacement::XApiKey) => {
+                    return Err(ConfigurationError::Invalid(format!(
+                        "incompatible authentication for provider {} protocol {:?}",
+                        provider.id, surface.protocol
+                    )));
+                }
+                _ => {}
+            }
+        }
+    }
+
     let model_values = models
         .models
         .iter()
@@ -375,13 +418,23 @@ fn validate(
         .map_err(|error| ConfigurationError::Invalid(error.to_string()))?;
 
     for model in &models.models {
-        let Some(protocols) = &model.native_protocols else {
-            continue;
-        };
         let mut seen = HashSet::new();
-        if protocols.iter().any(|protocol| !seen.insert(*protocol)) {
+        if let Some(protocols) = &model.native_protocols {
+            if protocols.iter().any(|protocol| !seen.insert(*protocol)) {
+                return Err(ConfigurationError::Invalid(format!(
+                    "duplicate native protocol for model: {}",
+                    model.id
+                )));
+            }
+        }
+        let mut unsupported = HashSet::new();
+        if model
+            .unsupported_native_protocols
+            .iter()
+            .any(|protocol| !unsupported.insert(*protocol) || seen.contains(protocol))
+        {
             return Err(ConfigurationError::Invalid(format!(
-                "duplicate native protocol for model: {}",
+                "invalid unsupported native protocol facts for model: {}",
                 model.id
             )));
         }
@@ -543,12 +596,7 @@ fn validate(
                     "unsupported Claude Code native model slot: {slot}"
                 )));
             }
-            if record.id == "claude_code"
-                && !matches!(
-                    model.as_str(),
-                    "default" | "sonnet" | "opus" | "fable" | "haiku"
-                )
-            {
+            if record.id == "claude_code" && !is_claude_native_model(model) {
                 return Err(ConfigurationError::Invalid(format!(
                     "unsupported Claude Code native model: {model}"
                 )));

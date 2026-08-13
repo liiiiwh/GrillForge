@@ -20,6 +20,7 @@ fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
                 api_key_placement: ApiKeyPlacement::Bearer,
                 api_key: "local-test-key".into(),
                 models_url: None,
+                protocol_endpoints: vec![],
             }],
         },
         ModelsDocument {
@@ -32,6 +33,7 @@ fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
                 native_protocols: Some(vec![NativeProtocol::OpenAiChat]),
+                unsupported_native_protocols: vec![],
             }],
         },
         AgentsDocument {

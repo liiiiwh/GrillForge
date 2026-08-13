@@ -1,12 +1,101 @@
 use grillforge_lib::adapters::claude_code::{
     ClaudeCodeAdapter, ClaudeCodeAdapterError, ClaudeCodeOperation, ClaudeCodeTakeoverStatus,
-    EnableRequest, inspect_claude_cli,
+    EnableRequest, discover_claude_native_models, inspect_claude_cli,
 };
 use std::collections::BTreeMap;
 use std::fs;
 
 fn adapter(root: &tempfile::TempDir) -> ClaudeCodeAdapter {
     ClaudeCodeAdapter::new(root.path().join("claude"), root.path().join("grillforge"))
+}
+
+#[test]
+fn native_catalog_reads_real_claude_choices_and_desktop_cache() {
+    let root = tempfile::tempdir().expect("root");
+    let claude = root.path().join(".claude");
+    let desktop_cache = root.path().join("Claude/Local Storage/leveldb");
+    fs::create_dir_all(&claude).expect("Claude settings root");
+    fs::create_dir_all(&desktop_cache).expect("Claude Desktop cache root");
+    fs::write(
+        claude.join("settings.json"),
+        r#"{"model":"claude-sonnet-5","env":{"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7"}}"#,
+    )
+    .expect("settings");
+    fs::write(
+        root.path().join(".claude.json"),
+        r#"{
+          "additionalModelOptionsCache":[{"value":"claude-fable-5[1m]","label":"Fable"}],
+          "clientDataCacheSlots":{
+            "old":{"entrypoint":"claude-desktop","model":"claude-opus-4-8","at":10},
+            "new":{"entrypoint":"claude-desktop","model":"claude-opus-5","at":20},
+            "cli":{"entrypoint":"cli","model":"claude-haiku-4-5","at":30}
+          }
+        }"#,
+    )
+    .expect("Claude state");
+    fs::write(
+        desktop_cache.join("000001.ldb"),
+        b"binary\0claude-opus-4-6\0claude-sonnet-4-6[1m]\0not-claude-model",
+    )
+    .expect("Desktop cache");
+
+    let catalog = discover_claude_native_models(
+        &claude,
+        &root.path().join(".claude.json"),
+        Some(&desktop_cache),
+    )
+    .expect("native catalog");
+
+    assert_eq!(
+        catalog.cli_current_model.as_deref(),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        catalog.desktop_current_model.as_deref(),
+        Some("claude-opus-5")
+    );
+    let ids = catalog
+        .models
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "default",
+        "claude-fable-5[1m]",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6[1m]",
+        "claude-haiku-4-5",
+    ] {
+        assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+    }
+    assert!(!ids.contains(&"not-claude-model"));
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .find(|model| model.id == "claude-opus-4-8")
+            .map(|model| model.name.as_str()),
+        Some("Opus 4.8")
+    );
+}
+
+#[test]
+#[ignore = "requires a locally installed Claude Code or Claude Client"]
+fn installed_claude_native_catalog_is_readable_without_api_access() {
+    let home = dirs::home_dir().expect("home directory");
+    let catalog = discover_claude_native_models(
+        &home.join(".claude"),
+        &home.join(".claude.json"),
+        Some(&home.join("Library/Application Support/Claude/Local Storage/leveldb")),
+    )
+    .expect("installed Claude native catalog");
+
+    assert!(!catalog.models.is_empty());
+    assert!(catalog.cli_current_model.is_some() || catalog.desktop_current_model.is_some());
 }
 
 #[test]

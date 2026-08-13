@@ -2,11 +2,13 @@ use crate::application::ControlPlaneState;
 use crate::bridge::{
     BridgeError, CodexAnthropicCapabilities, GeminiNativeBridge, OpenAiChatBridge,
     OpenAiChatCapabilities, OpenAiResponsesBridge, OpenAiResponsesCapabilities,
-    anthropic_sse_to_codex_responses_with_context, anthropic_to_codex_response_with_context,
-    chat_sse_to_codex_responses, chat_to_codex_response, codex_response_to_anthropic_with_context,
-    codex_response_to_chat,
+    anthropic_response_to_gemini, anthropic_sse_to_codex_responses_with_context,
+    anthropic_sse_to_gemini, anthropic_to_codex_response_with_context, chat_sse_to_codex_responses,
+    chat_to_codex_response, codex_response_to_anthropic_with_context, codex_response_to_chat,
 };
-use crate::configuration::{ConfigurationDocuments, ConfigurationFiles, ProviderRecord};
+use crate::configuration::{
+    ConfigurationDocuments, ConfigurationFiles, ProviderProtocolEndpoint, ProviderRecord,
+};
 use crate::core::model::{NativeProtocol, ProtocolCapability};
 use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol, build_request_endpoint};
 use axum::Json;
@@ -68,6 +70,8 @@ pub struct GatewayStatus {
     #[serde(skip)]
     active_codex_routes: Arc<RwLock<Option<ActiveCodexRoutes>>>,
     #[serde(skip)]
+    active_response_client_routes: Arc<RwLock<HashMap<String, ActiveCodexRoutes>>>,
+    #[serde(skip)]
     active_client_routes: Arc<RwLock<HashMap<String, ActiveClientRoutes>>>,
     #[serde(skip)]
     active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
@@ -87,6 +91,7 @@ impl GatewayStatus {
             active_desktop_routes: Arc::clone(&gateway.active_desktop_routes),
             active_pi_routes: Arc::clone(&gateway.active_pi_routes),
             active_codex_routes: Arc::clone(&gateway.active_codex_routes),
+            active_response_client_routes: Arc::clone(&gateway.active_response_client_routes),
             active_client_routes: Arc::clone(&gateway.active_client_routes),
             active_agent_brokers: Arc::clone(&gateway.active_agent_brokers),
             active_agent_runtime_routes: Arc::clone(&gateway.active_agent_runtime_routes),
@@ -163,7 +168,7 @@ impl GatewayStatus {
         for source in source_runtimes {
             if !matches!(
                 source.source_client_id.as_str(),
-                "claude_code" | "codex" | "pi" | "opencode" | "kimi_code"
+                "claude_code" | "codex" | "gemini" | "pi" | "opencode" | "kimi_code"
             ) {
                 return Err(format!(
                     "unsupported Agent source client: {}",
@@ -438,14 +443,27 @@ impl GatewayStatus {
     }
 
     pub fn activate_codex(&self, model_ids: Vec<String>, token: &str) -> Result<(), String> {
+        let routes = self.validated_codex_routes(model_ids, token, "Codex")?;
+        *self
+            .active_codex_routes
+            .write()
+            .map_err(|_| "active Codex route lock is poisoned".to_string())? = Some(routes);
+        Ok(())
+    }
+
+    fn validated_codex_routes(
+        &self,
+        model_ids: Vec<String>,
+        token: &str,
+        client_name: &str,
+    ) -> Result<ActiveCodexRoutes, String> {
         if token.is_empty() || token.trim() != token || token.chars().any(char::is_control) {
-            return Err(
-                "Codex gateway token must not be empty, padded, or contain control characters"
-                    .into(),
-            );
+            return Err(format!(
+                "{client_name} gateway token must not be empty, padded, or contain control characters"
+            ));
         }
         if model_ids.is_empty() {
-            return Err("Codex requires at least one model route".into());
+            return Err(format!("{client_name} requires at least one model route"));
         }
         let allowed_model_ids = model_ids.into_iter().collect::<HashSet<_>>();
         let documents = self.files.read().map_err(|error| error.to_string())?;
@@ -455,7 +473,7 @@ impl GatewayStatus {
                 .models
                 .iter()
                 .find(|model| &model.id == id)
-                .ok_or_else(|| format!("Codex route references unknown model: {id}"))?;
+                .ok_or_else(|| format!("{client_name} route references unknown model: {id}"))?;
             let provider = documents
                 .config
                 .providers
@@ -474,21 +492,39 @@ impl GatewayStatus {
                 ));
             }
         }
-        *self
-            .active_codex_routes
-            .write()
-            .map_err(|_| "active Codex route lock is poisoned".to_string())? =
-            Some(ActiveCodexRoutes {
-                documents,
-                allowed_model_ids,
-                token: token.to_string(),
-            });
-        Ok(())
+        Ok(ActiveCodexRoutes {
+            documents,
+            allowed_model_ids,
+            token: token.to_string(),
+        })
     }
 
     pub fn deactivate_codex(&self) {
         if let Ok(mut active) = self.active_codex_routes.write() {
             *active = None;
+        }
+    }
+
+    pub fn activate_response_client(
+        &self,
+        client_id: &str,
+        model_ids: Vec<String>,
+        token: &str,
+    ) -> Result<(), String> {
+        if client_id != "grok-build" {
+            return Err(format!("unsupported Responses gateway client: {client_id}"));
+        }
+        let routes = self.validated_codex_routes(model_ids, token, client_id)?;
+        self.active_response_client_routes
+            .write()
+            .map_err(|_| "active Responses client route lock is poisoned".to_string())?
+            .insert(client_id.to_string(), routes);
+        Ok(())
+    }
+
+    pub fn deactivate_response_client(&self, client_id: &str) {
+        if let Ok(mut active) = self.active_response_client_routes.write() {
+            active.remove(client_id);
         }
     }
 
@@ -498,7 +534,7 @@ impl GatewayStatus {
         model_ids: Vec<String>,
         token: &str,
     ) -> Result<(), String> {
-        if !matches!(client_id, "opencode" | "hermes" | "kimi-code") {
+        if !matches!(client_id, "gemini" | "opencode" | "hermes" | "kimi-code") {
             return Err(format!("unsupported gateway client: {client_id}"));
         }
         if token.is_empty() || token.trim() != token || token.chars().any(char::is_control) {
@@ -524,11 +560,6 @@ impl GatewayStatus {
                 .ok_or_else(|| format!("model {id} references unknown provider"))?;
             if !provider.enabled {
                 return Err(format!("model {id} uses disabled provider {}", provider.id));
-            }
-            if provider.protocol == Protocol::GeminiNative {
-                return Err(format!(
-                    "{client_id} cannot route Gemini Native model through the Anthropic gateway: {id}"
-                ));
             }
         }
         self.active_client_routes
@@ -667,6 +698,7 @@ pub struct Gateway {
     active_desktop_routes: Arc<RwLock<Option<ActiveDesktopRoutes>>>,
     active_pi_routes: Arc<RwLock<Option<ActivePiRoutes>>>,
     active_codex_routes: Arc<RwLock<Option<ActiveCodexRoutes>>>,
+    active_response_client_routes: Arc<RwLock<HashMap<String, ActiveCodexRoutes>>>,
     active_client_routes: Arc<RwLock<HashMap<String, ActiveClientRoutes>>>,
     active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
     active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
@@ -688,6 +720,7 @@ impl Gateway {
             active_desktop_routes: Arc::new(RwLock::new(None)),
             active_pi_routes: Arc::new(RwLock::new(None)),
             active_codex_routes: Arc::new(RwLock::new(None)),
+            active_response_client_routes: Arc::new(RwLock::new(HashMap::new())),
             active_client_routes: Arc::new(RwLock::new(HashMap::new())),
             active_agent_brokers: Arc::new(RwLock::new(HashMap::new())),
             active_agent_runtime_routes: Arc::new(Mutex::new(HashMap::new())),
@@ -711,6 +744,18 @@ impl Gateway {
             .route("/claude-desktop/v1/messages", post(claude_desktop_messages))
             .route("/pi/v1/messages", post(pi_messages))
             .route("/codex/v1/responses", post(codex_responses))
+            .route(
+                "/responses/{client}/v1/responses",
+                post(response_client_responses),
+            )
+            .route(
+                "/gemini/v1beta/models/{*operation}",
+                post(gemini_model_operation),
+            )
+            .route(
+                "/agent-runtime/gemini/v1beta/models/{*operation}",
+                post(gemini_agent_model_operation),
+            )
             .route("/clients/{client}/v1/messages", post(client_messages))
             .route("/mcp/{client}", post(agent_broker_mcp))
             .route("/agent-runtime/v1/messages", post(agent_runtime_messages))
@@ -841,11 +886,16 @@ impl Gateway {
             .cloned()
             .ok_or_else(|| GatewayError::Unauthorized(client_id.to_owned()))?;
         let expected = format!("Bearer {}", active.token);
-        let authorized = headers
+        let bearer_authorized = headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value == expected);
-        if !authorized {
+        let api_key_authorized = client_id == "gemini"
+            && headers
+                .get("x-goog-api-key")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == active.token);
+        if !bearer_authorized && !api_key_authorized {
             return Err(GatewayError::Unauthorized(client_id.to_owned()));
         }
         Ok(active)
@@ -912,29 +962,27 @@ impl Gateway {
         }
 
         request["model"] = Value::String(model.upstream_id.clone());
-        let protocol = select_model_protocol(
-            &documents,
-            model_id,
-            provider.protocol,
-            NativeProtocol::AnthropicMessages,
-        )?;
+        let protocol =
+            select_model_protocol(&documents, model_id, NativeProtocol::AnthropicMessages)?;
+        let surface = provider_protocol_endpoint(provider, protocol)?;
         match protocol {
             Protocol::OpenAiResponses => {
-                let base = Url::parse(&provider.endpoint).map_err(|_| {
+                let base = Url::parse(&surface.endpoint).map_err(|_| {
                     GatewayError::Configuration(format!(
                         "invalid provider endpoint: {}",
-                        provider.endpoint
+                        surface.endpoint
                     ))
                 })?;
                 let endpoint =
-                    build_request_endpoint(&base, provider.endpoint_mode, "/v1/responses")
-                        .map_err(|_| {
+                    build_request_endpoint(&base, surface.endpoint_mode, "/v1/responses").map_err(
+                        |_| {
                             GatewayError::Configuration(format!(
                                 "invalid provider endpoint: {}",
-                                provider.endpoint
+                                surface.endpoint
                             ))
-                        })?;
-                let bridge = match provider.api_key_placement {
+                        },
+                    )?;
+                let bridge = match surface.api_key_placement {
                     ApiKeyPlacement::None => {
                         OpenAiResponsesBridge::from_endpoint_without_auth(endpoint)
                     }
@@ -971,25 +1019,25 @@ impl Gateway {
                 }
             }
             Protocol::AnthropicMessages => {
-                self.forward_anthropic_provider(provider, headers, request)
+                self.forward_anthropic_provider(provider, surface, headers, request)
                     .await
             }
             Protocol::OpenAiChatCompletions => {
-                let base = Url::parse(&provider.endpoint).map_err(|_| {
+                let base = Url::parse(&surface.endpoint).map_err(|_| {
                     GatewayError::Configuration(format!(
                         "invalid provider endpoint: {}",
-                        provider.endpoint
+                        surface.endpoint
                     ))
                 })?;
                 let endpoint =
-                    build_request_endpoint(&base, provider.endpoint_mode, "/v1/chat/completions")
+                    build_request_endpoint(&base, surface.endpoint_mode, "/v1/chat/completions")
                         .map_err(|_| {
-                        GatewayError::Configuration(format!(
-                            "invalid provider endpoint: {}",
-                            provider.endpoint
-                        ))
-                    })?;
-                let bridge = match provider.api_key_placement {
+                            GatewayError::Configuration(format!(
+                                "invalid provider endpoint: {}",
+                                surface.endpoint
+                            ))
+                        })?;
+                let bridge = match surface.api_key_placement {
                     ApiKeyPlacement::None => OpenAiChatBridge::from_endpoint_without_auth(endpoint),
                     ApiKeyPlacement::Bearer => {
                         OpenAiChatBridge::from_endpoint(endpoint, &provider.api_key)
@@ -1028,8 +1076,8 @@ impl Gateway {
                 }
             }
             Protocol::GeminiNative => {
-                if provider.endpoint_mode != EndpointMode::BaseUrl
-                    || provider.api_key_placement != ApiKeyPlacement::XApiKey
+                if surface.endpoint_mode != EndpointMode::BaseUrl
+                    || surface.api_key_placement != ApiKeyPlacement::XApiKey
                 {
                     return Err(GatewayError::Configuration(format!(
                         "Gemini Native provider {} requires an API-key Base URL",
@@ -1037,7 +1085,7 @@ impl Gateway {
                     )));
                 }
                 let streaming = request.get("stream").and_then(Value::as_bool) == Some(true);
-                let endpoint = gemini_endpoint(&provider.endpoint, &model.upstream_id, streaming)?;
+                let endpoint = gemini_endpoint(&surface.endpoint, &model.upstream_id, streaming)?;
                 let bridge = GeminiNativeBridge::from_endpoint(endpoint, &provider.api_key);
                 if streaming {
                     let stream = bridge.stream(request).await.map_err(GatewayError::Bridge)?;
@@ -1090,27 +1138,25 @@ impl Gateway {
             )));
         }
         request["model"] = Value::String(model.upstream_id.clone());
-        let base = Url::parse(&provider.endpoint).map_err(|_| {
-            GatewayError::Configuration(format!("invalid provider endpoint: {}", provider.endpoint))
+        let protocol =
+            select_model_protocol(&documents, model_id, NativeProtocol::OpenAiResponses)?;
+        let surface = provider_protocol_endpoint(provider, protocol)?;
+        let base = Url::parse(&surface.endpoint).map_err(|_| {
+            GatewayError::Configuration(format!("invalid provider endpoint: {}", surface.endpoint))
         })?;
-        let protocol = select_model_protocol(
-            &documents,
-            model_id,
-            provider.protocol,
-            NativeProtocol::OpenAiResponses,
-        )?;
         match protocol {
             Protocol::OpenAiResponses => {
                 let endpoint =
-                    build_request_endpoint(&base, provider.endpoint_mode, "/v1/responses")
-                        .map_err(|_| {
+                    build_request_endpoint(&base, surface.endpoint_mode, "/v1/responses").map_err(
+                        |_| {
                             GatewayError::Configuration(format!(
                                 "invalid provider endpoint: {}",
-                                provider.endpoint
+                                surface.endpoint
                             ))
-                        })?;
+                        },
+                    )?;
                 let mut upstream = self.client.post(endpoint).json(&request);
-                upstream = match provider.api_key_placement {
+                upstream = match surface.api_key_placement {
                     ApiKeyPlacement::None => upstream,
                     ApiKeyPlacement::Bearer => upstream.bearer_auth(&provider.api_key),
                     ApiKeyPlacement::XApiKey => {
@@ -1129,17 +1175,17 @@ impl Gateway {
             Protocol::OpenAiChatCompletions => {
                 let streaming = request.get("stream").and_then(Value::as_bool) == Some(true);
                 let endpoint =
-                    build_request_endpoint(&base, provider.endpoint_mode, "/v1/chat/completions")
+                    build_request_endpoint(&base, surface.endpoint_mode, "/v1/chat/completions")
                         .map_err(|_| {
-                        GatewayError::Configuration(format!(
-                            "invalid provider endpoint: {}",
-                            provider.endpoint
-                        ))
-                    })?;
+                            GatewayError::Configuration(format!(
+                                "invalid provider endpoint: {}",
+                                surface.endpoint
+                            ))
+                        })?;
                 let upstream_request =
                     codex_response_to_chat(request).map_err(GatewayError::Bridge)?;
                 let mut upstream = self.client.post(endpoint).json(&upstream_request);
-                upstream = match provider.api_key_placement {
+                upstream = match surface.api_key_placement {
                     ApiKeyPlacement::None => upstream,
                     ApiKeyPlacement::Bearer => upstream.bearer_auth(&provider.api_key),
                     ApiKeyPlacement::XApiKey => {
@@ -1183,21 +1229,19 @@ impl Gateway {
                 let (request, context) =
                     codex_response_to_anthropic_with_context(request, capabilities)
                         .map_err(GatewayError::Bridge)?;
-                let endpoint =
-                    build_request_endpoint(&base, provider.endpoint_mode, "/v1/messages").map_err(
-                        |_| {
-                            GatewayError::Configuration(format!(
-                                "invalid provider endpoint: {}",
-                                provider.endpoint
-                            ))
-                        },
-                    )?;
+                let endpoint = build_request_endpoint(&base, surface.endpoint_mode, "/v1/messages")
+                    .map_err(|_| {
+                        GatewayError::Configuration(format!(
+                            "invalid provider endpoint: {}",
+                            surface.endpoint
+                        ))
+                    })?;
                 let mut upstream = self
                     .client
                     .post(endpoint)
                     .header("anthropic-version", "2023-06-01")
                     .json(&request);
-                upstream = match provider.api_key_placement {
+                upstream = match surface.api_key_placement {
                     ApiKeyPlacement::None => upstream,
                     ApiKeyPlacement::Bearer => upstream.bearer_auth(&provider.api_key),
                     ApiKeyPlacement::XApiKey => upstream.header("x-api-key", &provider.api_key),
@@ -1231,33 +1275,68 @@ impl Gateway {
                         .map_err(GatewayError::Bridge)?;
                 Ok((StatusCode::OK, Json(response)).into_response())
             }
-            Protocol::GeminiNative => Err(GatewayError::Configuration(format!(
-                "Codex local routing does not yet support model protocol {:?}: {}",
-                protocol, provider.id
-            ))),
+            Protocol::GeminiNative => {
+                if surface.endpoint_mode != EndpointMode::BaseUrl
+                    || surface.api_key_placement != ApiKeyPlacement::XApiKey
+                {
+                    return Err(GatewayError::Configuration(format!(
+                        "Gemini Native provider {} requires an API-key Base URL",
+                        provider.id
+                    )));
+                }
+                let streaming = request.get("stream").and_then(Value::as_bool) == Some(true);
+                let capabilities = CodexAnthropicCapabilities {
+                    reasoning: model
+                        .protocol_capabilities
+                        .iter()
+                        .any(|capability| capability == &ProtocolCapability::ReasoningItems),
+                };
+                let (request, context) =
+                    codex_response_to_anthropic_with_context(request, capabilities)
+                        .map_err(GatewayError::Bridge)?;
+                let endpoint = gemini_endpoint(&surface.endpoint, &model.upstream_id, streaming)?;
+                let bridge = GeminiNativeBridge::from_endpoint(endpoint, &provider.api_key);
+                if streaming {
+                    let stream = bridge.stream(request).await.map_err(GatewayError::Bridge)?;
+                    let stream = anthropic_sse_to_codex_responses_with_context(
+                        stream,
+                        capabilities,
+                        context,
+                    );
+                    let mut response = Response::new(Body::from_stream(stream));
+                    response.headers_mut().insert(
+                        HeaderName::from_static("content-type"),
+                        "text/event-stream".parse().expect("static content type"),
+                    );
+                    return Ok(response);
+                }
+                let response = bridge
+                    .complete(request)
+                    .await
+                    .map_err(GatewayError::Bridge)?;
+                let response =
+                    anthropic_to_codex_response_with_context(response, capabilities, &context)
+                        .map_err(GatewayError::Bridge)?;
+                Ok((StatusCode::OK, Json(response)).into_response())
+            }
         }
     }
 
     async fn forward_anthropic_provider(
         &self,
         provider: &ProviderRecord,
+        surface: &ProviderProtocolEndpoint,
         headers: HeaderMap,
         request: Value,
     ) -> Result<Response, GatewayError> {
-        let mut base = Url::parse(&provider.endpoint).map_err(|_| {
-            GatewayError::Configuration(format!("invalid provider endpoint: {}", provider.endpoint))
+        let base = Url::parse(&surface.endpoint).map_err(|_| {
+            GatewayError::Configuration(format!("invalid provider endpoint: {}", surface.endpoint))
         })?;
-        if provider.id == "deepseek"
-            && provider.endpoint_mode == EndpointMode::BaseUrl
-            && base.path().trim_matches('/').is_empty()
-        {
-            base.set_path("/anthropic");
-        }
-        let endpoint = build_request_endpoint(&base, provider.endpoint_mode, "/v1/messages")
+        let endpoint = build_request_endpoint(&base, surface.endpoint_mode, "/v1/messages")
             .map_err(|_| {
                 GatewayError::Configuration(format!(
                     "invalid provider endpoint: {}",
-                    provider.endpoint
+                    surface.endpoint
                 ))
             })?;
         let mut upstream = self.client.post(endpoint).json(&request);
@@ -1271,7 +1350,7 @@ impl Gateway {
                 upstream = upstream.header(name, value);
             }
         }
-        upstream = match provider.api_key_placement {
+        upstream = match surface.api_key_placement {
             ApiKeyPlacement::None => upstream,
             ApiKeyPlacement::Bearer => upstream.bearer_auth(&provider.api_key),
             ApiKeyPlacement::XApiKey => upstream.header("x-api-key", &provider.api_key),
@@ -1646,6 +1725,77 @@ async fn codex_responses(State(gateway): State<Gateway>, request: Request<Body>)
     }
 }
 
+async fn response_client_responses(
+    State(gateway): State<Gateway>,
+    AxumPath(client): AxumPath<String>,
+    request: Request<Body>,
+) -> Response {
+    let active = match gateway
+        .active_response_client_routes
+        .read()
+        .map_err(|_| GatewayError::Configuration("Responses client route lock is poisoned".into()))
+        .and_then(|routes| {
+            routes
+                .get(&client)
+                .cloned()
+                .ok_or_else(|| GatewayError::Unauthorized(client.clone()))
+        }) {
+        Ok(active) => active,
+        Err(error) => return error_response(error),
+    };
+    let (parts, body) = request.into_parts();
+    let expected = format!("Bearer {}", active.token);
+    if parts
+        .headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        != Some(expected.as_str())
+    {
+        return error_response(GatewayError::Unauthorized(client));
+    }
+    let bytes = match to_bytes(body, 64 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body could not be read".into(),
+            ));
+        }
+    };
+    let request: Value = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body must be valid JSON".into(),
+            ));
+        }
+    };
+    let alias = match request.get("model").and_then(Value::as_str) {
+        Some(alias) => alias.to_string(),
+        None => {
+            return error_response(GatewayError::InvalidRequest(
+                "model must be a string".into(),
+            ));
+        }
+    };
+    let Some(model_id) = alias.strip_prefix("grillforge/").map(str::to_string) else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unknown GrillForge route alias: {alias}"
+        )));
+    };
+    if !active.allowed_model_ids.contains(&model_id) {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "inactive {client} route alias: {alias}"
+        )));
+    }
+    match gateway
+        .complete_codex_model(request, active.documents, &model_id)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => error_response(error),
+    }
+}
+
 async fn client_messages(
     State(gateway): State<Gateway>,
     AxumPath(client): AxumPath<String>,
@@ -1699,6 +1849,159 @@ async fn client_messages(
     }
 }
 
+async fn gemini_model_operation(
+    State(gateway): State<Gateway>,
+    AxumPath(operation): AxumPath<String>,
+    request: Request<Body>,
+) -> Response {
+    if let Some(model) = operation.strip_suffix(":generateContent") {
+        return gemini_client_request(gateway, model.to_string(), request, false).await;
+    }
+    if let Some(model) = operation.strip_suffix(":streamGenerateContent") {
+        return gemini_client_request(gateway, model.to_string(), request, true).await;
+    }
+    error_response(GatewayError::InvalidRequest(format!(
+        "unsupported Gemini model operation: {operation}"
+    )))
+}
+
+async fn gemini_client_request(
+    gateway: Gateway,
+    alias: String,
+    request: Request<Body>,
+    streaming: bool,
+) -> Response {
+    let active = match gateway.authorized_client("gemini", request.headers()) {
+        Ok(active) => active,
+        Err(error) => return error_response(error),
+    };
+    let Some(model_id) = alias.strip_prefix("grillforge--").map(str::to_string) else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unknown GrillForge Gemini route alias: {alias}"
+        )));
+    };
+    if !active.allowed_model_ids.contains(&model_id) {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "inactive Gemini route alias: {alias}"
+        )));
+    }
+    gemini_configured_request(gateway, model_id, request, streaming, active.documents).await
+}
+
+async fn gemini_agent_model_operation(
+    State(gateway): State<Gateway>,
+    AxumPath(operation): AxumPath<String>,
+    request: Request<Body>,
+) -> Response {
+    let (alias, streaming) = if let Some(model) = operation.strip_suffix(":generateContent") {
+        (model, false)
+    } else if let Some(model) = operation.strip_suffix(":streamGenerateContent") {
+        (model, true)
+    } else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unsupported Gemini Agent model operation: {operation}"
+        )));
+    };
+    let Some(token) = local_runtime_token(request.headers()) else {
+        return error_response(GatewayError::Unauthorized("Gemini Agent runtime".into()));
+    };
+    let active = match gateway.active_agent_runtime_routes.lock() {
+        Ok(routes) => routes.get(token).cloned(),
+        Err(_) => {
+            return error_response(GatewayError::Configuration(
+                "active Agent runtime route lock is poisoned".into(),
+            ));
+        }
+    };
+    let Some(active) = active else {
+        return error_response(GatewayError::Unauthorized("Gemini Agent runtime".into()));
+    };
+    let Some(model_id) = alias.strip_prefix("grillforge--").map(str::to_string) else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unknown GrillForge Gemini Agent route alias: {alias}"
+        )));
+    };
+    if active.model_id != model_id {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "inactive Gemini Agent runtime route alias: {alias}"
+        )));
+    }
+    gemini_configured_request(gateway, model_id, request, streaming, active.documents).await
+}
+
+async fn gemini_configured_request(
+    gateway: Gateway,
+    model_id: String,
+    request: Request<Body>,
+    streaming: bool,
+    documents: ConfigurationDocuments,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let bytes = match to_bytes(body, 64 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body could not be read".into(),
+            ));
+        }
+    };
+    let body: Value = match serde_json::from_slice(&bytes) {
+        Ok(body) => body,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body must be valid JSON".into(),
+            ));
+        }
+    };
+    let request = match crate::bridge::gemini_request_to_anthropic(
+        &format!("grillforge/{model_id}"),
+        body,
+        streaming,
+    ) {
+        Ok(request) => request,
+        Err(error) => return error_response(GatewayError::Bridge(error)),
+    };
+    let response = match gateway
+        .complete_configured_model(parts.headers, request, documents, &model_id)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return error_response(error),
+    };
+    if !response.status().is_success() {
+        return response;
+    }
+    if streaming {
+        let stream = anthropic_sse_to_gemini(response.into_body().into_data_stream());
+        let mut response = Response::new(Body::from_stream(stream));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            "text/event-stream".parse().expect("static content type"),
+        );
+        return response;
+    }
+    let bytes = match to_bytes(response.into_body(), 64 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(GatewayError::Bridge(BridgeError::InvalidGeminiResponse(
+                "Anthropic response body could not be read".into(),
+            )));
+        }
+    };
+    let anthropic: Value = match serde_json::from_slice(&bytes) {
+        Ok(body) => body,
+        Err(_) => {
+            return error_response(GatewayError::Bridge(BridgeError::InvalidGeminiResponse(
+                "Anthropic response body must be valid JSON".into(),
+            )));
+        }
+    };
+    match anthropic_response_to_gemini(anthropic) {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(error) => error_response(GatewayError::Bridge(error)),
+    }
+}
+
 async fn agent_broker_mcp(
     State(gateway): State<Gateway>,
     AxumPath(client): AxumPath<String>,
@@ -1731,7 +2034,7 @@ async fn agent_broker_mcp_for_client(
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "当用户要求使用 subagent、Agent、委派、并行或后台执行任务时，默认先调用 list_agents 检查本客户端获准使用的扩展 SubAgent；有合适结果时调用 run_agent，而不是内置 Agent。仅当列表为空、没有匹配能力，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。不要自行替换 extensionId、模型或 Provider；run_agent 失败时直接报告错误。"
+            "instructions": "当需要使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。不要先启动客户端内置 Agent。仅当列表为空、没有匹配项，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；run_agent 失败时原样报告，不得静默回退。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -1739,8 +2042,13 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "list_agents",
                     "title": "列出扩展 SubAgent",
-                    "description": "列出当前客户端可调用的扩展 SubAgent。需要委派任务时先调用本工具，再从结果中选择与任务能力匹配的 extensionId；列表为空时不要调用 run_agent。",
+                    "description": "当需要使用 SubAgent、委派、并行或后台 Agent 时，必须优先调用本工具。列出当前客户端获授权的 GrillForge 扩展 Agent，并在调用 run_agent 前选择匹配的 extensionId；列表为空时不要调用 run_agent。DEFAULT first step for any SubAgent, delegation, parallel, or background task.",
                     "_meta": {"anthropic/alwaysLoad": true},
+                    "annotations": {
+                        "readOnlyHint": true,
+                        "destructiveHint": false,
+                        "openWorldHint": false
+                    },
                     "inputSchema": {
                         "type": "object",
                         "additionalProperties": false,
@@ -1750,8 +2058,13 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
-                    "description": "用 list_agents 返回的 extensionId 委派一项任务。cwd 是任务工作目录，prompt 必须包含完整任务和约束。服务端使用用户电脑上已有的 Coding Agent、Agent 定义及所选模型运行；不要提交运行时、模型或 Provider 参数，也不要在失败后静默换 Agent。",
+                    "description": "Runs one delegated task with an extensionId returned by list_agents. Provide the task cwd and a complete prompt. Set webAccess=true only when the task explicitly needs the public internet. The local source Coding Agent owns the Agent loop and tools; do not submit runtime, model, or Provider parameters and never silently switch Agent after failure. 使用 list_agents 返回的 extensionId 委派任务。",
                     "_meta": {"anthropic/alwaysLoad": true},
+                    "annotations": {
+                        "readOnlyHint": false,
+                        "destructiveHint": false,
+                        "openWorldHint": true
+                    },
                     "inputSchema": {
                         "type": "object",
                         "additionalProperties": false,
@@ -1761,7 +2074,8 @@ async fn agent_broker_mcp_for_client(
                             "cwd": {"type": "string"},
                             "prompt": {"type": "string"},
                             "description": {"type": "string"},
-                            "background": {"type": "boolean", "const": false}
+                            "background": {"type": "boolean", "const": false},
+                            "webAccess": {"type": "boolean", "default": false}
                         }
                     }
                 }
@@ -1821,6 +2135,7 @@ fn list_agents(active: &ActiveAgentBroker, arguments: Option<&Value>) -> Result<
                     "sourceClientId": route.source_client_id,
                     "sourceAgentId": route.source_agent_id,
                     "modelId": route.model_id,
+                    "webAccessSupported": matches!(route.source_client_id.as_str(), "claude_code" | "codex"),
                 })
             })
             .collect::<Vec<_>>(),
@@ -1844,7 +2159,14 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
     let object = arguments
         .as_object()
         .ok_or_else(|| "run_agent arguments must be an object".to_string())?;
-    let allowed = ["extensionId", "cwd", "prompt", "description", "background"];
+    let allowed = [
+        "extensionId",
+        "cwd",
+        "prompt",
+        "description",
+        "background",
+        "webAccess",
+    ];
     if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
         return Err(format!("run_agent does not accept {key}"));
     }
@@ -1854,6 +2176,7 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
     let extension_id = required_mcp_string(object, "extensionId")?;
     let cwd = PathBuf::from(required_mcp_string(object, "cwd")?);
     let prompt = required_mcp_string(object, "prompt")?;
+    let web_access = optional_mcp_bool(object, "webAccess")?;
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err(format!(
             "Agent working directory does not exist: {}",
@@ -1909,6 +2232,7 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
+                web_access,
             )
             .await
         }
@@ -1920,6 +2244,19 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
+                web_access,
+            )
+            .await
+        }
+        "gemini" => {
+            run_gemini_agent_runtime(
+                &source_runtime,
+                &cwd,
+                &route.source_agent_id,
+                &prompt,
+                managed_route.as_ref(),
+                &active.base_url,
+                web_access,
             )
             .await
         }
@@ -1931,6 +2268,7 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
+                web_access,
             )
             .await
         }
@@ -1942,6 +2280,7 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
+                web_access,
             )
             .await
         }
@@ -1953,6 +2292,7 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
+                web_access,
             )
             .await
         }
@@ -1973,6 +2313,7 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
     }
     match route.source_client_id.as_str() {
         "codex" => return codex_last_agent_message(&output.stdout),
+        "gemini" => return gemini_agent_message(&output.stdout),
         "pi" => return pi_last_agent_message(&output.stdout),
         "opencode" => return opencode_last_agent_message(&output.stdout),
         "kimi_code" => return kimi_last_agent_message(&output.stdout),
@@ -1988,6 +2329,59 @@ async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String
         .ok_or_else(|| "Claude Code Agent runtime returned no result".to_string())
 }
 
+async fn run_gemini_agent_runtime(
+    source: &AgentSourceRuntime,
+    cwd: &Path,
+    agent_id: &str,
+    prompt: &str,
+    managed_route: Option<&(String, String, String)>,
+    base_url: &str,
+    web_access: bool,
+) -> Result<std::process::Output, String> {
+    let discovered =
+        crate::local_agents::discover_gemini_agents_for_project(&source.config_root, cwd)?;
+    if !discovered.iter().any(|agent| agent.agent_id == agent_id) {
+        return Err(format!(
+            "Gemini Agent does not exist in the user or project configuration: {agent_id}"
+        ));
+    }
+    if web_access {
+        return Err(
+            "Gemini CLI does not expose a per-Agent scoped web permission for this runtime".into(),
+        );
+    }
+    let home = source
+        .config_root
+        .parent()
+        .ok_or_else(|| "Gemini configuration root has no parent home directory".to_string())?;
+    let managed_config = managed_route
+        .map(|(_, runtime_token, model_id)| {
+            GeminiManagedConfigScratch::new(agent_id, model_id, runtime_token)
+        })
+        .transpose()?;
+    let mut command = tokio::process::Command::new(&source.runtime);
+    command
+        .current_dir(cwd)
+        .env("GEMINI_CLI_HOME", home)
+        .args(["--output-format", "json", "-p"])
+        .arg(format!("@{agent_id} {prompt}"));
+    if let (Some((_, runtime_token, model_id)), Some(config)) = (managed_route, &managed_config) {
+        let model_route = format!("grillforge--{model_id}");
+        command
+            .env("GEMINI_API_KEY", runtime_token)
+            .env("GEMINI_MODEL", &model_route)
+            .env("GEMINI_CLI_SYSTEM_SETTINGS_PATH", config.path())
+            .env(
+                "GOOGLE_GEMINI_BASE_URL",
+                format!("{}/agent-runtime/gemini", base_url.trim_end_matches('/')),
+            )
+            .env("GRILLFORGE_AGENT_CHILD", "1");
+    }
+    let output = run_agent_command(command, "Gemini CLI").await;
+    drop(managed_config);
+    output
+}
+
 async fn run_claude_agent_runtime(
     source: &AgentSourceRuntime,
     cwd: &Path,
@@ -1995,9 +2389,13 @@ async fn run_claude_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
+    web_access: bool,
 ) -> Result<std::process::Output, String> {
     let mut command = tokio::process::Command::new(&source.runtime);
     command.current_dir(cwd).args(["--agent", agent_id]);
+    if web_access {
+        command.args(["--allowedTools", "WebSearch,WebFetch"]);
+    }
     if let Some((model_route, _, _)) = managed_route {
         command.args(["--model", model_route]);
     }
@@ -2044,6 +2442,7 @@ async fn run_codex_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
+    web_access: bool,
 ) -> Result<std::process::Output, String> {
     let custom_agent_file =
         crate::local_agents::resolve_codex_custom_agent_file(&source.config_root, cwd, agent_id)?;
@@ -2058,6 +2457,9 @@ async fn run_codex_agent_runtime(
         None
     };
     let mut command = tokio::process::Command::new(&source.runtime);
+    if web_access {
+        command.arg("--search");
+    }
     command
         .current_dir(cwd)
         .env("CODEX_HOME", &source.config_root)
@@ -2128,6 +2530,7 @@ async fn run_pi_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
+    web_access: bool,
 ) -> Result<std::process::Output, String> {
     let agent_file =
         crate::local_agents::resolve_pi_agent_file(&source.config_root, cwd, agent_id)?
@@ -2135,6 +2538,12 @@ async fn run_pi_agent_runtime(
                 format!("Pi Agent does not exist in the user or project configuration: {agent_id}")
             })?;
     let agent = crate::local_agents::read_pi_agent_definition(&agent_file)?;
+    if web_access {
+        return Err(
+            "Pi CLI does not expose a scoped native web permission; GrillForge will not grant unrestricted shell network access"
+                .into(),
+        );
+    }
     let scratch = PiAgentScratch::new(&agent.system_prompt)?;
     let managed_config = managed_route
         .map(|(model_route, runtime_token, _)| {
@@ -2178,7 +2587,14 @@ async fn run_opencode_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
+    web_access: bool,
 ) -> Result<std::process::Output, String> {
+    if web_access {
+        return Err(
+            "OpenCode CLI does not expose a scoped native web permission for this Agent runtime"
+                .into(),
+        );
+    }
     let (mode, _) =
         crate::local_agents::resolve_opencode_agent(&source.config_root, cwd, agent_id)?
             .ok_or_else(|| {
@@ -2186,13 +2602,23 @@ async fn run_opencode_agent_runtime(
                     "OpenCode Agent does not exist in the user or project configuration: {agent_id}"
                 )
             })?;
+    if mode == crate::local_agents::OpenCodeAgentMode::Primary {
+        return Err(format!(
+            "OpenCode primary Agent cannot be used as an extension SubAgent: {agent_id}"
+        ));
+    }
     let mut command = tokio::process::Command::new(&source.runtime);
     command
         .current_dir(cwd)
         .env("OPENCODE_CONFIG_DIR", &source.config_root)
         .args(["run", "--format", "json"]);
+    let promote_subagent = mode == crate::local_agents::OpenCodeAgentMode::Subagent;
     if let Some((model_route, runtime_token, _)) = managed_route {
         let provider_model = format!("grillforge_agent/{model_route}");
+        let mut agent = json!({ "model": provider_model });
+        if promote_subagent {
+            agent["mode"] = Value::String("primary".into());
+        }
         let config = json!({
             "provider": {
                 "grillforge_agent": {
@@ -2213,25 +2639,20 @@ async fn run_opencode_agent_runtime(
                 }
             },
             "agent": {
-                (agent_id): { "model": provider_model }
+                (agent_id): agent
             }
         });
         command
             .args(["--model", &provider_model])
             .env("OPENCODE_CONFIG_CONTENT", config.to_string())
             .env("GRILLFORGE_AGENT_CHILD", "1");
+    } else if promote_subagent {
+        command.env(
+            "OPENCODE_CONFIG_CONTENT",
+            json!({ "agent": { (agent_id): { "mode": "primary" } } }).to_string(),
+        );
     }
-    match mode {
-        crate::local_agents::OpenCodeAgentMode::Primary
-        | crate::local_agents::OpenCodeAgentMode::All => {
-            command.args(["--agent", agent_id]).arg(prompt);
-        }
-        crate::local_agents::OpenCodeAgentMode::Subagent => {
-            return Err(format!(
-                "OpenCode subagent cannot be selected exactly by the CLI: {agent_id}"
-            ));
-        }
-    }
+    command.args(["--agent", agent_id]).arg(prompt);
     run_agent_command(command, "OpenCode").await
 }
 
@@ -2242,10 +2663,20 @@ async fn run_kimi_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
+    web_access: bool,
 ) -> Result<std::process::Output, String> {
-    if !matches!(agent_id, "default" | "okabe") {
+    if web_access {
+        return Err(
+            "Kimi Code CLI does not expose a scoped native web permission for this Agent runtime"
+                .into(),
+        );
+    }
+    let home = crate::local_agents::kimi_user_home(&source.config_root)?;
+    let custom_agent_file =
+        crate::local_agents::resolve_kimi_agent_file(&source.config_root, &home, cwd, agent_id)?;
+    if custom_agent_file.is_none() && !crate::local_agents::is_kimi_builtin_agent(agent_id) {
         return Err(format!(
-            "Kimi Code Agent cannot be selected exactly by the CLI: {agent_id}"
+            "Kimi Code Agent does not exist in the user, project, plugin, or extra Agent configuration: {agent_id}"
         ));
     }
     let managed_config = managed_route
@@ -2256,17 +2687,22 @@ async fn run_kimi_agent_runtime(
     let mut command = tokio::process::Command::new(&source.runtime);
     command
         .current_dir(cwd)
-        .args(["--agent", agent_id, "--work-dir"])
-        .arg(cwd);
+        .env("KIMI_CODE_HOME", &source.config_root)
+        .env("KIMI_CODE_NO_AUTO_UPDATE", "1")
+        .env("KIMI_DISABLE_TELEMETRY", "1");
+    if let Some(path) = &custom_agent_file {
+        command.arg("--agent-file").arg(path);
+    } else {
+        command.args(["--agent", agent_id]);
+    }
     if let (Some((model_route, _, _)), Some(config)) = (managed_route, &managed_config) {
         command
-            .arg("--config-file")
-            .arg(config.path())
             .args(["--model", model_route])
-            .env("KIMI_SHARE_DIR", config.root())
+            .env("KIMI_CODE_HOME", config.root())
+            .env("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL", "1")
             .env("GRILLFORGE_AGENT_CHILD", "1");
     }
-    command.args(["--quiet", "--prompt", prompt]);
+    command.args(["--prompt", prompt, "--output-format", "stream-json"]);
     let output = run_agent_command(command, "Kimi Code").await;
     drop(managed_config);
     output
@@ -2364,6 +2800,23 @@ fn codex_last_agent_message(stdout: &[u8]) -> Result<String, String> {
     last_message.ok_or_else(|| "Codex Agent runtime returned no final Agent message".to_string())
 }
 
+fn gemini_agent_message(stdout: &[u8]) -> Result<String, String> {
+    let response: Value = serde_json::from_slice(stdout)
+        .map_err(|_| "Gemini CLI Agent runtime returned invalid JSON".to_string())?;
+    if let Some(error) = response.get("error") {
+        return Err(format!(
+            "Gemini CLI Agent runtime failed: {}",
+            safe_single_line(&error.to_string())
+        ));
+    }
+    response
+        .get("response")
+        .and_then(Value::as_str)
+        .filter(|response| !response.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Gemini CLI Agent runtime returned no response".to_string())
+}
+
 fn pi_last_agent_message(stdout: &[u8]) -> Result<String, String> {
     let stdout = std::str::from_utf8(stdout)
         .map_err(|_| "Pi Agent runtime returned non-UTF-8 output".to_string())?;
@@ -2431,14 +2884,26 @@ fn opencode_last_agent_message(stdout: &[u8]) -> Result<String, String> {
 }
 
 fn kimi_last_agent_message(stdout: &[u8]) -> Result<String, String> {
-    let output = std::str::from_utf8(stdout)
-        .map_err(|_| "Kimi Code Agent runtime returned non-UTF-8 output".to_string())?
-        .trim();
-    if output.is_empty() {
-        Err("Kimi Code Agent runtime returned no final Agent message".to_string())
-    } else {
-        Ok(output.to_string())
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|_| "Kimi Code Agent runtime returned non-UTF-8 output".to_string())?;
+    let mut last_message = None;
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = serde_json::from_str(line)
+            .map_err(|_| "Kimi Code Agent runtime returned invalid JSONL".to_string())?;
+        if event.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(text) = event
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+        else {
+            continue;
+        };
+        last_message = Some(text.to_string());
     }
+    last_message
+        .ok_or_else(|| "Kimi Code Agent runtime returned no final Agent message".to_string())
 }
 
 struct PiAgentScratch {
@@ -2479,6 +2944,53 @@ impl Drop for PiAgentScratch {
         if let Some(root) = &self.root {
             let _ = std::fs::remove_dir_all(root);
         }
+    }
+}
+
+struct GeminiManagedConfigScratch {
+    root: PathBuf,
+    path: PathBuf,
+}
+
+impl GeminiManagedConfigScratch {
+    fn new(agent_id: &str, model_id: &str, runtime_token: &str) -> Result<Self, String> {
+        if runtime_token.is_empty() {
+            return Err("Gemini Agent runtime token must not be empty".into());
+        }
+        let model_route = format!("grillforge--{model_id}");
+        let root = std::env::temp_dir().join(format!(
+            "grillforge-gemini-managed-agent-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root)
+            .map_err(|error| format!("could not create Gemini Agent configuration: {error}"))?;
+        let path = root.join("settings.json");
+        let settings = json!({
+            "security": {"auth": {"selectedType": "gemini-api-key"}},
+            "model": {"name": model_route},
+            "agents": {"overrides": {
+                (agent_id): {"modelConfig": {"model": model_route}}
+            }}
+        });
+        let bytes = serde_json::to_vec_pretty(&settings)
+            .map_err(|error| format!("could not encode Gemini Agent configuration: {error}"))?;
+        if let Err(error) = crate::storage::atomic_replace(&path, &bytes) {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(format!(
+                "could not write Gemini Agent configuration: {error}"
+            ));
+        }
+        Ok(Self { root, path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for GeminiManagedConfigScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -2534,7 +3046,6 @@ impl Drop for PiManagedConfigScratch {
 
 struct KimiManagedConfigScratch {
     root: PathBuf,
-    path: PathBuf,
 }
 
 impl KimiManagedConfigScratch {
@@ -2556,6 +3067,7 @@ impl KimiManagedConfigScratch {
             .map_err(|error| format!("invalid Kimi Code TOML {}: {error}", source.display()))?;
         document["default_model"] = toml_edit::value(model_route);
         document["telemetry"] = toml_edit::value(false);
+        document["experimental"]["secondary-model"] = toml_edit::value(true);
 
         if document.get("providers").is_none() {
             document["providers"] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -2586,7 +3098,15 @@ impl KimiManagedConfigScratch {
             model_route.trim_start_matches("grillforge/")
         ));
         model["max_context_size"] = toml_edit::value(200_000);
+        let mut capabilities = toml_edit::Array::new();
+        capabilities.push("tool_use");
+        model["capabilities"] = toml_edit::value(capabilities);
         models.insert(model_route, toml_edit::Item::Table(model));
+
+        let mut secondary = toml_edit::Table::new();
+        secondary["default_model"] = toml_edit::value(model_route);
+        secondary["force"] = toml_edit::value(true);
+        document["secondary_model"] = toml_edit::Item::Table(secondary);
 
         let root = std::env::temp_dir().join(format!(
             "grillforge-kimi-managed-agent-{}",
@@ -2601,11 +3121,7 @@ impl KimiManagedConfigScratch {
                 "could not write Kimi Code Agent configuration: {error}"
             ));
         }
-        Ok(Self { root, path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
+        Ok(Self { root })
     }
 
     fn root(&self) -> &Path {
@@ -2629,6 +3145,15 @@ fn required_mcp_string(
         .filter(|value| !value.is_empty() && value.trim() == *value)
         .map(str::to_string)
         .ok_or_else(|| format!("run_agent {key} must be a non-empty string"))
+}
+
+fn optional_mcp_bool(object: &serde_json::Map<String, Value>, key: &str) -> Result<bool, String> {
+    match object.get(key) {
+        None => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| format!("run_agent {key} must be a boolean")),
+    }
 }
 
 fn safe_single_line(value: &str) -> String {
@@ -2780,6 +3305,12 @@ fn local_runtime_token(headers: &HeaderMap) -> Option<&str> {
                 .and_then(|value| value.to_str().ok())
                 .filter(|value| !value.is_empty())
         })
+        .or_else(|| {
+            headers
+                .get("x-goog-api-key")
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty())
+        })
 }
 
 async fn messages(
@@ -2808,33 +3339,26 @@ async fn messages(
 fn select_model_protocol(
     documents: &ConfigurationDocuments,
     model_id: &str,
-    legacy_provider_protocol: Protocol,
     inbound: NativeProtocol,
 ) -> Result<Protocol, GatewayError> {
-    let protocols = documents
+    let model = documents
         .models
         .models
         .iter()
-        .find(|model| model.id == model_id)
-        .and_then(|model| model.native_protocols.as_ref());
+        .find(|model| model.id == model_id);
+    let protocols = model.and_then(|model| model.native_protocols.as_ref());
     let Some(protocols) = protocols else {
-        return Ok(legacy_provider_protocol);
+        return Err(GatewayError::Configuration(format!(
+            "model {model_id} has not been protocol-tested"
+        )));
     };
     if protocols.is_empty() {
         return Err(GatewayError::Configuration(format!(
             "model {model_id} has no verified native protocol"
         )));
     }
-    let provider_default = match legacy_provider_protocol {
-        Protocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
-        Protocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
-        Protocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
-        Protocol::GeminiNative => NativeProtocol::GeminiNative,
-    };
     let selected = if protocols.contains(&inbound) {
         inbound
-    } else if protocols.contains(&provider_default) {
-        provider_default
     } else {
         match inbound {
             NativeProtocol::AnthropicMessages => [
@@ -2876,6 +3400,28 @@ fn select_model_protocol(
         NativeProtocol::OpenAiChat => Protocol::OpenAiChatCompletions,
         NativeProtocol::GeminiNative => Protocol::GeminiNative,
     })
+}
+
+fn provider_protocol_endpoint(
+    provider: &ProviderRecord,
+    protocol: Protocol,
+) -> Result<&ProviderProtocolEndpoint, GatewayError> {
+    let native = match protocol {
+        Protocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
+        Protocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
+        Protocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
+        Protocol::GeminiNative => NativeProtocol::GeminiNative,
+    };
+    provider
+        .protocol_endpoints
+        .iter()
+        .find(|entry| entry.protocol == native)
+        .ok_or_else(|| {
+            GatewayError::Configuration(format!(
+                "provider {} has no verified {:?} endpoint",
+                provider.id, native
+            ))
+        })
 }
 
 fn response_to_axum(response: reqwest::Response) -> Response {

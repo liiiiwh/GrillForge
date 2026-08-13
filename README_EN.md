@@ -5,7 +5,7 @@
 <h1 align="center">GrillForge</h1>
 
 <p align="center">
-  A local model control plane for AI coding agents
+  Let coding agents reuse local native agents and choose models per task
 </p>
 
 <p align="center">
@@ -13,7 +13,6 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.2.0-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -21,36 +20,18 @@
   <img alt="Status" src="https://img.shields.io/badge/status-MVP-f59e0b">
 </p>
 
-GrillForge is a local-first, client-centric model configuration center for coding agents. Multiple coding agents share one Provider and Model Registry, while each client adapter exposes only the model slots, pools, and agent settings that the real client supports.
+GrillForge is a lightweight, local-first model and SubAgent control plane for multiple coding clients. It reuses native coding-agent CLIs, lets clients share local Agents, and selects different Providers and models per task.
 
 > [!IMPORTANT]
-> GrillForge does not implement an Agent Runtime, Agent Loop, or tool executor. Extension SubAgents run in coding-agent runtimes already installed on the user's machine; GrillForge only mounts MCP, launches the selected local runtime, and replaces the chosen Provider/model route.
+> GrillForge does not implement an Agent Runtime, Agent Loop, or workflow engine. MCP provides lightweight discovery and task forwarding; the coding-agent CLI / Runtime already installed on the user's machine still owns the Agent Loop and tools. GrillForge only manages client configuration, SubAgent authorization, and Provider/model routing.
 
-## Table of Contents
+## Core Capabilities
 
-- [Why GrillForge](#why-grillforge)
-- [Current Support](#current-support)
-- [How It Works](#how-it-works)
-- [Download](#download)
-- [Quick Start](#quick-start)
-- [Configuration and Security](#configuration-and-security)
-- [Development](#development)
-- [Changelog](./CHANGELOG.md)
-- [Roadmap](#roadmap)
-- [Repository Layout](#repository-layout)
-- [Contributing](#contributing)
-- [License](#license)
-
-## Why GrillForge
-
-- **Client-centric configuration**: choose Claude Code, Codex, Pi, Kimi Code, or another supported client first, then configure its real model shape.
-- **Independent slot routing**: different slots in the same Coding Agent can select different Providers and models. GrillForge exposes only the client's real slots and preserves native constraints, such as Codex built-in SubAgents sharing the main model's Provider.
-- **Shared model assets**: maintain Providers and Models once and reuse them independently across clients.
-- **Extension SubAgents**: save local Agents in one library and authorize them per client. Each client mounts or unmounts MCP independently, and an empty binding list does not override that choice.
-- **Multi-protocol bridges**: Anthropic Messages, OpenAI Responses, OpenAI Chat Compatible, and Gemini Native.
-- **Safe takeover and restore**: atomic writes, one recovery snapshot, configuration difference reporting, and exact restoration.
-- **Fail fast**: authentication, quota, model, endpoint, and protocol errors are returned directly—without silent downgrade or Provider switching.
-- **Local first**: the control plane and gateway run locally; credentials are never returned through public GUI state, default logs, or error messages.
+- **Invoke native Agents across clients**: sync local Claude Code, Codex, Pi, Kimi Code, OpenCode, and other Agents, then authorize them for other coding clients through client-scoped MCP.
+- **Choose models per scenario**: coding, research, review, and testing SubAgents can each bind a source Agent, Provider, and model.
+- **Flexible model slots**: configure the default model, role models, native SubAgent default, custom Agents, and model pools according to each client's real capabilities. Different slots may use different Providers.
+- **Reuse native Runtimes**: the user's installed CLI / Runtime still owns the Agent Loop, tools, and context. GrillForge implements neither an Agent Runtime nor a workflow engine.
+- **Local model control**: share one Provider / Model Registry and bridge Anthropic, OpenAI Responses, OpenAI Chat, and Gemini protocols with atomic configuration and fail-fast errors.
 
 ## Current Support
 
@@ -62,13 +43,13 @@ GrillForge is a local-first, client-centric model configuration center for codin
 | Claude Client | Safe conversation / Cowork role routes; extension SubAgent MCP in both 1P and 3P | Implemented and verified through the local configuration path |
 | Codex | Main model, built-in SubAgent default, and per-custom-Agent models; standalone and ChatGPT-bundled CLI support | Implemented and verified with real CLI configuration |
 | Pi | Default model, available model pool, and extension SubAgents through community `pi-mcp-extension` | Implemented with real CLI, extension-install, authentication, and gateway verification |
-| Kimi Code | Default model, model pool, and the exactly selectable `default` / `okabe` built-in Agents | Implemented with the current `~/.kimi/config.toml` structure; configuration and gateway integration tests pass |
+| Kimi Code | Default model, SubAgent model pool, `agent` / `coder` / `explore` / `plan`, and custom Agents | Implemented with the current `~/.kimi-code/config.toml`, `mcp.json`, and Agent directory structure |
 | Gemini CLI | Default model | Implemented |
 | Grok Build | Default model | Implemented |
 | OpenCode | Default model and model pool | Implemented |
 | Hermes | Default model and model pool | Implemented |
 
-Client discovery checks the application PATH, standard installation locations, dynamic NVM/fnm/Volta/asdf/mise/pnpm/Bun/npm paths, and the user's interactive login shell. When several executables have the same name, GrillForge runs `--version` on each candidate, skips stale installations, and uses the first valid version. Opening the Clients page always refreshes discovery, so GrillForge does not need to be restarted after installing a CLI.
+Client discovery covers PATH, standard installation locations, and common Node version managers. When duplicate CLIs exist, GrillForge validates each candidate and uses the first working version. Opening Clients refreshes status in the background.
 
 ### Providers and Protocols
 
@@ -80,7 +61,7 @@ Client discovery checks the application PATH, standard installation locations, d
 | Gemini Native | Direct Gemini CLI configuration plus streaming/tool translation from Claude and Pi inbound requests |
 | Local models | Unauthenticated loopback endpoints such as Ollama or a local compatible gateway |
 
-The Provider page includes 151 protocol presets generated from a fixed cc-switch revision with per-client compatibility metadata, custom endpoints, API keys, automatic/manual model sync, model import, and explicit connection tests. Providers with vetted cc-switch endpoints can query live account balances or Coding Plan quotas; GrillForge does not keep a local traffic ledger. Only tested cc-switch capability slices used by the product are ported.
+Providers support protocol presets, custom endpoints, API keys, automatic/manual model sync, and connection tests. Sync probes the protocols each model actually supports; the gateway connects directly when protocols match and otherwise uses a tested bridge. Supported Providers can query live balances or Coding Plan quotas; GrillForge keeps no local traffic ledger.
 
 ## How It Works
 
@@ -102,11 +83,11 @@ flowchart LR
 - **Model Registry** stores upstream model IDs, display names, task capabilities, and transport capabilities.
 - **Local Gateway** performs authentication replacement, model routing, and protocol translation. It never executes agent tools.
 
+Extension invocation path: `Primary Agent → GrillForge MCP → Extension SubAgent → local native CLI / Runtime → Provider model`.
+
 ## Download
 
-Download `GrillForge-v0.2.0-macos-universal.zip` from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest). The macOS build supports both Apple Silicon and Intel and is signed with Developer ID Application. A SHA-256 checksum file is included, and the Release states the notarization status until Apple Notarization is complete.
-
-Unzip it and move `GrillForge.app` to Applications. Notarized Releases require no Gatekeeper bypass; follow the matching Release notes for builds whose notarization is still pending.
+Download from [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest).
 
 ## Quick Start
 
@@ -133,20 +114,16 @@ pnpm tauri dev
 3. Run a connection test to validate the Provider, endpoint, credential, and model.
 4. Open Clients, choose a Provider first, then choose the model or model pool.
 5. Apply the configuration. Multiple clients can be saved and applied independently.
-6. Keep GrillForge running while a gateway-backed client is in use.
-7. On launch, GrillForge restores enabled client configuration and routes in the background; a normal quit restores the pre-takeover files.
-8. Disabling a client clears its persistent enabled state and restores the exact pre-takeover configuration.
+6. Keep GrillForge running while a gateway-backed client is in use. Disabling it restores the pre-takeover configuration.
 
 ### Extension SubAgents
 
-1. On Extension SubAgents, choose an Agent discovered from a local runtime. Verified Claude Code, Codex, Pi, OpenCode, and Kimi Code Agents are currently available as executable sources.
+1. Sync and choose a local Agent on Extension SubAgents.
 2. Keep the source Agent's native model or bind a GrillForge model.
 3. Mount the client-scoped MCP on the destination client, then enable the extensions it may use. Binding changes update the mounted Agent list immediately; removing all bindings does not unmount MCP.
-4. Pi has no native MCP. GrillForge detects community `pi-mcp-extension` and, after explicit confirmation, can install pinned version `1.5.0` with the valid detected Pi CLI. A new Pi session loads the mounted configuration.
+4. Pi connects through community `pi-mcp-extension`; GrillForge installs a pinned version only after user confirmation.
 
-Model configuration, MCP mounting, and extension SubAgent bindings are independent. On normal exit GrillForge restores the client MCP file but preserves the mount preference, then remounts it in the background on the next launch. Claude Client can use its extension SubAgent MCP in both 1P and 3P modes.
-
-The MCP exposes only fixed Agent-list and invocation entry points. GrillForge resolves the runtime, source Agent, and model from the current binding; callers cannot inject them. The installed coding-agent runtime still owns the Agent Loop and tools.
+Model configuration, MCP mounting, and Extension SubAgent bindings remain independent. MCP exposes only fixed Agent-list and invocation entries; the source client's local Runtime always executes the Agent Loop and tools.
 
 ## Configuration and Security
 
@@ -221,31 +198,6 @@ The bundle is written to:
 
 ```text
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
-```
-
-The macOS Universal (`arm64` + `x86_64`) release has passed Developer ID Application signing and Hardened Runtime verification. Apple Notarization and ticket stapling require separate notarytool credentials; the project does not claim Gatekeeper notarization until that step succeeds. Windows paths and configuration behavior are covered by automated tests, but a native Windows installer must still be built and verified in a Windows/MSVC environment.
-
-## Roadmap
-
-- Add a live online-model acceptance run for Kimi Code CLI.
-- Build and verify a native installer in a Windows/MSVC environment.
-- Add a contribution guide, security policy, and release automation.
-
-## Repository Layout
-
-```text
-GrillForge/
-├── src/                         # React GUI
-├── src-tauri/src/
-│   ├── adapters/                # Coding Agent Client adapters
-│   ├── bridge/                  # API protocol bridges
-│   ├── application.rs           # Control-plane service
-│   ├── gateway.rs               # Local model gateway
-│   └── configuration.rs         # Configuration transactions and validation
-├── src-tauri/tests/             # Integration, protocol, and live-route tests
-├── CONTEXT.md                   # Product boundaries and domain language
-├── ARCHITECTURE.md              # Architecture constraints
-└── LOGIC.md                     # Core behavior and invariants
 ```
 
 ## Contributing

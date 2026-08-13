@@ -10,7 +10,7 @@ use crate::adapters::hermes::{
 };
 use crate::adapters::kimi_code::{
     KimiCodeAdapter, KimiCodeAgentProfile, KimiCodeModel, KimiCodePaths, KimiCodeRequest,
-    KimiCodeTakeoverStatus, detect_kimi_code_cli, discover_kimi_code_agents,
+    KimiCodeTakeoverStatus, detect_kimi_code_cli,
 };
 use crate::adapters::opencode::{
     OpenCodeAdapter, OpenCodeModel, OpenCodePaths, OpenCodeRequest, OpenCodeTakeoverStatus,
@@ -19,7 +19,8 @@ use crate::adapters::opencode::{
 use crate::application::ControlPlaneService;
 use crate::extension_integration::ExtensionIntegrationService;
 use crate::gateway::GatewayStatus;
-use std::path::PathBuf;
+use crate::local_agents::{discover_kimi_agents, kimi_user_home};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::State;
 
@@ -105,33 +106,64 @@ impl GeminiIntegrationService {
         })
     }
 
-    pub fn apply(&self, control: &ControlPlaneService) -> Result<ClientIntegrationStatus, String> {
+    pub fn apply(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<ClientIntegrationStatus, String> {
         if detect_gemini_cli()
             .map_err(|error| error.to_string())?
             .is_none()
         {
             return Err("未检测到 Gemini CLI；安装后才能应用配置".into());
         }
+        self.activate(control, gateway)?;
+        self.status(control)
+    }
+
+    fn activate(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<(), String> {
         let selection = control.client_selection("gemini")?;
+        let token = uuid::Uuid::new_v4().to_string();
         self.adapter
             .apply(
                 GeminiRequest::new(
-                    selection.provider.endpoint,
-                    selection.provider.api_key,
-                    selection.main_model.upstream_id,
+                    format!("{}/gemini", gateway.base_url.trim_end_matches('/')),
+                    &token,
+                    format!("grillforge--{}", selection.main_model.id),
                 )
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
+        let ids = selection
+            .enabled_models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
+        if let Err(error) = gateway.activate_client("gemini", ids, &token) {
+            let restore = self
+                .adapter
+                .disable()
+                .map_err(|restore| restore.to_string());
+            return Err(match restore {
+                Ok(_) => error,
+                Err(restore) => format!("{error}; Gemini CLI 配置回滚也失败: {restore}"),
+            });
+        }
         self.activated.store(true, Ordering::Release);
-        self.status(control)
+        Ok(())
     }
 
     pub fn disable(
         &self,
         control: &ControlPlaneService,
+        gateway: &GatewayStatus,
     ) -> Result<ClientIntegrationStatus, String> {
         self.adapter.disable().map_err(|error| error.to_string())?;
+        gateway.deactivate_client("gemini");
         self.activated.store(false, Ordering::Release);
         self.status(control)
     }
@@ -142,7 +174,11 @@ impl GeminiIntegrationService {
             .is_ok_and(|status| status.snapshot_present)
     }
 
-    pub fn resume_if_applied(&self) -> Result<bool, String> {
+    pub fn resume_if_applied(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<bool, String> {
         match self
             .adapter
             .status()
@@ -151,7 +187,7 @@ impl GeminiIntegrationService {
         {
             GeminiTakeoverStatus::Inactive | GeminiTakeoverStatus::Drifted => Ok(false),
             GeminiTakeoverStatus::Active => {
-                self.activated.store(true, Ordering::Release);
+                self.activate(control, gateway)?;
                 Ok(true)
             }
         }
@@ -193,34 +229,68 @@ impl GrokBuildIntegrationService {
         })
     }
 
-    pub fn apply(&self, control: &ControlPlaneService) -> Result<ClientIntegrationStatus, String> {
+    pub fn apply_with_gateway(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<ClientIntegrationStatus, String> {
         if detect_grok_build_cli()
             .map_err(|error| error.to_string())?
             .is_none()
         {
             return Err("未检测到 Grok Build CLI；安装后才能应用配置".into());
         }
+        self.activate(control, gateway)?;
+        self.status(control)
+    }
+
+    fn activate(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<(), String> {
         let selection = control.client_selection("grok_build")?;
+        let token = uuid::Uuid::new_v4().to_string();
         self.adapter
             .apply(
                 GrokBuildRequest::new(
-                    selection.provider.endpoint,
-                    selection.provider.api_key,
-                    selection.main_model.upstream_id,
+                    format!(
+                        "{}/responses/grok-build/v1",
+                        gateway.base_url.trim_end_matches('/')
+                    ),
+                    &token,
+                    format!("grillforge/{}", selection.main_model.id),
                     selection.main_model.display_name,
                 )
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
+        let ids = selection
+            .enabled_models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
+        if let Err(error) = gateway.activate_response_client("grok-build", ids, &token) {
+            let restore = self
+                .adapter
+                .disable()
+                .map_err(|restore| restore.to_string());
+            return Err(match restore {
+                Ok(_) => error,
+                Err(restore) => format!("{error}; Grok Build 配置回滚也失败: {restore}"),
+            });
+        }
         self.activated.store(true, Ordering::Release);
-        self.status(control)
+        Ok(())
     }
 
     pub fn disable(
         &self,
         control: &ControlPlaneService,
+        gateway: &GatewayStatus,
     ) -> Result<ClientIntegrationStatus, String> {
         self.adapter.disable().map_err(|error| error.to_string())?;
+        gateway.deactivate_response_client("grok-build");
         self.activated.store(false, Ordering::Release);
         self.status(control)
     }
@@ -231,7 +301,11 @@ impl GrokBuildIntegrationService {
             .is_ok_and(|status| status.snapshot_present)
     }
 
-    pub fn resume_if_applied(&self) -> Result<bool, String> {
+    pub fn resume_if_applied(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<bool, String> {
         match self
             .adapter
             .status()
@@ -240,7 +314,7 @@ impl GrokBuildIntegrationService {
         {
             GrokBuildTakeoverStatus::Inactive | GrokBuildTakeoverStatus::Drifted => Ok(false),
             GrokBuildTakeoverStatus::Active => {
-                self.activated.store(true, Ordering::Release);
+                self.activate(control, gateway)?;
                 Ok(true)
             }
         }
@@ -515,13 +589,28 @@ impl HermesIntegrationService {
 
 pub struct KimiCodeIntegrationService {
     adapter: KimiCodeAdapter,
+    config_root: PathBuf,
+    home: PathBuf,
     activated: AtomicBool,
 }
 
 impl KimiCodeIntegrationService {
     pub fn new(paths: KimiCodePaths, root: impl Into<PathBuf>) -> Self {
+        let config_root = paths
+            .config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let home = kimi_user_home(&config_root).unwrap_or_else(|_| {
+            config_root
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        });
         Self {
             adapter: KimiCodeAdapter::new(paths, root),
+            config_root,
+            home,
             activated: AtomicBool::new(false),
         }
     }
@@ -550,7 +639,13 @@ impl KimiCodeIntegrationService {
                 configured_model_ids,
                 main_model_id,
             },
-            agents: discover_kimi_code_agents(),
+            agents: discover_kimi_agents(&self.config_root, &self.home)?
+                .into_iter()
+                .map(|agent| KimiCodeAgentProfile {
+                    name: agent.agent_id,
+                    description: agent.description,
+                })
+                .collect(),
         })
     }
 
@@ -691,11 +786,12 @@ pub fn apply_gemini(
     gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
     let state = control.state()?;
-    let status =
-        extensions.with_suspended_client(&state, &gateway, "gemini", || service.apply(&control))?;
+    let status = extensions.with_suspended_client(&state, &gateway, "gemini", || {
+        service.apply(&control, &gateway)
+    })?;
     if let Err(error) = control.set_client_integration_enabled("gemini", true) {
         let _ = extensions.with_suspended_client(&control.state()?, &gateway, "gemini", || {
-            service.disable(&control)
+            service.disable(&control, &gateway)
         });
         return Err(error);
     }
@@ -710,8 +806,9 @@ pub fn disable_gemini(
     gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
     let state = control.state()?;
-    let status = extensions
-        .with_suspended_client(&state, &gateway, "gemini", || service.disable(&control))?;
+    let status = extensions.with_suspended_client(&state, &gateway, "gemini", || {
+        service.disable(&control, &gateway)
+    })?;
     control.set_client_integration_enabled("gemini", false)?;
     Ok(status)
 }
@@ -728,10 +825,11 @@ pub async fn grok_build_status(
 pub fn apply_grok_build(
     service: State<'_, GrokBuildIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
-    let status = service.apply(&control)?;
+    let status = service.apply_with_gateway(&control, &gateway)?;
     if let Err(error) = control.set_client_integration_enabled("grok_build", true) {
-        let _ = service.disable(&control);
+        let _ = service.disable(&control, &gateway);
         return Err(error);
     }
     Ok(status)
@@ -741,8 +839,9 @@ pub fn apply_grok_build(
 pub fn disable_grok_build(
     service: State<'_, GrokBuildIntegrationService>,
     control: State<'_, ControlPlaneService>,
+    gateway: State<'_, GatewayStatus>,
 ) -> Result<ClientIntegrationStatus, String> {
-    let status = service.disable(&control)?;
+    let status = service.disable(&control, &gateway)?;
     control.set_client_integration_enabled("grok_build", false)?;
     Ok(status)
 }
@@ -898,6 +997,12 @@ mod tests {
                 .unwrap();
         }
         control
+            .set_client_main_model("gemini".into(), Some("coder".into()))
+            .unwrap();
+        control
+            .set_client_main_model("grok_build".into(), Some("coder".into()))
+            .unwrap();
+        control
     }
 
     #[test]
@@ -919,10 +1024,15 @@ mod tests {
             .apply(GrokBuildRequest::new("http://127.0.0.1:9", "token", "grok", "Grok").unwrap())
             .unwrap();
 
-        assert!(gemini.resume_if_applied().unwrap());
-        assert!(grok.resume_if_applied().unwrap());
+        let control = gateway_control(&root);
+        let gateway = Gateway::new(&root).status("http://127.0.0.1:15721".into());
+        assert!(gemini.resume_if_applied(&control, &gateway).unwrap());
+        assert!(grok.resume_if_applied(&control, &gateway).unwrap());
         assert!(gemini.activated.load(Ordering::Acquire));
         assert!(grok.activated.load(Ordering::Acquire));
+        let gemini_env = fs::read_to_string(temp.path().join("home/.gemini/.env")).unwrap();
+        assert!(gemini_env.contains("GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:15721/gemini"));
+        assert!(gemini_env.contains("GEMINI_MODEL=grillforge--coder"));
     }
 
     #[test]
@@ -1005,7 +1115,7 @@ mod tests {
         let root = temp.path().join("grillforge");
         let control = gateway_control(&root);
         let gateway = Gateway::new(&root).status("http://127.0.0.1:15721".into());
-        let paths = KimiCodePaths::new(temp.path().join("home/.kimi/config.toml"));
+        let paths = KimiCodePaths::new(temp.path().join("home/.kimi-code/config.toml"));
         let service = KimiCodeIntegrationService::new(paths.clone(), &root);
 
         service.activate(&control, &gateway).unwrap();
@@ -1015,7 +1125,6 @@ mod tests {
             .parse::<toml_edit::DocumentMut>()
             .unwrap();
         assert_eq!(config["default_model"].as_str(), Some("grillforge/coder"));
-        assert!(config.get("secondary_model").is_none());
         assert!(service.activated.load(Ordering::Acquire));
     }
 }

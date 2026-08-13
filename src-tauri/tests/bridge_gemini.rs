@@ -5,7 +5,9 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
-use grillforge_lib::bridge::GeminiNativeBridge;
+use grillforge_lib::bridge::{
+    GeminiNativeBridge, anthropic_response_to_gemini, gemini_request_to_anthropic,
+};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
@@ -59,6 +61,65 @@ async fn empty_claude_tool_list_is_omitted_from_gemini_request() {
     let calls = capture.0.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert!(calls[0].1.get("tools").is_none());
+}
+
+#[test]
+fn gemini_client_request_and_anthropic_response_round_trip_tools() {
+    let anthropic = gemini_request_to_anthropic(
+        "grillforge/coder",
+        json!({
+            "systemInstruction":{"parts":[{"text":"Be concise."}]},
+            "contents":[
+                {"role":"user","parts":[{"text":"Weather?"}]},
+                {"role":"model","parts":[{"functionCall":{"id":"call_1","name":"weather","args":{"city":"Paris"}}}]},
+                {"role":"user","parts":[{"functionResponse":{"id":"call_1","name":"weather","response":{"temperature":20}}}]}
+            ],
+            "generationConfig":{"maxOutputTokens":256,"temperature":0.2,"stopSequences":["END"]},
+            "tools":[{"functionDeclarations":[{
+                "name":"weather","description":"Current weather",
+                "parametersJsonSchema":{"type":"object","properties":{"city":{"type":"string"}}}
+            }]}],
+            "toolConfig":{"functionCallingConfig":{"mode":"AUTO"}}
+        }),
+        false,
+    )
+    .expect("Gemini client request");
+
+    assert_eq!(anthropic["model"], "grillforge/coder");
+    assert_eq!(anthropic["system"], "Be concise.");
+    assert_eq!(anthropic["max_tokens"], 256);
+    assert_eq!(anthropic["messages"][1]["content"][0]["type"], "tool_use");
+    assert_eq!(
+        anthropic["messages"][2]["content"][0]["tool_use_id"],
+        "call_1"
+    );
+    assert_eq!(anthropic["tools"][0]["input_schema"]["type"], "object");
+    assert_eq!(anthropic["tool_choice"]["type"], "auto");
+
+    let gemini = anthropic_response_to_gemini(json!({
+        "id":"msg_1","type":"message","role":"assistant","model":"coder-upstream",
+        "content":[
+            {"type":"text","text":"Calling weather."},
+            {"type":"tool_use","id":"call_2","name":"weather","input":{"city":"Tokyo"}}
+        ],
+        "stop_reason":"tool_use","stop_sequence":null,
+        "usage":{"input_tokens":12,"cache_read_input_tokens":3,"output_tokens":4}
+    }))
+    .expect("Anthropic response");
+
+    assert_eq!(gemini["responseId"], "msg_1");
+    assert_eq!(gemini["candidates"][0]["content"]["role"], "model");
+    assert_eq!(
+        gemini["candidates"][0]["content"]["parts"][0]["text"],
+        "Calling weather."
+    );
+    assert_eq!(
+        gemini["candidates"][0]["content"]["parts"][1]["functionCall"]["id"],
+        "call_2"
+    );
+    assert_eq!(gemini["usageMetadata"]["promptTokenCount"], 15);
+    assert_eq!(gemini["usageMetadata"]["candidatesTokenCount"], 4);
+    assert_eq!(gemini["usageMetadata"]["totalTokenCount"], 19);
 }
 
 #[tokio::test]

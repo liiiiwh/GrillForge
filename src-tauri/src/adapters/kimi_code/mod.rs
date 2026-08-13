@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
-use toml_edit::{Array, DocumentMut, Item, value};
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 use url::Url;
 
 const SNAPSHOT_FILE: &str = "kimi-code.snapshot.json";
@@ -31,7 +31,11 @@ impl KimiCodePaths {
 
 pub fn paths_from_home(home: impl AsRef<Path>) -> KimiCodePaths {
     let home = home.as_ref();
-    KimiCodePaths::new(home.join(".kimi/config.toml"))
+    KimiCodePaths::new(home.join(".kimi-code/config.toml"))
+}
+
+pub fn mcp_path_from_home(home: impl AsRef<Path>) -> PathBuf {
+    home.as_ref().join(".kimi-code/mcp.json")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,20 +158,6 @@ pub struct KimiCodeAgentProfile {
     pub description: String,
 }
 
-pub fn discover_kimi_code_agents() -> Vec<KimiCodeAgentProfile> {
-    vec![
-        built_in_agent("default", "Kimi Code 默认 Agent"),
-        built_in_agent("okabe", "Kimi Code 实验 Agent"),
-    ]
-}
-
-fn built_in_agent(name: &str, description: &str) -> KimiCodeAgentProfile {
-    KimiCodeAgentProfile {
-        name: name.into(),
-        description: description.into(),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KimiCodeModel {
     id: String,
@@ -185,17 +175,25 @@ impl KimiCodeModel {
                 "Kimi Code model must use a GrillForge route alias: {id}"
             )));
         }
-        let capabilities = capabilities.into_iter().map(Into::into).collect::<Vec<_>>();
+        let mut capabilities = capabilities.into_iter().map(Into::into).collect::<Vec<_>>();
         if capabilities.iter().any(|capability| {
             !matches!(
                 capability.as_str(),
-                "thinking" | "always_thinking" | "image_in" | "video_in"
+                "thinking" | "always_thinking" | "image_in" | "video_in" | "audio_in" | "tool_use"
             )
         }) {
             return Err(KimiCodeAdapterError::Invalid(format!(
                 "Kimi Code model capabilities are invalid: {id}"
             )));
         }
+        if !capabilities
+            .iter()
+            .any(|capability| capability == "tool_use")
+        {
+            capabilities.push("tool_use".into());
+        }
+        capabilities.sort();
+        capabilities.dedup();
         Ok(Self { id, capabilities })
     }
 }
@@ -422,6 +420,7 @@ fn render_config(
     }
 
     document["default_model"] = value(&request.default_model);
+    document["experimental"]["secondary-model"] = value(true);
     document["providers"][PROVIDER_ID]["type"] = value("anthropic");
     document["providers"][PROVIDER_ID]["base_url"] = value(&request.gateway_base_url);
     document["providers"][PROVIDER_ID]["api_key"] = value(&request.gateway_token);
@@ -435,7 +434,14 @@ fn render_config(
         }
         document["models"][&model.id]["capabilities"] = value(capabilities);
     }
-    document.remove("secondary_model");
+    let mut secondary = Table::new();
+    secondary["default_model"] = value(&request.default_model);
+    let mut pool = Table::new();
+    for model in &request.models {
+        pool[&model.id] = value("");
+    }
+    secondary["models"] = Item::Table(pool);
+    document["secondary_model"] = Item::Table(secondary);
     Ok(document.to_string().into_bytes())
 }
 

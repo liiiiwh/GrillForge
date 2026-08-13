@@ -113,3 +113,106 @@ async fn named_client_route_is_isolated_by_client_token_and_model_pool() {
     );
     assert_eq!(calls.lock().unwrap()[0]["model"], "coder-upstream");
 }
+
+#[test]
+fn anthropic_ingress_clients_accept_gemini_native_models_for_local_bridging() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(temp.path());
+    service
+        .save_provider(ProviderInput {
+            id: "gemini".into(),
+            name: "Gemini".into(),
+            protocol: Protocol::GeminiNative,
+            endpoint: "https://generativelanguage.googleapis.com".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::XApiKey,
+            api_key: Some("secret".into()),
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "gemini-model".into(),
+            name: "Gemini Model".into(),
+            upstream_id: "gemini-upstream".into(),
+            provider_id: "gemini".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+
+    Gateway::new(temp.path())
+        .status("http://127.0.0.1:1".into())
+        .activate_client("opencode", vec!["gemini-model".into()], "token")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn responses_ingress_client_routes_a_chat_only_model_through_the_bridge() {
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let upstream = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(|State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+                calls.lock().unwrap().push(body);
+                Json(json!({
+                    "id":"chatcmpl-grok","object":"chat.completion","model":"chat-upstream",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"bridged"},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+                }))
+            }),
+        )
+        .with_state(calls.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let temp = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(temp.path());
+    service
+        .save_provider(ProviderInput {
+            id: "chat".into(),
+            name: "Chat".into(),
+            protocol: Protocol::OpenAiChatCompletions,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "chat-model".into(),
+            name: "Chat Model".into(),
+            upstream_id: "chat-upstream".into(),
+            provider_id: "chat".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    let gateway = Gateway::new(temp.path());
+    gateway
+        .status("http://127.0.0.1:1".into())
+        .activate_response_client("grok-build", vec!["chat-model".into()], "token")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{address}/responses/grok-build/v1/responses"
+        ))
+        .bearer_auth("token")
+        .json(&json!({"model":"grillforge/chat-model","input":"ping","stream":false,"store":false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["output"][0]["content"][0]["text"], "bridged");
+    assert_eq!(calls.lock().unwrap()[0]["model"], "chat-upstream");
+}

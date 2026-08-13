@@ -95,6 +95,34 @@ fn native_claude_models_are_persisted_without_a_provider() {
 }
 
 #[test]
+fn versioned_native_claude_models_are_persisted_exactly() {
+    let root = tempfile::tempdir().expect("config root");
+    let service = ControlPlaneService::new(root.path());
+
+    let state = service
+        .set_claude_native_model("main".into(), Some("claude-opus-4-8[1m]".into()))
+        .expect("versioned native main");
+    assert_eq!(
+        state
+            .claude_native_model_slots
+            .get("main")
+            .map(String::as_str),
+        Some("claude-opus-4-8[1m]")
+    );
+
+    let state = service
+        .set_claude_native_model("subagent_default".into(), Some("claude-sonnet-5".into()))
+        .expect("versioned native subagent");
+    assert_eq!(
+        state
+            .claude_native_model_slots
+            .get("subagent_default")
+            .map(String::as_str),
+        Some("claude-sonnet-5")
+    );
+}
+
+#[test]
 fn unsupported_native_claude_model_fails_without_mutation() {
     let root = tempfile::tempdir().expect("config root");
     let service = ControlPlaneService::new(root.path());

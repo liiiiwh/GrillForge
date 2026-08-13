@@ -102,9 +102,15 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     let instructions = initialized["result"]["instructions"]
         .as_str()
         .expect("server instructions");
-    assert!(instructions.contains("默认先调用 list_agents"));
+    assert!(instructions.starts_with(
+        "当需要使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP"
+    ));
+    assert!(instructions[..instructions.len().min(512)].contains("先调用 list_agents"));
+    assert!(instructions[..instructions.len().min(512)].contains("DEFAULT SUBAGENT ROUTE"));
+    assert!(instructions[..instructions.len().min(512)].contains("不要先启动客户端内置 Agent"));
     assert!(instructions.contains("run_agent"));
     assert!(instructions.contains("用户明确要求使用原生 Agent"));
+    assert!(instructions.contains("webAccess=true"));
 
     let tools: Value = client
         .post(format!("{base_url}/mcp/claude_code"))
@@ -123,6 +129,31 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
             .iter()
             .all(|tool| tool["_meta"]["anthropic/alwaysLoad"] == true)
     );
+    let list_description = tools["result"]["tools"][0]["description"]
+        .as_str()
+        .expect("list_agents description");
+    assert!(list_description.contains("必须优先调用本工具"));
+    assert_eq!(
+        tools["result"]["tools"][1]["inputSchema"]["properties"]["webAccess"]["type"],
+        "boolean"
+    );
+
+    let listed: Value = client
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-secret")
+        .json(&json!({
+            "jsonrpc":"2.0","id":22,"method":"tools/call",
+            "params":{"name":"list_agents","arguments":{}}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let listed: Value =
+        serde_json::from_str(listed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(listed[0]["webAccessSupported"], true);
 
     let response = client
         .post(format!("{base_url}/mcp/claude_code"))
@@ -149,6 +180,123 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     assert_eq!(
         body["result"]["content"][0]["text"],
         "child runtime completed"
+    );
+}
+
+#[tokio::test]
+async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    let argv_log = directory.path().join("argv");
+    fs::create_dir(directory.path().join(".claude")).unwrap();
+    fs::write(
+        &runtime,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' '{{\"type\":\"result\",\"result\":\"done\"}}'\n",
+            argv_log.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "codex",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "claude_code".into(),
+                runtime,
+                config_root: directory.path().join(".claude"),
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "claude-general".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/codex"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"claude-general",
+                "cwd":directory.path(),
+                "prompt":"Inspect a public GitHub repository",
+                "webAccess":true
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(
+        argv.contains("--allowedTools\nWebSearch,WebFetch\n"),
+        "{argv}"
+    );
+
+    let response: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/codex"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"claude-general",
+                "cwd":directory.path(),
+                "prompt":"Inspect only local files"
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(!argv.contains("WebSearch"), "{argv}");
+    assert!(!argv.contains("WebFetch"), "{argv}");
+
+    let invalid: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/codex"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"claude-general",
+                "cwd":directory.path(),
+                "prompt":"Inspect public docs",
+                "webAccess":"yes"
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(invalid["result"]["isError"], true);
+    assert_eq!(
+        invalid["result"]["content"][0]["text"],
+        "run_agent webAccess must be a boolean"
     );
 }
 
@@ -352,6 +500,30 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
     assert_eq!(
         response["result"]["content"][0]["text"],
         "pi child completed"
+    );
+
+    let web_response: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"pi-reviewer","cwd":project,"prompt":"Research public docs",
+                "webAccess":true
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(web_response["result"]["isError"], true);
+    assert!(
+        web_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("does not expose a scoped native web permission")
     );
     let argv = fs::read_to_string(argv_log).unwrap();
     assert!(argv.starts_with(&format!("{}|", pi_root.display())));
@@ -582,7 +754,8 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
             "params":{"name":"run_agent","arguments":{
-                "extensionId":"codex-reviewer","cwd":project,"prompt":"Review this"
+                "extensionId":"codex-reviewer","cwd":project,"prompt":"Review this",
+                "webAccess":true
             }}
         }))
         .send()
@@ -597,6 +770,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         "codex child completed"
     );
     let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(argv.starts_with("--search\nexec\n"), "{argv}");
     assert!(argv.contains("agents.reviewer.config_file="));
     assert!(argv.contains("agents.default_subagent_model=grillforge/worker"));
     let effective = fs::read_to_string(format!("{}.effective", argv_log.display())).unwrap();
@@ -746,13 +920,12 @@ async fn client_agent_lists_update_independently_without_remounting_mcp() {
 }
 
 #[tokio::test]
-async fn opencode_agent_source_is_selected_exactly_with_an_isolated_managed_model() {
+async fn opencode_subagent_source_is_selected_exactly_with_an_isolated_managed_model() {
     let directory = tempfile::tempdir().unwrap();
     let opencode_root = directory.path().join("opencode-config");
     fs::create_dir_all(opencode_root.join("agents")).unwrap();
     let agent_file = opencode_root.join("agents/reviewer.md");
-    let original_agent =
-        "---\ndescription: Reviews code\nmode: all\nmodel: native/model\n---\nPrivate prompt\n";
+    let original_agent = "---\ndescription: Reviews code\nmode: subagent\nmodel: native/model\n---\nPrivate prompt\n";
     fs::write(&agent_file, original_agent).unwrap();
     let argv_log = directory.path().join("opencode.argv");
     let env_log = directory.path().join("opencode.env");
@@ -862,11 +1035,12 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
         config["agent"]["reviewer"]["model"],
         "grillforge_agent/grillforge/worker"
     );
+    assert_eq!(config["agent"]["reviewer"]["mode"], "primary");
     assert_eq!(fs::read_to_string(agent_file).unwrap(), original_agent);
 }
 
 #[tokio::test]
-async fn opencode_primary_agent_uses_native_configuration_without_managed_injection() {
+async fn opencode_builtin_subagent_uses_native_model_through_isolated_promotion() {
     let directory = tempfile::tempdir().unwrap();
     let opencode_root = directory.path().join("opencode-config");
     fs::create_dir_all(&opencode_root).unwrap();
@@ -906,9 +1080,9 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
                 config_root: opencode_root,
             }],
             vec![AgentRuntimeRoute {
-                extension_id: "opencode-build".into(),
+                extension_id: "opencode-general".into(),
                 source_client_id: "opencode".into(),
-                source_agent_id: "build".into(),
+                source_agent_id: "general".into(),
                 model_id: None,
             }],
         )
@@ -921,7 +1095,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
             "params":{"name":"run_agent","arguments":{
-                "extensionId":"opencode-build","cwd":directory.path(),"prompt":"Build this"
+                "extensionId":"opencode-general","cwd":directory.path(),"prompt":"Research this"
             }}
         }))
         .send()
@@ -937,10 +1111,11 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
         "native build completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
-    assert!(argv.contains("--agent\nbuild\n"));
-    assert!(argv.ends_with("Build this\n"));
+    assert!(argv.contains("--agent\ngeneral\n"));
+    assert!(argv.ends_with("Research this\n"));
     assert!(!argv.contains("--model\n"));
-    assert_eq!(fs::read_to_string(env_log).unwrap(), "unset");
+    let config: Value = serde_json::from_slice(&fs::read(env_log).unwrap()).unwrap();
+    assert_eq!(config["agent"]["general"]["mode"], "primary");
 }
 
 #[tokio::test]
@@ -972,12 +1147,12 @@ max_context_size = 100000
             r#"#!/bin/sh
 printf '%s\n' "$@" > '{argv}'
 test "$GRILLFORGE_AGENT_CHILD" = "1" || exit 41
-previous=""
-for argument in "$@"; do
-  if [ "$previous" = "--config-file" ]; then cp "$argument" '{config}'; fi
-  previous="$argument"
-done
-printf '%s' 'Kimi managed child completed'
+test "$KIMI_CODE_NO_AUTO_UPDATE" = "1" || exit 42
+test "$KIMI_DISABLE_TELEMETRY" = "1" || exit 43
+test "$KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL" = "1" || exit 44
+cp "$KIMI_CODE_HOME/config.toml" '{config}'
+printf '%s\n' '{{"role":"meta","content":"ignored"}}'
+printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
 "#,
             argv = argv_log.display(),
             config = config_log.display(),
@@ -1027,9 +1202,9 @@ printf '%s' 'Kimi managed child completed'
                 config_root: kimi_root,
             }],
             vec![AgentRuntimeRoute {
-                extension_id: "kimi-okabe".into(),
+                extension_id: "kimi-coder".into(),
                 source_client_id: "kimi_code".into(),
-                source_agent_id: "okabe".into(),
+                source_agent_id: "coder".into(),
                 model_id: Some("worker".into()),
             }],
         )
@@ -1042,7 +1217,7 @@ printf '%s' 'Kimi managed child completed'
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
             "params":{"name":"run_agent","arguments":{
-                "extensionId":"kimi-okabe","cwd":directory.path(),"prompt":"Review this"
+                "extensionId":"kimi-coder","cwd":directory.path(),"prompt":"Review this"
             }}
         }))
         .send()
@@ -1058,11 +1233,13 @@ printf '%s' 'Kimi managed child completed'
         "Kimi managed child completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
-    assert!(argv.contains("--agent\nokabe\n"));
+    assert!(argv.contains("--agent\ncoder\n"));
     assert!(argv.contains("--model\ngrillforge/worker\n"));
-    assert!(argv.contains("--config-file\n"));
-    assert!(argv.contains("--quiet\n"));
     assert!(argv.contains("--prompt\nReview this\n"));
+    assert!(argv.contains("--output-format\nstream-json\n"));
+    assert!(!argv.contains("--config-file\n"));
+    assert!(!argv.contains("--quiet\n"));
+    assert!(!argv.contains("--work-dir\n"));
     assert!(!argv.contains("broker-token"));
     let effective = fs::read_to_string(config_log).unwrap();
     assert!(effective.contains("telemetry = false"));
@@ -1071,6 +1248,14 @@ printf '%s' 'Kimi managed child completed'
     assert!(effective.contains("type = \"anthropic\""));
     assert!(effective.contains(&format!("base_url = \"{base_url}/agent-runtime/v1\"")));
     assert!(effective.contains("[models.\"grillforge/worker\"]"));
+    assert!(effective.contains("capabilities = [\"tool_use\"]"));
+    assert!(effective.contains("[secondary_model]"));
+    assert!(effective.contains("force = true"));
+    let effective_document = effective.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(
+        effective_document["experimental"]["secondary-model"].as_bool(),
+        Some(true)
+    );
     assert_eq!(fs::read_to_string(config_file).unwrap(), original_config);
 }
 
@@ -1086,7 +1271,7 @@ async fn kimi_builtin_agent_uses_native_configuration_without_managed_injection(
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$@" > '{argv}'
-printf '%s' 'Kimi native child completed'
+printf '%s\n' '{{"role":"assistant","content":"Kimi native child completed"}}'
 "#,
             argv = argv_log.display(),
         ),
@@ -1112,9 +1297,9 @@ printf '%s' 'Kimi native child completed'
                 config_root: kimi_root,
             }],
             vec![AgentRuntimeRoute {
-                extension_id: "kimi-default".into(),
+                extension_id: "kimi-explore".into(),
                 source_client_id: "kimi_code".into(),
-                source_agent_id: "default".into(),
+                source_agent_id: "explore".into(),
                 model_id: None,
             }],
         )
@@ -1127,7 +1312,7 @@ printf '%s' 'Kimi native child completed'
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
             "params":{"name":"run_agent","arguments":{
-                "extensionId":"kimi-default","cwd":directory.path(),"prompt":"Inspect this"
+                "extensionId":"kimi-explore","cwd":directory.path(),"prompt":"Inspect this"
             }}
         }))
         .send()
@@ -1143,7 +1328,217 @@ printf '%s' 'Kimi native child completed'
         "Kimi native child completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
-    assert!(argv.contains("--agent\ndefault\n"));
+    assert!(argv.contains("--agent\nexplore\n"));
+    assert!(argv.contains("--output-format\nstream-json\n"));
     assert!(!argv.contains("--config-file\n"));
     assert!(!argv.contains("--model\n"));
+}
+
+#[tokio::test]
+async fn gemini_agent_source_is_invoked_exactly_with_at_syntax() {
+    let directory = tempfile::tempdir().unwrap();
+    let gemini_home = directory.path().join("home");
+    let gemini_root = gemini_home.join(".gemini");
+    let project = directory.path().join("project");
+    fs::create_dir_all(&gemini_root).unwrap();
+    fs::create_dir_all(project.join(".gemini/agents")).unwrap();
+    fs::write(
+        project.join(".gemini/agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: Reviews code\n---\nReview.\n",
+    )
+    .unwrap();
+    let argv_log = directory.path().join("gemini.argv");
+    let home_log = directory.path().join("gemini.home");
+    let settings_log = directory.path().join("gemini.settings.json");
+    let runtime = directory.path().join("gemini");
+    fs::write(
+        &runtime,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$@" > '{argv}'
+printf '%s' "$GEMINI_CLI_HOME" > '{home}'
+cp "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" '{settings}'
+test "$GEMINI_MODEL" = 'grillforge--worker' || exit 21
+case "$GOOGLE_GEMINI_BASE_URL" in http://127.0.0.1:*/agent-runtime/gemini) ;; *) exit 22 ;; esac
+test -n "$GEMINI_API_KEY" || exit 23
+printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
+"#,
+            argv = argv_log.display(),
+            home = home_log.display(),
+            settings = settings_log.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+    let service = ControlPlaneService::new(directory.path());
+    service
+        .save_provider(ProviderInput {
+            id: "local".into(),
+            name: "Local".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: "http://127.0.0.1:9".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "worker".into(),
+            name: "Worker".into(),
+            upstream_id: "worker-upstream".into(),
+            provider_id: "local".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "claude_code",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "gemini".into(),
+                runtime,
+                config_root: gemini_root,
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "gemini-reviewer".into(),
+                source_client_id: "gemini".into(),
+                source_agent_id: "reviewer".into(),
+                model_id: Some("worker".into()),
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"gemini-reviewer","cwd":project,"prompt":"Review this"
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["content"][0]["text"],
+        "Gemini child completed"
+    );
+    assert_eq!(
+        fs::read_to_string(argv_log).unwrap(),
+        "--output-format\njson\n-p\n@reviewer Review this\n"
+    );
+    assert_eq!(
+        fs::read_to_string(home_log).unwrap(),
+        gemini_home.display().to_string()
+    );
+    let settings: Value = serde_json::from_str(&fs::read_to_string(settings_log).unwrap()).unwrap();
+    assert_eq!(settings["model"]["name"], "grillforge--worker");
+    assert_eq!(
+        settings["agents"]["overrides"]["reviewer"]["modelConfig"]["model"],
+        "grillforge--worker"
+    );
+    assert_eq!(
+        settings["security"]["auth"]["selectedType"],
+        "gemini-api-key"
+    );
+}
+
+#[tokio::test]
+async fn kimi_custom_agent_is_selected_by_its_exact_agent_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    let kimi_root = home.join(".kimi-code");
+    let custom_agent = kimi_root.join("agents/reviewer.md");
+    fs::create_dir_all(custom_agent.parent().unwrap()).unwrap();
+    fs::write(
+        &custom_agent,
+        "---\nname: reviewer\ndescription: Exact reviewer\n---\nReview carefully.\n",
+    )
+    .unwrap();
+    let argv_log = directory.path().join("kimi-custom.argv");
+    let runtime = directory.path().join("kimi-custom");
+    fs::write(
+        &runtime,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$@" > '{argv}'
+printf '%s\n' '{{"role":"assistant","content":"Kimi custom child completed"}}'
+"#,
+            argv = argv_log.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "claude_code",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "kimi_code".into(),
+                runtime,
+                config_root: kimi_root,
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "kimi-reviewer".into(),
+                source_client_id: "kimi_code".into(),
+                source_agent_id: "reviewer".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"kimi-reviewer","cwd":directory.path(),"prompt":"Inspect this"
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["content"][0]["text"],
+        "Kimi custom child completed"
+    );
+    let argv = fs::read_to_string(argv_log).unwrap();
+    assert!(argv.contains("--agent-file\n"));
+    assert!(argv.contains(&format!("{}\n", custom_agent.display())));
+    assert!(!argv.contains("--agent\nreviewer\n"));
 }

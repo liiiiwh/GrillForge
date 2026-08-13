@@ -7,6 +7,7 @@ use axum::{
     routing::post,
 };
 use grillforge_lib::application::{ControlPlaneService, ModelInput, ProviderInput};
+use grillforge_lib::configuration::{ConfigurationFiles, ProviderProtocolEndpoint};
 use grillforge_lib::core::model::NativeProtocol;
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::gateway::Gateway;
@@ -14,6 +15,118 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+
+#[tokio::test]
+async fn routing_uses_the_selected_protocols_own_endpoint() {
+    let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    let upstream = Router::new()
+        .route(
+            "/responses/v1/responses",
+            post({
+                let calls = calls.clone();
+                move || {
+                    let calls = calls.clone();
+                    async move {
+                        calls.lock().unwrap().push("responses".into());
+                        Json(json!({"id":"resp_direct","object":"response","status":"completed","output":[]}))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/chat/v1/chat/completions",
+            post({
+                let calls = calls.clone();
+                move || {
+                    let calls = calls.clone();
+                    async move {
+                        calls.lock().unwrap().push("chat".into());
+                        Json(json!({
+                            "id":"chat_bridge","object":"chat.completion","model":"bridged",
+                            "choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],
+                            "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+                        }))
+                    }
+                }
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let root = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(root.path());
+    service
+        .save_provider(ProviderInput {
+            id: "vendor".into(),
+            name: "Vendor".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: format!("http://{upstream_address}/responses"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    for (id, protocol) in [
+        ("direct", NativeProtocol::OpenAiResponses),
+        ("bridged", NativeProtocol::OpenAiChat),
+    ] {
+        service
+            .save_model(ModelInput {
+                id: id.into(),
+                name: id.into(),
+                upstream_id: id.into(),
+                provider_id: "vendor".into(),
+                capabilities: vec![],
+                protocol_capabilities: vec![],
+            })
+            .unwrap();
+        service
+            .set_model_native_protocols(id, vec![protocol])
+            .unwrap();
+    }
+    let files = ConfigurationFiles::new(root.path());
+    let mut documents = files.read().unwrap();
+    documents.config.providers[0].protocol_endpoints = vec![
+        ProviderProtocolEndpoint {
+            protocol: NativeProtocol::OpenAiResponses,
+            endpoint: format!("http://{upstream_address}/responses"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+        },
+        ProviderProtocolEndpoint {
+            protocol: NativeProtocol::OpenAiChat,
+            endpoint: format!("http://{upstream_address}/chat"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+        },
+    ];
+    files
+        .save(&documents.config, &documents.models, &documents.agents)
+        .unwrap();
+    let gateway = Gateway::new(root.path());
+    gateway
+        .status("http://127.0.0.1:1".into())
+        .activate_codex(vec!["direct".into(), "bridged".into()], "token")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+    for model in ["direct", "bridged"] {
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/codex/v1/responses"))
+            .bearer_auth("token")
+            .json(&json!({"model":format!("grillforge/{model}"),"input":"ping","stream":false,"store":false}))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    assert_eq!(*calls.lock().unwrap(), ["responses", "chat"]);
+}
 
 #[tokio::test]
 async fn codex_route_requires_its_token_and_forwards_responses_without_client_auth() {
@@ -205,28 +318,11 @@ async fn same_provider_routes_flash_to_responses_and_pro_to_its_verified_chat_pr
             .set_model_native_protocols(id, vec![protocol])
             .unwrap();
     }
-    service
-        .save_model(ModelInput {
-            id: "future-model".into(),
-            name: "Future Model".into(),
-            upstream_id: "future-model".into(),
-            provider_id: "deepseek".into(),
-            capabilities: vec![],
-            protocol_capabilities: vec![],
-        })
-        .unwrap();
-    service
-        .set_model_native_protocols("future-model", vec![])
-        .unwrap();
     let gateway = Gateway::new(temp.path());
     gateway
         .status("http://127.0.0.1:1".into())
         .activate_codex(
-            vec![
-                "deepseek-v4-flash".into(),
-                "deepseek-v4-pro".into(),
-                "future-model".into(),
-            ],
+            vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()],
             "codex-token",
         )
         .unwrap();
@@ -257,22 +353,6 @@ async fn same_provider_routes_flash_to_responses_and_pro_to_its_verified_chat_pr
             .unwrap();
         assert_eq!(response["output"][0]["content"][0]["text"], expected);
     }
-    let unknown = client
-        .post(format!("http://{address}/codex/v1/responses"))
-        .bearer_auth("codex-token")
-        .json(&json!({
-            "model": "grillforge/future-model",
-            "input": "ping",
-            "stream": false
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        unknown.json::<Value>().await.unwrap()["error"]["message"],
-        "model future-model has no verified native protocol"
-    );
     assert_eq!(calls.responses.load(Ordering::SeqCst), 1);
     assert_eq!(calls.chat.load(Ordering::SeqCst), 1);
 }
@@ -522,6 +602,89 @@ async fn codex_route_converts_responses_text_to_anthropic_and_back() {
     assert_eq!(calls[0].1["model"], "claude-sonnet");
     assert_eq!(calls[0].1["system"], "reply briefly");
     assert_eq!(calls[0].1["messages"][0]["content"][0]["text"], "ping");
+}
+
+#[tokio::test]
+async fn codex_route_converts_responses_through_gemini_native_and_back() {
+    type GeminiCalls = Arc<Mutex<Vec<(HeaderMap, Value)>>>;
+    let calls = GeminiCalls::default();
+    let upstream = Router::new()
+        .route(
+            "/v1beta/models/gemini-2.5-pro:generateContent",
+            post(
+                |State(calls): State<GeminiCalls>,
+                 headers: HeaderMap,
+                 Json(body): Json<Value>| async move {
+                    calls.lock().unwrap().push((headers, body));
+                    Json(json!({
+                        "responseId":"gemini-codex","modelVersion":"gemini-2.5-pro",
+                        "candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"gemini-codex-ok"}]}}],
+                        "usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6}
+                    }))
+                },
+            ),
+        )
+        .with_state(calls.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+
+    let temp = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(temp.path());
+    service
+        .save_provider(ProviderInput {
+            id: "gemini".into(),
+            name: "Gemini".into(),
+            protocol: Protocol::GeminiNative,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::XApiKey,
+            api_key: Some("gemini-secret".into()),
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "gemini-pro".into(),
+            name: "Gemini Pro".into(),
+            upstream_id: "gemini-2.5-pro".into(),
+            provider_id: "gemini".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    service
+        .set_model_native_protocols("gemini-pro", vec![NativeProtocol::GeminiNative])
+        .unwrap();
+    let gateway = Gateway::new(temp.path());
+    gateway
+        .status("http://127.0.0.1:1".into())
+        .activate_codex(vec!["gemini-pro".into()], "codex-token")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/codex/v1/responses"))
+        .bearer_auth("codex-token")
+        .json(&json!({
+            "model":"grillforge/gemini-pro","input":"ping","stream":false,"store":false
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(
+        response["output"][0]["content"][0]["text"],
+        "gemini-codex-ok"
+    );
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0["x-goog-api-key"], "gemini-secret");
+    assert_eq!(calls[0].1["contents"][0]["parts"][0]["text"], "ping");
 }
 
 #[tokio::test]

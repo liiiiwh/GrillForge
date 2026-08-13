@@ -98,7 +98,7 @@ fn removed_client_is_not_known_or_exposed_in_public_state() {
 }
 
 #[test]
-fn client_selection_rejects_incompatible_provider_protocols_at_save_boundary() {
+fn gemini_client_accepts_unified_provider_routing_at_save_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let service = ControlPlaneService::new(temp.path());
     service
@@ -109,11 +109,14 @@ fn client_selection_rejects_incompatible_provider_protocols_at_save_boundary() {
         ))
         .unwrap();
     service.save_model(model("coder", "responses")).unwrap();
-    assert!(
-        service
-            .set_client_main_model("gemini".into(), Some("coder".into()))
-            .unwrap_err()
-            .contains("incompatible")
+    let state = service
+        .set_client_main_model("gemini".into(), Some("coder".into()))
+        .expect("Gemini client may route through Responses");
+    assert_eq!(
+        state.client_configurations["gemini"]
+            .main_model_id
+            .as_deref(),
+        Some("coder")
     );
     assert!(
         service

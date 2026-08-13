@@ -5,7 +5,7 @@
 <h1 align="center">GrillForge</h1>
 
 <p align="center">
-  面向 AI Coding Agent 的本地模型控制平面
+  让 Coding Agent 复用本机原生 Agent，并按任务调用不同模型
 </p>
 
 <p align="center">
@@ -13,7 +13,6 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.2.0-6C5CE7">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
@@ -21,36 +20,18 @@
   <img alt="Status" src="https://img.shields.io/badge/status-MVP-f59e0b">
 </p>
 
-GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型配置中心。它让多个 Coding Agent 共享同一套 Provider 与 Model Registry，同时由每个客户端的 Adapter 按其真实能力呈现模型槽位、模型池和 Agent 配置。
+GrillForge 是一个轻量、本地优先的多客户端模型与 SubAgent 控制平台：复用本机原生 Coding Agent CLI，让客户端之间可以共享 Agent，并按任务选择不同的 Provider 与模型。
 
 > [!IMPORTANT]
-> GrillForge 不实现 Agent Runtime、Agent Loop 或工具执行。扩展 SubAgent 由用户电脑上已经安装的 Coding Agent Runtime 运行；GrillForge 只挂载 MCP、启动对应本地 Runtime，并替换所选 Provider 与模型路由。
+> GrillForge 不实现 Agent Runtime、Agent Loop 或工作流引擎。它通过 MCP 做轻量级能力发现与任务转发，由用户电脑上已经安装的 Coding Agent CLI / Runtime 执行 Agent Loop 和工具；GrillForge 只负责客户端配置、SubAgent 授权以及 Provider / 模型路由。
 
-## 目录
+## 核心能力
 
-- [为什么使用 GrillForge](#为什么使用-grillforge)
-- [当前支持](#当前支持)
-- [工作方式](#工作方式)
-- [下载](#下载)
-- [快速开始](#快速开始)
-- [配置与安全](#配置与安全)
-- [开发](#开发)
-- [更新记录](./CHANGELOG.md)
-- [后续计划](#后续计划)
-- [项目结构](#项目结构)
-- [贡献](#贡献)
-- [许可证](#许可证)
-
-## 为什么使用 GrillForge
-
-- **以客户端为中心**：先选择 Claude Code、Codex、Pi、Kimi Code 等客户端，再配置该客户端真实支持的模型结构。
-- **槽位独立选模**：同一个 Coding Agent 的不同槽位可分别选择不同的 Provider 与模型；GrillForge 会按客户端的真实能力呈现槽位，并保留 Codex 内置 SubAgent 必须与主模型同 Provider 等原生约束。
-- **共享模型资产**：Provider 和 Model 只维护一次，可被多个客户端独立使用。
-- **扩展 SubAgent**：把本机已有的 Agent 保存到统一库，再按客户端独立授权；每个客户端可独立挂载或卸载 MCP，绑定列表为空时也保持用户选择的挂载状态。
-- **多协议桥接**：支持 Anthropic Messages、OpenAI Responses、OpenAI Chat Compatible 与 Gemini Native。
-- **安全接管与恢复**：原子写入、单一恢复快照、配置差异检测和精确恢复。
-- **失败即停止**：认证、配额、模型、Endpoint 或协议错误直接返回，不静默降级、不自动切换 Provider。
-- **本地优先**：控制面与网关运行在本机；凭据不会通过 GUI 公共状态、默认日志或错误信息返回。
+- **跨客户端调用原生 Agent**：同步本机 Claude Code、Codex、Pi、Kimi Code、OpenCode 等 Agent，通过客户端专属 MCP 授权给其他 Coding Agent 使用。
+- **按场景选择模型**：编码、调研、评审、测试等扩展 SubAgent 可分别绑定来源 Agent、Provider 与模型。
+- **灵活的模型槽位**：按客户端真实能力配置默认模型、角色模型、SubAgent 默认模型、自定义 Agent 和模型池；同一客户端的不同槽位可使用不同 Provider。
+- **复用原生 Runtime**：Agent Loop、工具和上下文仍由用户已安装的 CLI / Runtime 执行；GrillForge 不实现 Agent Runtime 或工作流引擎。
+- **本地模型控制层**：统一 Provider / Model Registry，桥接 Anthropic、OpenAI Responses、OpenAI Chat 与 Gemini 协议；配置原子写入、失败即停止。
 
 ## 当前支持
 
@@ -62,13 +43,13 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 | Claude Client | 对话 / Cowork 安全角色映射；1P / 3P 均可独立使用扩展 SubAgent MCP | 已实现并完成本机配置链路测试 |
 | Codex | 主模型、内置 SubAgent 默认模型、自定义 Agent 独立模型；支持独立 CLI 与 ChatGPT 内置 CLI | 已实现并完成真实 CLI 配置验收 |
 | Pi | 默认模型、可用模型池；通过社区 `pi-mcp-extension` 使用扩展 SubAgent | 已实现并完成真实 CLI、扩展安装、鉴权与网关链路测试 |
-| Kimi Code | 默认模型、模型池，以及可精确选择的 `default` / `okabe` 内置 Agent | 已实现；使用当前 `~/.kimi/config.toml` 配置结构，配置与网关集成测试通过 |
+| Kimi Code | 默认模型、SubAgent 模型池，以及 `agent` / `coder` / `explore` / `plan` 和自定义 Agent | 已实现；使用当前 `~/.kimi-code/config.toml`、`mcp.json` 与 Agent 目录结构 |
 | Gemini CLI | 默认模型 | 已实现 |
 | Grok Build | 默认模型 | 已实现 |
 | OpenCode | 默认模型与模型池 | 已实现 |
 | Hermes | 默认模型与模型池 | 已实现 |
 
-客户端检测会依次检查应用 PATH、标准安装目录、NVM/fnm/Volta/asdf/mise/pnpm/Bun/npm 等动态目录，以及用户的交互式登录 Shell。存在多个同名 CLI 时会逐个执行 `--version`，忽略失效候选并使用第一个有效版本。每次进入“客户端”页面都会重新检测，无需重启 GrillForge。
+客户端检测覆盖 PATH、标准安装目录和常见 Node 版本管理器；存在多个同名 CLI 时逐个验证并使用第一个有效版本。进入“客户端”页面会在后台刷新状态。
 
 ### Provider 与协议
 
@@ -80,7 +61,7 @@ GrillForge 是一个本地优先、以 Coding Agent 客户端为入口的模型�
 | Gemini Native | Gemini CLI 直接配置，以及 Claude / Pi 入站请求到 Gemini 的流式与工具桥接 |
 | 本地模型 | 支持无认证的 Loopback Endpoint，例如 Ollama 或本地兼容网关 |
 
-Provider 页面提供 151 个从固定 cc-switch 版本生成并带客户端兼容信息的协议预设、自定义 Endpoint、API Key、自动/手动模型同步、模型导入与显式连接测试。对于 cc-switch 已定义官方查询端点的 Provider，可直接查询实时账户余额或 Coding Plan 套餐；GrillForge 不保存本地流量账本。协议转换代码只移植了当前产品真正使用并经过测试的 cc-switch 能力切片。
+Provider 页面提供协议预设、自定义 Endpoint、API Key、自动/手动模型同步与连接测试。模型同步会探测模型实际支持的协议；网关优先直连匹配协议，否则执行已测试的协议转换。支持的 Provider 可查询实时余额或 Coding Plan，GrillForge 不保存本地流量账本。
 
 ## 工作方式
 
@@ -102,11 +83,11 @@ flowchart LR
 - **Model Registry** 保存上游模型 ID、展示名称、任务能力和协议能力。
 - **Local Gateway** 只做鉴权替换、模型路由和协议转换，不执行任何 Agent 工具。
 
+扩展调用链路：`主 Agent → GrillForge MCP → 扩展 SubAgent → 本机原生 CLI / Runtime → Provider 模型`。
+
 ## 下载
 
-从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载 `GrillForge-v0.2.0-macos-universal.zip`。macOS 包同时支持 Apple Silicon 与 Intel，并使用 Developer ID Application 正式签名；Release 同时提供 SHA-256 校验文件。Apple Notarization 完成前，Release 会明确标注公证状态。
-
-解压后将 `GrillForge.app` 移入“应用程序”即可。已公证的 Release 不需要绕过 Gatekeeper；未公证构建请以对应 Release 的说明为准。
+从 [GitHub Releases](https://github.com/liiiiwh/GrillForge/releases/latest) 下载。
 
 ## 快速开始
 
@@ -133,20 +114,16 @@ pnpm tauri dev
 3. 先执行连接测试，确认 Provider、Endpoint、凭据与模型有效。
 4. 打开“客户端”，先选择 Provider，再选择模型或模型池。
 5. 点击“应用配置”。多个客户端可以同时保存并独立应用。
-6. 对于经本地网关工作的客户端，使用期间保持 GrillForge 运行。
-7. GrillForge 启动时会在后台恢复已启用客户端的配置与路由；正常退出时恢复接管前配置。
-8. 点击“停用”会关闭该客户端的持久启用状态，并精确恢复接管前配置。
+6. 经本地网关工作的客户端在使用期间需要保持 GrillForge 运行；停用时会恢复接管前配置。
 
 ### 扩展 SubAgent
 
-1. 在“扩展 SubAgent”页面选择 GrillForge 已发现的本机 Agent。目前执行源开放经过验证的 Claude Code、Codex、Pi、OpenCode 与 Kimi Code Agent。
+1. 在“扩展 SubAgent”页面同步并选择本机 Agent。
 2. 可选择跟随来源 Agent 原生模型，或绑定一个 GrillForge 模型。
 3. 在目标客户端页面挂载客户端专属 MCP，再开启允许该客户端使用的扩展 SubAgent。绑定变化会实时更新已挂载 MCP 的 Agent 列表；关闭全部绑定不会自动卸载 MCP。
-4. Pi 本身没有原生 MCP。GrillForge 会检测社区 `pi-mcp-extension`；缺失时可在 Pi 页面确认后，一键安装固定版本 `1.5.0`。新 Pi 会话会加载挂载配置。
+4. Pi 通过社区 `pi-mcp-extension` 接入；GrillForge 可在用户确认后安装固定版本。
 
-模型配置、MCP 挂载和扩展 SubAgent 绑定彼此独立。正常退出时 GrillForge 恢复客户端 MCP 文件，但保留挂载选择；下次启动会在后台重新挂载。Claude Client 的扩展 SubAgent MCP 在 1P 与 3P 模式下都可使用。
-
-MCP 只暴露固定的 Agent 列表与调用入口。模型、Runtime 和来源 Agent 均由 GrillForge 根据当前绑定解析，调用方不能自行注入；实际 Agent Loop 和工具仍由本机 Coding Agent Runtime 执行。
+模型配置、MCP 挂载和扩展 SubAgent 绑定彼此独立。MCP 只暴露固定的 Agent 列表与调用入口；实际 Agent Loop 和工具始终由来源客户端的本机 Runtime 执行。
 
 ## 配置与安全
 
@@ -221,31 +198,6 @@ pnpm tauri build --target universal-apple-darwin --bundles app
 
 ```text
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
-```
-
-macOS Universal（`arm64` + `x86_64`）发布包已通过 Developer ID Application 正式签名与 Hardened Runtime 校验。Apple Notarization 与 ticket stapling 需要独立的 notarytool 凭据；未完成时不会宣称已通过 Gatekeeper 公证。Windows 路径和配置逻辑有自动化测试，但原生 Windows 安装包仍需在 Windows/MSVC 环境构建验证。
-
-## 后续计划
-
-- 补充 Kimi Code CLI 的真实在线模型调用验收。
-- 在 Windows/MSVC 环境生成并验证原生安装包。
-- 补充贡献指南、安全策略和正式 Release 自动化。
-
-## 项目结构
-
-```text
-GrillForge/
-├── src/                         # React GUI
-├── src-tauri/src/
-│   ├── adapters/                # Coding Agent Client Adapters
-│   ├── bridge/                  # API 协议转换
-│   ├── application.rs           # 控制面服务
-│   ├── gateway.rs               # 本地模型网关
-│   └── configuration.rs         # 配置事务与校验
-├── src-tauri/tests/             # 集成、协议与真实链路测试
-├── CONTEXT.md                   # 产品边界与领域语言
-├── ARCHITECTURE.md              # 架构约束
-└── LOGIC.md                     # 核心行为与不变量
 ```
 
 ## 贡献

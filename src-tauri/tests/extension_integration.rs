@@ -253,6 +253,71 @@ fn codex_source_binding_activates_the_codex_runtime_without_requiring_claude_age
 }
 
 #[test]
+fn gemini_source_binding_accepts_builtin_and_custom_agents() {
+    let root = tempfile::tempdir().expect("root");
+    let grillforge = root.path().join(".grillforge");
+    let claude = root.path().join(".claude");
+    let gemini = root.path().join(".gemini");
+    fs::create_dir_all(&claude).unwrap();
+    fs::create_dir_all(gemini.join("agents")).unwrap();
+    fs::write(
+        gemini.join("agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: Reviews code\n---\nReview.\n",
+    )
+    .unwrap();
+    let runtime = root.path().join("gemini");
+    fs::write(&runtime, "runtime").unwrap();
+    let control = ControlPlaneService::new(&grillforge);
+    for (id, source_agent_id) in [
+        ("gemini-investigator", "codebase_investigator"),
+        ("gemini-reviewer", "reviewer"),
+    ] {
+        control
+            .save_extension_subagent(ExtensionSubAgentInput {
+                id: id.into(),
+                name: id.into(),
+                source_client_id: "gemini".into(),
+                source_agent_id: source_agent_id.into(),
+                model_id: None,
+                capabilities: vec![],
+            })
+            .unwrap();
+    }
+    let mounts = McpMountManager::new(
+        grillforge.join("mcp-snapshots"),
+        [McpMountTarget::new(
+            "claude_code",
+            root.path().join(".claude.json"),
+            McpClientFormat::ClaudeJson,
+        )],
+    )
+    .unwrap();
+    let integration = ExtensionIntegrationService::new(mounts, claude, None, None)
+        .with_gemini(gemini, Some(runtime));
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+
+    for id in ["gemini-investigator", "gemini-reviewer"] {
+        integration
+            .set_binding(&control, &gateway, "claude_code", id, true)
+            .unwrap();
+    }
+    integration
+        .mount_client(&control, &gateway, "claude_code")
+        .unwrap();
+
+    let routes = gateway
+        .agent_broker_routes_for_client("claude_code")
+        .unwrap();
+    assert_eq!(
+        routes
+            .iter()
+            .map(|route| route.source_agent_id.as_str())
+            .collect::<Vec<_>>(),
+        ["codebase_investigator", "reviewer"]
+    );
+}
+
+#[test]
 fn pi_source_binding_activates_the_pi_runtime_from_a_real_agent_definition() {
     let root = tempfile::tempdir().expect("root");
     let grillforge = root.path().join(".grillforge");
@@ -316,7 +381,7 @@ fn opencode_source_binding_activates_the_installed_runtime_and_named_agent() {
     fs::create_dir_all(opencode.join("agents")).unwrap();
     fs::write(
         opencode.join("agents/reviewer.md"),
-        "---\ndescription: Reviews code\nmode: all\n---\nReview.\n",
+        "---\ndescription: Reviews code\nmode: subagent\n---\nReview.\n",
     )
     .unwrap();
     let runtime = root.path().join("opencode");
@@ -365,7 +430,7 @@ fn kimi_source_binding_activates_an_exactly_selectable_builtin_agent() {
     let root = tempfile::tempdir().unwrap();
     let grillforge = root.path().join(".grillforge");
     let claude = root.path().join(".claude");
-    let kimi = root.path().join(".kimi");
+    let kimi = root.path().join(".kimi-code");
     fs::create_dir_all(&claude).unwrap();
     let runtime = root.path().join("kimi");
     fs::write(&runtime, "runtime").unwrap();
@@ -373,10 +438,10 @@ fn kimi_source_binding_activates_an_exactly_selectable_builtin_agent() {
     let control = ControlPlaneService::new(&grillforge);
     control
         .save_extension_subagent(ExtensionSubAgentInput {
-            id: "kimi-okabe".into(),
-            name: "Kimi Okabe".into(),
+            id: "kimi-explore".into(),
+            name: "Kimi Explore".into(),
             source_client_id: "kimi_code".into(),
-            source_agent_id: "okabe".into(),
+            source_agent_id: "explore".into(),
             model_id: None,
             capabilities: vec![],
         })
@@ -395,7 +460,7 @@ fn kimi_source_binding_activates_an_exactly_selectable_builtin_agent() {
     let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
 
     integration
-        .set_binding(&control, &gateway, "claude_code", "kimi-okabe", true)
+        .set_binding(&control, &gateway, "claude_code", "kimi-explore", true)
         .unwrap();
     integration
         .mount_client(&control, &gateway, "claude_code")
@@ -405,7 +470,61 @@ fn kimi_source_binding_activates_an_exactly_selectable_builtin_agent() {
         .agent_broker_routes_for_client("claude_code")
         .unwrap();
     assert_eq!(routes[0].source_client_id, "kimi_code");
-    assert_eq!(routes[0].source_agent_id, "okabe");
+    assert_eq!(routes[0].source_agent_id, "explore");
+}
+
+#[test]
+fn kimi_project_agent_can_be_bound_before_the_execution_working_directory_is_known() {
+    let root = tempfile::tempdir().unwrap();
+    let grillforge = root.path().join(".grillforge");
+    let claude = root.path().join(".claude");
+    let kimi = root.path().join(".kimi-code");
+    fs::create_dir_all(&claude).unwrap();
+    fs::create_dir_all(&kimi).unwrap();
+    let runtime = root.path().join("kimi");
+    fs::write(&runtime, "runtime").unwrap();
+    let config = root.path().join(".claude.json");
+    let control = ControlPlaneService::new(&grillforge);
+    control
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "kimi-project-reviewer".into(),
+            name: "Kimi Project Reviewer".into(),
+            source_client_id: "kimi_code".into(),
+            source_agent_id: "project-reviewer".into(),
+            model_id: None,
+            capabilities: vec![],
+        })
+        .unwrap();
+    let mounts = McpMountManager::new(
+        grillforge.join("mcp-snapshots"),
+        [McpMountTarget::new(
+            "claude_code",
+            config,
+            McpClientFormat::ClaudeJson,
+        )],
+    )
+    .unwrap();
+    let integration =
+        ExtensionIntegrationService::new(mounts, claude, None, None).with_kimi(kimi, Some(runtime));
+    let gateway = Gateway::new(&grillforge).status("http://127.0.0.1:15721".into());
+
+    integration
+        .set_binding(
+            &control,
+            &gateway,
+            "claude_code",
+            "kimi-project-reviewer",
+            true,
+        )
+        .unwrap();
+    integration
+        .mount_client(&control, &gateway, "claude_code")
+        .unwrap();
+
+    let routes = gateway
+        .agent_broker_routes_for_client("claude_code")
+        .unwrap();
+    assert_eq!(routes[0].source_agent_id, "project-reviewer");
 }
 
 #[test]

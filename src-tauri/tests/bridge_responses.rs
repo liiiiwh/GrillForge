@@ -999,3 +999,23 @@ async fn real_claude_transport_hints_are_validated_and_reasoning_is_capability_g
     assert!(request.get("thinking").is_none());
     assert!(request.get("output_config").is_none());
 }
+
+#[tokio::test]
+async fn incomplete_responses_are_returned_as_anthropic_max_tokens_results() {
+    let (base_url, captured) = serve_once(200, json!({
+        "id":"resp_incomplete","status":"incomplete","model":"limited",
+        "incomplete_details":{"reason":"max_output_tokens"},
+        "output":[{"id":"msg_1","type":"message","role":"assistant","status":"incomplete","content":[{"type":"output_text","text":"partial","annotations":[]}]}],
+        "usage":{"input_tokens":2,"output_tokens":4}
+    }))
+    .await;
+
+    let response = OpenAiResponsesBridge::new(base_url, "test-secret")
+        .complete(valid_request())
+        .await
+        .unwrap();
+    captured.await.unwrap();
+
+    assert_eq!(response["content"][0]["text"], "partial");
+    assert_eq!(response["stop_reason"], "max_tokens");
+}

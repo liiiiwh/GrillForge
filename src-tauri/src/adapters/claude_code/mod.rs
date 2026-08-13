@@ -168,6 +168,235 @@ pub struct ClaudeCliDetection {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeNativeModel {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeNativeModelCatalog {
+    pub models: Vec<ClaudeNativeModel>,
+    pub cli_current_model: Option<String>,
+    pub desktop_current_model: Option<String>,
+}
+
+pub fn discover_claude_native_models(
+    config_dir: &Path,
+    state_path: &Path,
+    desktop_cache_dir: Option<&Path>,
+) -> Result<ClaudeNativeModelCatalog, ClaudeCodeAdapterError> {
+    let settings = parse_settings(&snapshot_file(&config_dir.join(SETTINGS_FILE))?)?;
+    let state = if state_path.exists() {
+        serde_json::from_slice::<serde_json::Value>(&fs::read(state_path).map_err(|source| {
+            ClaudeCodeAdapterError::ReadConfiguration {
+                path: state_path.to_path_buf(),
+                source,
+            }
+        })?)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .ok_or_else(|| ClaudeCodeAdapterError::InvalidNativeCatalog(state_path.to_path_buf()))?
+    } else {
+        serde_json::Map::new()
+    };
+
+    let mut models = BTreeMap::new();
+    for alias in ["default", "fable", "opus", "sonnet", "haiku"] {
+        insert_native_model(&mut models, alias);
+    }
+    if let Some(model) = settings.get("model").and_then(serde_json::Value::as_str) {
+        insert_native_model(&mut models, model);
+    }
+    if let Some(environment) = settings.get("env").and_then(serde_json::Value::as_object) {
+        for key in [
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ] {
+            if let Some(model) = environment.get(key).and_then(serde_json::Value::as_str) {
+                insert_native_model(&mut models, model);
+            }
+        }
+    }
+    if let Some(options) = state
+        .get("additionalModelOptionsCache")
+        .and_then(serde_json::Value::as_array)
+    {
+        for option in options {
+            if let Some(model) = option
+                .get("value")
+                .or_else(|| option.get("model"))
+                .and_then(serde_json::Value::as_str)
+            {
+                insert_native_model(&mut models, model);
+            }
+        }
+    }
+
+    let mut cli_cache_model = None;
+    let mut desktop_current_model = None;
+    if let Some(slots) = state
+        .get("clientDataCacheSlots")
+        .and_then(serde_json::Value::as_object)
+    {
+        let mut latest_cli = None;
+        let mut latest_desktop = None;
+        for slot in slots.values() {
+            let Some(model) = slot.get("model").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !is_claude_native_model(model) {
+                continue;
+            }
+            insert_native_model(&mut models, model);
+            let at = slot
+                .get("at")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            match slot.get("entrypoint").and_then(serde_json::Value::as_str) {
+                Some("cli") if latest_cli.as_ref().is_none_or(|(latest, _)| at > *latest) => {
+                    latest_cli = Some((at, model.to_string()));
+                }
+                Some("claude-desktop")
+                    if latest_desktop
+                        .as_ref()
+                        .is_none_or(|(latest, _)| at > *latest) =>
+                {
+                    latest_desktop = Some((at, model.to_string()));
+                }
+                _ => {}
+            }
+        }
+        cli_cache_model = latest_cli.map(|(_, model)| model);
+        desktop_current_model = latest_desktop.map(|(_, model)| model);
+    }
+
+    if let Some(cache_dir) = desktop_cache_dir.filter(|path| path.is_dir()) {
+        for entry in
+            fs::read_dir(cache_dir).map_err(|source| ClaudeCodeAdapterError::ReadConfiguration {
+                path: cache_dir.to_path_buf(),
+                source,
+            })?
+        {
+            let entry = entry.map_err(|source| ClaudeCodeAdapterError::ReadConfiguration {
+                path: cache_dir.to_path_buf(),
+                source,
+            })?;
+            let path = entry.path();
+            let is_leveldb_data = matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("ldb" | "log")
+            );
+            let metadata =
+                entry
+                    .metadata()
+                    .map_err(|source| ClaudeCodeAdapterError::ReadConfiguration {
+                        path: path.clone(),
+                        source,
+                    })?;
+            if !is_leveldb_data || !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
+                continue;
+            }
+            let bytes =
+                fs::read(&path).map_err(|source| ClaudeCodeAdapterError::ReadConfiguration {
+                    path: path.clone(),
+                    source,
+                })?;
+            for model in native_model_ids_in_bytes(&bytes) {
+                insert_native_model(&mut models, &model);
+            }
+        }
+    }
+
+    let cli_current_model = settings
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .filter(|model| is_claude_native_model(model))
+        .map(str::to_owned)
+        .or(cli_cache_model);
+    Ok(ClaudeNativeModelCatalog {
+        models: models
+            .into_iter()
+            .map(|(id, name)| ClaudeNativeModel { id, name })
+            .collect(),
+        cli_current_model,
+        desktop_current_model,
+    })
+}
+
+fn insert_native_model(models: &mut BTreeMap<String, String>, model: &str) {
+    if is_claude_native_model(model) {
+        models
+            .entry(model.to_string())
+            .or_insert_with(|| native_model_label(model));
+    }
+}
+
+fn native_model_label(model: &str) -> String {
+    match model {
+        "default" => "默认（Claude 自动选择）".into(),
+        "best" => "Best（最新高能力模型）".into(),
+        "fable" => "Fable（最新）".into(),
+        "opus" => "Opus（最新）".into(),
+        "sonnet" => "Sonnet（最新）".into(),
+        "haiku" => "Haiku（最新）".into(),
+        "opusplan" => "Opus Plan".into(),
+        _ => {
+            let (model, context) = model
+                .strip_suffix("[1m]")
+                .map_or((model, ""), |model| (model, " · 1M"));
+            let mut parts = model.strip_prefix("claude-").unwrap_or(model).split('-');
+            let family = parts.next().unwrap_or_default();
+            let mut characters = family.chars();
+            let family = characters
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + characters.as_str())
+                .unwrap_or_default();
+            let version = parts.collect::<Vec<_>>().join(".");
+            let name = if version.is_empty() {
+                family
+            } else {
+                format!("{family} {version}")
+            };
+            format!("{name}{context}")
+        }
+    }
+}
+
+fn native_model_ids_in_bytes(bytes: &[u8]) -> Vec<String> {
+    const PREFIX: &[u8] = b"claude-";
+    let mut models = Vec::new();
+    let mut offset = 0;
+    while let Some(relative) = bytes[offset..]
+        .windows(PREFIX.len())
+        .position(|window| window == PREFIX)
+    {
+        let start = offset + relative;
+        let mut end = start + PREFIX.len();
+        while end < bytes.len()
+            && (bytes[end].is_ascii_lowercase()
+                || bytes[end].is_ascii_digit()
+                || matches!(bytes[end], b'-' | b'[' | b']'))
+        {
+            end += 1;
+        }
+        if let Ok(model) = std::str::from_utf8(&bytes[start..end]) {
+            if is_claude_native_model(model) {
+                models.push(model.to_string());
+            }
+        }
+        offset = end.max(start + 1);
+    }
+    models.sort();
+    models.dedup();
+    models
+}
+
 pub fn detect_claude_cli() -> Result<Option<ClaudeCliDetection>, ClaudeCodeAdapterError> {
     let executable = if cfg!(windows) {
         "claude.exe"
@@ -804,6 +1033,7 @@ pub enum ClaudeCodeAdapterError {
     InvalidModelSlot(String),
     InvalidRouteAlias(String),
     InvalidNativeModel(String),
+    InvalidNativeCatalog(PathBuf),
     ConflictingModelSelection(String),
     ApplyRollbackFailed {
         apply: Box<ClaudeCodeAdapterError>,
@@ -850,6 +1080,11 @@ impl Display for ClaudeCodeAdapterError {
             Self::InvalidNativeModel(model) => {
                 write!(formatter, "unsupported Claude Code native model: {model}")
             }
+            Self::InvalidNativeCatalog(path) => write!(
+                formatter,
+                "Claude native model cache must be a valid JSON object: {}",
+                path.display()
+            ),
             Self::ConflictingModelSelection(slot) => write!(
                 formatter,
                 "Claude Code model slot cannot be both native and managed: {slot}"
@@ -986,8 +1221,32 @@ fn original_settings_model(
     }
 }
 
+pub fn is_claude_native_model(value: &str) -> bool {
+    let (model, has_one_million_context) = match value.strip_suffix("[1m]") {
+        Some(model) => (model, true),
+        None => (value, false),
+    };
+    if matches!(
+        model,
+        "default" | "best" | "sonnet" | "opus" | "fable" | "haiku" | "opusplan"
+    ) {
+        return !has_one_million_context || matches!(model, "sonnet" | "opus");
+    }
+    let Some(rest) = model.strip_prefix("claude-") else {
+        return false;
+    };
+    let Some((family, version)) = rest.split_once('-') else {
+        return false;
+    };
+    matches!(family, "sonnet" | "opus" | "fable" | "haiku")
+        && !version.is_empty()
+        && version.split('-').all(|part| {
+            !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+        })
+}
+
 fn validate_native_model(value: &str) -> Result<(), ClaudeCodeAdapterError> {
-    if matches!(value, "default" | "sonnet" | "opus" | "fable" | "haiku") {
+    if is_claude_native_model(value) {
         Ok(())
     } else {
         Err(ClaudeCodeAdapterError::InvalidNativeModel(

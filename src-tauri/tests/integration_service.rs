@@ -131,6 +131,42 @@ fn native_model_choices_apply_without_starting_a_gateway_takeover() {
 }
 
 #[test]
+fn status_exposes_the_real_native_catalog_and_current_selection() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let grillforge_root = directory.path().join("grillforge");
+    let claude_root = directory.path().join(".claude");
+    let claude_state = directory.path().join(".claude.json");
+    fs::create_dir_all(&claude_root).expect("Claude root");
+    fs::write(
+        claude_root.join("settings.json"),
+        r#"{"model":"claude-opus-4-8[1m]"}"#,
+    )
+    .expect("settings");
+    fs::write(
+        &claude_state,
+        r#"{"additionalModelOptionsCache":[{"value":"claude-fable-5[1m]"}]}"#,
+    )
+    .expect("state");
+
+    let status = IntegrationService::new(&claude_root, &grillforge_root)
+        .with_native_catalog_paths(&claude_state, None)
+        .status()
+        .expect("status");
+
+    assert_eq!(
+        status.native_current_model.as_deref(),
+        Some("claude-opus-4-8[1m]")
+    );
+    assert!(status.native_models_error.is_none());
+    assert!(
+        status
+            .native_models
+            .iter()
+            .any(|model| model.id == "claude-fable-5[1m]")
+    );
+}
+
+#[test]
 fn an_unchanged_snapshot_from_an_earlier_process_resumes_automatically() {
     let directory = tempfile::tempdir().expect("temp directory");
     let grillforge_root = directory.path().join("grillforge");

@@ -1,3 +1,4 @@
+use crate::adapters::claude_code::{ClaudeNativeModel, discover_claude_native_models};
 #[cfg(windows)]
 use crate::adapters::claude_desktop::windows_paths_from_local_app_data;
 use crate::adapters::claude_desktop::{
@@ -33,6 +34,9 @@ pub struct ClaudeDesktopIntegrationStatus {
     pub differences: Vec<String>,
     pub configured_routes: Vec<String>,
     pub supported_model_slots: Vec<&'static str>,
+    pub native_models: Vec<ClaudeNativeModel>,
+    pub native_models_error: Option<String>,
+    pub native_current_model: Option<String>,
 }
 
 #[derive(Clone)]
@@ -45,16 +49,37 @@ pub struct ClaudeDesktopIntegrationService {
     adapter: ClaudeDesktopAdapter,
     activated_this_session: AtomicBool,
     active: Mutex<Option<ActiveConfiguration>>,
+    claude_config_root: PathBuf,
+    claude_state_path: PathBuf,
+    claude_desktop_cache: Option<PathBuf>,
 }
 
 impl ClaudeDesktopIntegrationService {
     pub fn new(paths: ClaudeDesktopPaths, grillforge_root: impl Into<PathBuf>) -> Self {
         let grillforge_root = grillforge_root.into();
+        // Tests and alternate configurations must not implicitly inspect the logged-in
+        // user's Claude data. The production composition root supplies real paths.
+        let catalog_root = grillforge_root.join("native-catalog");
         Self {
             adapter: ClaudeDesktopAdapter::new(paths, &grillforge_root),
             activated_this_session: AtomicBool::new(false),
             active: Mutex::new(None),
+            claude_config_root: catalog_root.join(".claude"),
+            claude_state_path: catalog_root.join(".claude.json"),
+            claude_desktop_cache: None,
         }
+    }
+
+    pub fn with_native_catalog_paths(
+        mut self,
+        config_root: impl Into<PathBuf>,
+        state_path: impl Into<PathBuf>,
+        desktop_cache: Option<PathBuf>,
+    ) -> Self {
+        self.claude_config_root = config_root.into();
+        self.claude_state_path = state_path.into();
+        self.claude_desktop_cache = desktop_cache;
+        self
     }
 
     pub fn apply(
@@ -164,6 +189,19 @@ impl ClaudeDesktopIntegrationService {
                     .collect()
             })
             .unwrap_or_default();
+        let (native_models, native_models_error, native_current_model) =
+            match discover_claude_native_models(
+                &self.claude_config_root,
+                &self.claude_state_path,
+                self.claude_desktop_cache.as_deref(),
+            ) {
+                Ok(catalog) => (
+                    catalog.models,
+                    None,
+                    catalog.desktop_current_model.or(catalog.cli_current_model),
+                ),
+                Err(error) => (Vec::new(), Some(error.to_string()), None),
+            };
         Ok(ClaudeDesktopIntegrationStatus {
             installed: detection.is_some(),
             executable_path: detection.map(|item| item.executable_path.display().to_string()),
@@ -172,6 +210,9 @@ impl ClaudeDesktopIntegrationService {
             differences: adapter.differences,
             configured_routes,
             supported_model_slots: DESKTOP_MODEL_SLOTS.iter().map(|(slot, _)| *slot).collect(),
+            native_models,
+            native_models_error,
+            native_current_model,
         })
     }
 

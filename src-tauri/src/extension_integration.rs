@@ -4,7 +4,8 @@ use crate::application::{
 use crate::gateway::{AgentRuntimeRoute, AgentSourceRuntime, GatewayStatus};
 use crate::local_agents::{
     discover_claude_builtin_agents, discover_claude_code_agents, discover_codex_agents,
-    discover_kimi_agents, discover_opencode_agents, discover_pi_agents,
+    discover_gemini_agents, discover_kimi_agents, discover_opencode_agents, discover_pi_agents,
+    kimi_user_home,
 };
 use crate::mcp_mount::McpMountManager;
 use std::collections::{HashMap, HashSet};
@@ -27,6 +28,8 @@ pub struct ExtensionIntegrationService {
     claude_runtime: Option<PathBuf>,
     codex_root: Option<PathBuf>,
     codex_runtime: Option<PathBuf>,
+    gemini_root: Option<PathBuf>,
+    gemini_runtime: Option<PathBuf>,
     pi_root: Option<PathBuf>,
     pi_runtime: Option<PathBuf>,
     opencode_root: Option<PathBuf>,
@@ -51,6 +54,8 @@ impl ExtensionIntegrationService {
             claude_runtime,
             codex_root: None,
             codex_runtime: None,
+            gemini_root: None,
+            gemini_runtime: None,
             pi_root: None,
             pi_runtime: None,
             opencode_root: None,
@@ -76,6 +81,16 @@ impl ExtensionIntegrationService {
     pub fn with_pi(mut self, pi_root: impl Into<PathBuf>, pi_runtime: Option<PathBuf>) -> Self {
         self.pi_root = Some(pi_root.into());
         self.pi_runtime = pi_runtime;
+        self
+    }
+
+    pub fn with_gemini(
+        mut self,
+        gemini_root: impl Into<PathBuf>,
+        gemini_runtime: Option<PathBuf>,
+    ) -> Self {
+        self.gemini_root = Some(gemini_root.into());
+        self.gemini_runtime = gemini_runtime;
         self
     }
 
@@ -373,7 +388,7 @@ impl ExtensionIntegrationService {
                 .ok_or_else(|| format!("unknown extension SubAgent: {id}"))?;
             if !matches!(
                 extension.source_client_id.as_str(),
-                "claude_code" | "codex" | "pi" | "opencode" | "kimi_code"
+                "claude_code" | "codex" | "gemini" | "pi" | "opencode" | "kimi_code"
             ) {
                 return Err(format!(
                     "extension SubAgent {} uses an unsupported source client: {}",
@@ -450,6 +465,23 @@ impl ExtensionIntegrationService {
                 config_root: codex_root,
             });
         }
+        if source_ids.contains("gemini") {
+            let gemini_root = self
+                .gemini_root
+                .clone()
+                .ok_or_else(|| "Gemini configuration root is not configured".to_string())?;
+            let runtime = self.resolve_gemini_runtime()?;
+            let discovered = discover_gemini_agents(&gemini_root)?
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>();
+            validate_gemini_source_agents(&routes, &discovered)?;
+            source_runtimes.push(AgentSourceRuntime {
+                source_client_id: "gemini".into(),
+                runtime,
+                config_root: gemini_root,
+            });
+        }
         if source_ids.contains("pi") {
             let pi_root = self
                 .pi_root
@@ -490,11 +522,12 @@ impl ExtensionIntegrationService {
                 .clone()
                 .ok_or_else(|| "Kimi Code configuration root is not configured".to_string())?;
             let runtime = self.resolve_kimi_runtime()?;
-            let discovered = discover_kimi_agents()
+            let home = kimi_user_home(&kimi_root)?;
+            let discovered = discover_kimi_agents(&kimi_root, &home)?
                 .into_iter()
                 .map(|agent| agent.agent_id)
                 .collect::<HashSet<_>>();
-            validate_source_agents(&routes, "kimi_code", &discovered)?;
+            validate_kimi_source_agents(&routes, &discovered)?;
             source_runtimes.push(AgentSourceRuntime {
                 source_client_id: "kimi_code".into(),
                 runtime,
@@ -669,6 +702,20 @@ impl ExtensionIntegrationService {
             Ok,
         )
     }
+
+    fn resolve_gemini_runtime(&self) -> Result<PathBuf, String> {
+        self.gemini_runtime.clone().map_or_else(
+            || {
+                crate::adapters::gemini::detect_gemini_cli()
+                    .map_err(|error| error.to_string())?
+                    .map(|detection| detection.path)
+                    .ok_or_else(|| {
+                        "Gemini CLI is required to run Gemini extension Agents".to_string()
+                    })
+            },
+            Ok,
+        )
+    }
 }
 
 fn validate_source_agents(
@@ -715,6 +762,31 @@ fn validate_codex_source_agents(
     Ok(())
 }
 
+fn validate_gemini_source_agents(
+    routes: &[AgentRuntimeRoute],
+    discovered: &HashSet<String>,
+) -> Result<(), String> {
+    for route in routes
+        .iter()
+        .filter(|route| route.source_client_id == "gemini")
+    {
+        if discovered.contains(&route.source_agent_id) {
+            continue;
+        }
+        if route.source_agent_id.is_empty()
+            || !route.source_agent_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            })
+        {
+            return Err(format!(
+                "extension SubAgent {} has an invalid Gemini Agent name: {}",
+                route.extension_id, route.source_agent_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_pi_source_agents(
     routes: &[AgentRuntimeRoute],
     discovered: &HashSet<String>,
@@ -730,6 +802,32 @@ fn validate_pi_source_agents(
         {
             return Err(format!(
                 "extension SubAgent {} has an invalid Pi Agent name: {}",
+                route.extension_id, route.source_agent_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_kimi_source_agents(
+    routes: &[AgentRuntimeRoute],
+    discovered: &HashSet<String>,
+) -> Result<(), String> {
+    for route in routes
+        .iter()
+        .filter(|route| route.source_client_id == "kimi_code")
+    {
+        if discovered.contains(&route.source_agent_id) {
+            continue;
+        }
+        if route.source_agent_id.is_empty()
+            || !route
+                .source_agent_id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(format!(
+                "extension SubAgent {} has an invalid Kimi Code Agent name: {}",
                 route.extension_id, route.source_agent_id
             ));
         }

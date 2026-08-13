@@ -29,6 +29,9 @@ pub fn run() {
             let home = app.path().home_dir()?;
             let root = home.join(".grillforge");
             let executable = std::env::current_exe()?;
+            let kimi_root = std::env::var_os("KIMI_CODE_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| home.join(".kimi-code"));
             app.manage(application::ControlPlaneService::new(&root));
             app.manage(integration::IntegrationService::new(
                 integration::default_claude_config_root(&home),
@@ -38,6 +41,11 @@ pub fn run() {
                 claude_desktop_integration::ClaudeDesktopIntegrationService::new(
                     claude_desktop_integration::default_claude_desktop_paths(&home),
                     &root,
+                )
+                .with_native_catalog_paths(
+                    home.join(".claude"),
+                    home.join(".claude.json"),
+                    Some(home.join("Library/Application Support/Claude/Local Storage/leveldb")),
                 ),
             );
             app.manage(pi_integration::PiIntegrationService::new(
@@ -65,7 +73,7 @@ pub fn run() {
                 &root,
             ));
             app.manage(client_integrations::KimiCodeIntegrationService::new(
-                adapters::kimi_code::paths_from_home(&home),
+                adapters::kimi_code::KimiCodePaths::new(kimi_root.join("config.toml")),
                 &root,
             ));
             let mounts = mcp_mount::McpMountManager::new(
@@ -100,7 +108,7 @@ pub fn run() {
                     ),
                     mcp_mount::McpMountTarget::new(
                         "kimi_code",
-                        home.join(".kimi/mcp.json"),
+                        kimi_root.join("mcp.json"),
                         mcp_mount::McpClientFormat::KimiJson,
                     ),
                     mcp_mount::McpMountTarget::new(
@@ -118,9 +126,10 @@ pub fn run() {
                     Some(home.join(".pi/agent/settings.json")),
                 )
                 .with_codex(home.join(".codex"), None)
+                .with_gemini(home.join(".gemini"), None)
                 .with_pi(home.join(".pi/agent"), None)
                 .with_opencode(home.join(".config/opencode"), None)
-                .with_kimi(home.join(".kimi"), None),
+                .with_kimi(kimi_root, None),
             );
 
             let listener = std::net::TcpListener::bind(gateway::DEFAULT_GATEWAY_ADDRESS)?;
@@ -150,11 +159,9 @@ pub fn run() {
             application::save_provider,
             application::update_provider,
             application::delete_provider,
-            application::discover_provider_models,
-            application::import_provider_models,
-            application::save_model,
-            application::update_model,
-            application::set_model_native_protocols,
+            application::sync_provider_models,
+            application::save_model_with_native_protocols,
+            application::update_model_with_native_protocols,
             application::delete_model,
             application::set_main_model,
             application::set_claude_native_model,
@@ -355,8 +362,8 @@ fn restore_enabled_model_clients(
             control.client_integration_enabled("gemini")?,
             control.client_has_managed_configuration("gemini")?,
             gemini.recovery_pending(),
-            || gemini.resume_if_applied(),
-            || gemini.apply(control),
+            || gemini.resume_if_applied(control, gateway),
+            || gemini.apply(control, gateway),
         ),
     );
 
@@ -369,8 +376,8 @@ fn restore_enabled_model_clients(
             control.client_integration_enabled("grok_build")?,
             control.client_has_managed_configuration("grok_build")?,
             grok.recovery_pending(),
-            || grok.resume_if_applied(),
-            || grok.apply(control),
+            || grok.resume_if_applied(control, gateway),
+            || grok.apply_with_gateway(control, gateway),
         ),
     );
 
@@ -456,11 +463,11 @@ fn restore_live_configs_before_exit(app: &tauri::AppHandle) -> Result<(), String
     }
     let gemini = app.state::<client_integrations::GeminiIntegrationService>();
     if gemini.recovery_pending() {
-        gemini.disable(&control)?;
+        gemini.disable(&control, &gateway)?;
     }
     let grok = app.state::<client_integrations::GrokBuildIntegrationService>();
     if grok.recovery_pending() {
-        grok.disable(&control)?;
+        grok.disable(&control, &gateway)?;
     }
     let opencode = app.state::<client_integrations::OpenCodeIntegrationService>();
     if opencode.recovery_pending() {

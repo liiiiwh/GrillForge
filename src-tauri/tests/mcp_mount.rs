@@ -200,6 +200,31 @@ fn codex_mount_uses_the_real_http_mcp_toml_shape() {
         parsed["mcp_servers"]["grillforge-codex"]["http_headers"]["Authorization"].as_str(),
         Some("Bearer codex-token")
     );
+    let server = &parsed["mcp_servers"]["grillforge-codex"];
+    assert_eq!(server["enabled"].as_bool(), Some(true));
+    assert_eq!(server["required"].as_bool(), Some(true));
+    assert_eq!(
+        server["enabled_tools"]
+            .as_array()
+            .expect("enabled tools")
+            .iter()
+            .filter_map(toml_edit::Value::as_str)
+            .collect::<Vec<_>>(),
+        vec!["list_agents", "run_agent"]
+    );
+    assert_eq!(
+        server["omit_tools_from"]
+            .as_array()
+            .expect("omitted tool surfaces")
+            .iter()
+            .filter_map(toml_edit::Value::as_str)
+            .collect::<Vec<_>>(),
+        vec!["deferred", "code_mode"]
+    );
+    assert_eq!(
+        server["default_tools_approval_mode"].as_str(),
+        Some("approve")
+    );
     let changed = active.replace("model = \"gpt-5\"", "model = \"gpt-5.1\"")
         + "\n[mcp_servers.later]\nurl = \"http://127.0.0.1:9999/mcp\"\n";
     fs::write(&config, changed).expect("later edits");

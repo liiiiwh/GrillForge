@@ -2,12 +2,13 @@
 //! GrillForge resolves exactly one endpoint: an explicit `models_url` wins;
 //! otherwise the endpoint is derived deterministically from the Provider URL.
 
-use crate::configuration::ProviderRecord;
+use crate::configuration::{ProviderProtocolEndpoint, ProviderRecord};
 use crate::core::model::NativeProtocol;
-use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
+use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol, build_request_endpoint};
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 use url::Url;
 
@@ -31,6 +32,17 @@ pub struct DiscoveredModel {
     pub owned_by: Option<String>,
     #[serde(default)]
     pub native_protocols: Vec<NativeProtocol>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelProtocolProbe {
+    pub supported: Vec<NativeProtocol>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolProbeSummary {
+    pub provider_endpoints: Vec<ProviderProtocolEndpoint>,
+    pub models: BTreeMap<String, ModelProtocolProbe>,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +149,257 @@ pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>,
     }
     models.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(models)
+}
+
+pub async fn probe_protocols(
+    provider: &ProviderRecord,
+    models: &[DiscoveredModel],
+) -> Result<ProtocolProbeSummary, String> {
+    if !provider.enabled {
+        return Err(format!("provider {} is disabled", provider.id));
+    }
+    let endpoints = protocol_probe_endpoints(provider)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("could not create protocol probe client: {error}"))?;
+    let mut supported_by_model = BTreeMap::<String, Vec<NativeProtocol>>::new();
+    let mut provider_supported = HashSet::new();
+
+    for endpoint in &endpoints {
+        for model in models {
+            if probe_model_protocol(&client, provider, endpoint, &model.id).await? {
+                provider_supported.insert(endpoint.protocol);
+                supported_by_model
+                    .entry(model.id.clone())
+                    .or_default()
+                    .push(endpoint.protocol);
+            }
+        }
+    }
+
+    let provider_endpoints = endpoints
+        .into_iter()
+        .filter(|entry| provider_supported.contains(&entry.protocol))
+        .collect::<Vec<_>>();
+    let models = models
+        .iter()
+        .map(|model| {
+            (
+                model.id.clone(),
+                ModelProtocolProbe {
+                    supported: supported_by_model.remove(&model.id).unwrap_or_default(),
+                },
+            )
+        })
+        .collect();
+    Ok(ProtocolProbeSummary {
+        provider_endpoints,
+        models,
+    })
+}
+
+fn protocol_probe_endpoints(
+    provider: &ProviderRecord,
+) -> Result<Vec<ProviderProtocolEndpoint>, String> {
+    let base = Url::parse(&provider.endpoint)
+        .map_err(|_| format!("provider {} has an invalid endpoint", provider.id))?;
+    let mut endpoints = [
+        NativeProtocol::AnthropicMessages,
+        NativeProtocol::OpenAiResponses,
+        NativeProtocol::OpenAiChat,
+        NativeProtocol::GeminiNative,
+    ]
+    .into_iter()
+    .map(|protocol| ProviderProtocolEndpoint {
+        protocol,
+        endpoint: provider.endpoint.clone(),
+        endpoint_mode: provider.endpoint_mode,
+        api_key_placement: provider.api_key_placement,
+    })
+    .collect::<Vec<_>>();
+    for configured in &provider.protocol_endpoints {
+        if let Some(entry) = endpoints
+            .iter_mut()
+            .find(|entry| entry.protocol == configured.protocol)
+        {
+            *entry = configured.clone();
+        }
+    }
+
+    // DeepSeek exposes its Anthropic-compatible surface under a distinct base
+    // path. Keep this one verified upstream fact next to the probe rather than
+    // teaching the generic router provider-specific URL heuristics.
+    if base.host_str() == Some("api.deepseek.com") {
+        let anthropic = endpoints
+            .iter_mut()
+            .find(|entry| entry.protocol == NativeProtocol::AnthropicMessages)
+            .expect("static protocol endpoint");
+        if anthropic.endpoint == provider.endpoint {
+            let mut endpoint = base.clone();
+            endpoint.set_path("/anthropic");
+            endpoint.set_query(None);
+            endpoint.set_fragment(None);
+            anthropic.endpoint = endpoint.to_string().trim_end_matches('/').to_string();
+            anthropic.endpoint_mode = EndpointMode::BaseUrl;
+        }
+    }
+    Ok(endpoints)
+}
+
+async fn probe_model_protocol(
+    client: &reqwest::Client,
+    provider: &ProviderRecord,
+    surface: &ProviderProtocolEndpoint,
+    model: &str,
+) -> Result<bool, String> {
+    let base = Url::parse(&surface.endpoint).map_err(|_| {
+        format!(
+            "provider {} has an invalid {:?} endpoint",
+            provider.id, surface.protocol
+        )
+    })?;
+    let (endpoint, body) = match surface.protocol {
+        NativeProtocol::AnthropicMessages => (
+            build_request_endpoint(&base, surface.endpoint_mode, "/v1/messages").map_err(|_| {
+                format!("provider {} has an invalid Anthropic endpoint", provider.id)
+            })?,
+            json!({
+                "model": model,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "Reply with OK."}]
+            }),
+        ),
+        NativeProtocol::OpenAiResponses => (
+            build_request_endpoint(&base, surface.endpoint_mode, "/v1/responses").map_err(
+                |_| format!("provider {} has an invalid Responses endpoint", provider.id),
+            )?,
+            json!({
+                "model": model,
+                "max_output_tokens": 1,
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": "Reply with OK."}]}]
+            }),
+        ),
+        NativeProtocol::OpenAiChat => (
+            build_request_endpoint(&base, surface.endpoint_mode, "/v1/chat/completions")
+                .map_err(|_| format!("provider {} has an invalid Chat endpoint", provider.id))?,
+            json!({
+                "model": model,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "Reply with OK."}]
+            }),
+        ),
+        NativeProtocol::GeminiNative => (
+            gemini_probe_endpoint(&base, surface.endpoint_mode, model)?,
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "Reply with OK."}]}],
+                "generationConfig": {"maxOutputTokens": 1}
+            }),
+        ),
+    };
+    let mut request = client.post(endpoint).json(&body);
+    if surface.protocol == NativeProtocol::AnthropicMessages {
+        request = request.header("anthropic-version", "2023-06-01");
+    }
+    request = apply_probe_auth(request, provider, surface)?;
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(_) => return Ok(false),
+    };
+    let status = response.status();
+    let primary_protocol = match provider.protocol {
+        Protocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
+        Protocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
+        Protocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
+        Protocol::GeminiNative => NativeProtocol::GeminiNative,
+    };
+    if matches!(status.as_u16(), 401 | 403) && surface.protocol == primary_protocol {
+        return Err(format!(
+            "provider {} authentication failed while probing {:?} (HTTP {})",
+            provider.id,
+            surface.protocol,
+            status.as_u16()
+        ));
+    }
+    if status.as_u16() == 429 && surface.protocol == primary_protocol {
+        return Err(format!(
+            "provider {} quota blocked the {:?} protocol probe (HTTP 429)",
+            provider.id, surface.protocol
+        ));
+    }
+    if !status.is_success() {
+        return Ok(false);
+    }
+    let body = match response.json::<Value>().await {
+        Ok(body) => body,
+        Err(_) => return Ok(false),
+    };
+    Ok(valid_protocol_response(surface.protocol, &body))
+}
+
+fn apply_probe_auth(
+    request: reqwest::RequestBuilder,
+    provider: &ProviderRecord,
+    surface: &ProviderProtocolEndpoint,
+) -> Result<reqwest::RequestBuilder, String> {
+    match surface.api_key_placement {
+        ApiKeyPlacement::None => Ok(request),
+        ApiKeyPlacement::Bearer => {
+            let value = HeaderValue::from_str(&format!("Bearer {}", provider.api_key))
+                .map_err(|_| "provider API key contains invalid header characters".to_string())?;
+            Ok(request.header(AUTHORIZATION, value))
+        }
+        ApiKeyPlacement::XApiKey => {
+            let name = if surface.protocol == NativeProtocol::GeminiNative {
+                HeaderName::from_static("x-goog-api-key")
+            } else {
+                HeaderName::from_static("x-api-key")
+            };
+            let value = HeaderValue::from_str(&provider.api_key)
+                .map_err(|_| "provider API key contains invalid header characters".to_string())?;
+            Ok(request.header(name, value))
+        }
+    }
+}
+
+fn gemini_probe_endpoint(base: &Url, mode: EndpointMode, model: &str) -> Result<Url, String> {
+    if mode == EndpointMode::ExactUrl {
+        return Ok(base.clone());
+    }
+    if model.is_empty() || model.chars().any(char::is_control) {
+        return Err("model discovery returned an invalid model ID".into());
+    }
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    let mut endpoint = base.clone();
+    let path = endpoint.path().trim_end_matches('/');
+    let prefix = if path.ends_with("/v1beta") {
+        path.to_string()
+    } else {
+        format!("{path}/v1beta")
+    };
+    endpoint.set_path(&format!("{prefix}/models/{model}:generateContent"));
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    Ok(endpoint)
+}
+
+fn valid_protocol_response(protocol: NativeProtocol, body: &Value) -> bool {
+    match protocol {
+        NativeProtocol::AnthropicMessages => {
+            body.get("type").and_then(Value::as_str) == Some("message")
+                && body.get("content").is_some_and(Value::is_array)
+        }
+        NativeProtocol::OpenAiResponses => {
+            body.get("object").and_then(Value::as_str) == Some("response")
+                && matches!(
+                    body.get("status").and_then(Value::as_str),
+                    Some("completed" | "incomplete")
+                )
+        }
+        NativeProtocol::OpenAiChat => body.get("choices").is_some_and(Value::is_array),
+        NativeProtocol::GeminiNative => body.get("candidates").is_some_and(Value::is_array),
+    }
 }
 
 fn models_endpoint(provider: &ProviderRecord) -> Result<Url, String> {

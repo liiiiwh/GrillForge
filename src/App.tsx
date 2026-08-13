@@ -2,14 +2,44 @@ import { invoke } from "@tauri-apps/api/core";
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import { DEFAULT_LOCALE, createTranslator } from "./i18n";
-import anthropicIcon from "../upstream/cc-switch/src/icons/extracted/anthropic.svg";
-import azureIcon from "../upstream/cc-switch/src/icons/extracted/azure.svg";
-import deepseekIcon from "../upstream/cc-switch/src/icons/extracted/deepseek.svg";
-import googleIcon from "../upstream/cc-switch/src/icons/extracted/google.svg";
-import ollamaIcon from "../upstream/cc-switch/src/icons/extracted/ollama.svg";
-import openaiIcon from "../upstream/cc-switch/src/icons/extracted/openai.svg";
-import openrouterIcon from "../upstream/cc-switch/src/icons/extracted/openrouter.svg";
-import qwenIcon from "../upstream/cc-switch/src/icons/extracted/qwen.svg";
+import grillforgeLogo from "./assets/grillforge-logo.png";
+import aihubmixIcon from "./assets/provider-icons/aihubmix-color.svg";
+import alibabaIcon from "./assets/provider-icons/alibaba.svg";
+import anthropicIcon from "./assets/provider-icons/anthropic.svg";
+import apinebulaIcon from "./assets/provider-icons/apinebula_icon.png";
+import atlascloudIcon from "./assets/provider-icons/atlascloud_icon.png";
+import azureIcon from "./assets/provider-icons/azure.svg";
+import baiduIcon from "./assets/provider-icons/baidu.svg";
+import bytedanceIcon from "./assets/provider-icons/bytedance.svg";
+import cloudflareIcon from "./assets/provider-icons/cloudflare.svg";
+import code0Icon from "./assets/provider-icons/code0.png";
+import cohereIcon from "./assets/provider-icons/cohere.svg";
+import deepseekIcon from "./assets/provider-icons/deepseek.svg";
+import doubaoIcon from "./assets/provider-icons/doubao.svg";
+import fennoIcon from "./assets/provider-icons/fenno-icon.webp";
+import geminiIcon from "./assets/provider-icons/gemini.svg";
+import googleIcon from "./assets/provider-icons/google.svg";
+import grokIcon from "./assets/provider-icons/grok.svg";
+import hermesIcon from "./assets/provider-icons/hermes.png";
+import huggingfaceIcon from "./assets/provider-icons/huggingface.svg";
+import hunyuanIcon from "./assets/provider-icons/hunyuan.svg";
+import kimiIcon from "./assets/provider-icons/kimi.svg";
+import longcatIcon from "./assets/provider-icons/longcat-color.svg";
+import minimaxIcon from "./assets/provider-icons/minimax.svg";
+import mistralIcon from "./assets/provider-icons/mistral.svg";
+import modelscopeIcon from "./assets/provider-icons/modelscope-color.svg";
+import novitaIcon from "./assets/provider-icons/novita.svg";
+import nvidiaIcon from "./assets/provider-icons/nvidia.svg";
+import ollamaIcon from "./assets/provider-icons/ollama.svg";
+import openaiIcon from "./assets/provider-icons/openai.svg";
+import opencodeIcon from "./assets/provider-icons/opencode-logo-light.svg";
+import openrouterIcon from "./assets/provider-icons/openrouter.svg";
+import qwenIcon from "./assets/provider-icons/qwen.svg";
+import siliconflowIcon from "./assets/provider-icons/siliconflow.svg";
+import stepfunIcon from "./assets/provider-icons/stepfun.svg";
+import xaiIcon from "./assets/provider-icons/xai.svg";
+import xiaomiIcon from "./assets/provider-icons/xiaomimimo.svg";
+import zhipuIcon from "./assets/provider-icons/zhipu.svg";
 
 const t = createTranslator(DEFAULT_LOCALE);
 
@@ -42,6 +72,12 @@ type Provider = {
   enabled: boolean;
   credentialSet: boolean;
   modelsUrl: string | null;
+  protocolEndpoints: Array<{
+    protocol: NativeProtocol;
+    endpoint: string;
+    endpointMode: "base_url" | "exact_url";
+    apiKeyPlacement: ApiKeyPlacement;
+  }>;
 };
 
 type Model = {
@@ -52,6 +88,7 @@ type Model = {
   capabilities: string[];
   protocolCapabilities: ProtocolCapability[];
   nativeProtocols: NativeProtocol[];
+  unsupportedNativeProtocols: NativeProtocol[];
   routeAlias: string;
 };
 
@@ -68,6 +105,11 @@ type LocalAgent = {
   runtime: string;
   agentId: string;
   description: string;
+};
+
+type LocalAgentDiscovery = {
+  agents: LocalAgent[];
+  errors: Array<{ runtime: string; message: string }>;
 };
 
 type ControlPlaneState = {
@@ -178,6 +220,9 @@ type IntegrationStatus = {
   managedMainAlias: string | null;
   nativeModelSlots: Record<string, string>;
   supportedModelSlots: string[];
+  nativeModels: { id: string; name: string }[];
+  nativeModelsError: string | null;
+  nativeCurrentModel: string | null;
 };
 
 type ClaudeCliStatus = {
@@ -194,6 +239,9 @@ type ClaudeDesktopStatus = {
   differences: string[];
   configuredRoutes: string[];
   supportedModelSlots: string[];
+  nativeModels: { id: string; name: string }[];
+  nativeModelsError: string | null;
+  nativeCurrentModel: string | null;
 };
 
 type PiStatus = {
@@ -291,6 +339,7 @@ type ModelDraft = {
   providerId: string;
   capabilities: string;
   protocolCapabilities: ProtocolCapability[];
+  nativeProtocols: NativeProtocol[];
 };
 
 type ExtensionSubAgentDraft = {
@@ -323,12 +372,6 @@ type UsageSnapshot = {
   }>;
 };
 
-type DiscoveredModel = {
-  id: string;
-  ownedBy: string | null;
-  nativeProtocols: NativeProtocol[];
-};
-
 type DeleteTarget = { kind: "provider" | "model"; id: string } | null;
 
 const EMPTY_PROVIDER: ProviderDraft = {
@@ -349,6 +392,7 @@ const EMPTY_MODEL: ModelDraft = {
   providerId: "",
   capabilities: "",
   protocolCapabilities: [],
+  nativeProtocols: [],
 };
 
 const EMPTY_EXTENSION_SUBAGENT: ExtensionSubAgentDraft = {
@@ -394,25 +438,36 @@ const modelSlotLabels: Record<string, string> = {
   subagent_default: "原生 SubAgent 默认模型",
 };
 
-const claudeNativeModels = ["default", "sonnet", "opus", "fable", "haiku"];
+const claudeNativeFallbackModels = [
+  { id: "default", name: "默认（Claude 自动选择）" },
+  { id: "fable", name: "Fable（最新）" },
+  { id: "opus", name: "Opus（最新）" },
+  { id: "sonnet", name: "Sonnet（最新）" },
+  { id: "haiku", name: "Haiku（最新）" },
+];
 
-function claudeNativeModelOptions(current?: string) {
+function claudeNativeModelOptions(
+  current?: string,
+  discovered: Array<{ id: string; name: string }> = [],
+) {
   const labels: Record<string, string> = {
-    default: "默认",
-    sonnet: "Sonnet",
-    opus: "Opus",
-    fable: "Fable",
-    haiku: "Haiku",
+    default: "默认（Claude 自动选择）",
+    sonnet: "Sonnet（最新）",
+    opus: "Opus（最新）",
+    fable: "Fable（最新）",
+    haiku: "Haiku（最新）",
   };
-  return Array.from(new Set([current, ...claudeNativeModels].filter(Boolean))).map(
-    (model) => ({
-      id: model as string,
-      label:
-        model === current && !claudeNativeModels.includes(model as string)
-          ? `${model} · 当前配置`
-          : (labels[model as string] ?? (model as string)),
-    }),
+  const options = new Map(
+    [...claudeNativeFallbackModels, ...discovered].map((model) => [
+      model.id,
+      model.name,
+    ]),
   );
+  if (current && !options.has(current)) options.set(current, current);
+  return Array.from(options, ([id, name]) => ({
+    id,
+    label: `${labels[id] ?? name}${id === current ? " · 当前选择" : ""}`,
+  }));
 }
 
 export function ClaudeClientCodeSubagentSlot({
@@ -420,6 +475,7 @@ export function ClaudeClientCodeSubagentSlot({
   selectedProviderId,
   managedModelId,
   nativeModel,
+  nativeModels = [],
   providers,
   models,
   onProviderChange,
@@ -430,6 +486,7 @@ export function ClaudeClientCodeSubagentSlot({
   selectedProviderId: string;
   managedModelId: string;
   nativeModel?: string;
+  nativeModels?: Array<{ id: string; name: string }>;
   providers: Array<{ id: string; name: string }>;
   models: Array<{ id: string; name: string; upstreamId: string }>;
   onProviderChange: (providerId: string) => unknown | Promise<unknown>;
@@ -481,7 +538,7 @@ export function ClaudeClientCodeSubagentSlot({
                   id: model.id,
                   label: `${model.name} · ${model.upstreamId}`,
                 }))
-              : claudeNativeModelOptions(nativeModel)
+              : claudeNativeModelOptions(nativeModel, nativeModels)
             ).map((model) => (
               <option key={model.id} value={model.id}>
                 {model.label}
@@ -535,6 +592,158 @@ function errorMessage(error: unknown) {
     return "当前页面未连接 GrillForge 桌面后端。请从桌面客户端打开。";
   }
   return message;
+}
+
+const unavailableIntegration: IntegrationStatus = {
+  snapshotPresent: false,
+  takeover: "inactive",
+  differences: [],
+  managedMainAlias: null,
+  nativeModelSlots: {},
+  supportedModelSlots: [],
+  nativeModels: [],
+  nativeModelsError: null,
+  nativeCurrentModel: null,
+};
+
+const unavailableClaudeCli: ClaudeCliStatus = {
+  installed: false,
+  path: null,
+  version: null,
+};
+
+const unavailableClaudeDesktop: ClaudeDesktopStatus = {
+  installed: false,
+  executablePath: null,
+  snapshotPresent: false,
+  takeover: "inactive",
+  differences: [],
+  configuredRoutes: [],
+  supportedModelSlots: [],
+  nativeModels: [],
+  nativeModelsError: null,
+  nativeCurrentModel: null,
+};
+
+const unavailablePi: PiStatus = {
+  installed: false,
+  executablePath: null,
+  version: null,
+  snapshotPresent: false,
+  takeover: "inactive",
+  configuredModelIds: [],
+  defaultModelId: null,
+};
+
+const unavailableCodex: CodexStatus = {
+  installed: false,
+  executablePath: null,
+  version: null,
+  snapshotPresent: false,
+  takeover: "inactive",
+  configuredModelId: null,
+  currentConfigModel: null,
+  currentConfigProvider: null,
+  supportedProtocols: [],
+  nativeModels: [],
+  nativeModelsError: null,
+  customAgents: [],
+};
+
+const unavailableClient: ClientIntegrationStatus = {
+  installed: false,
+  executablePath: null,
+  version: null,
+  snapshotPresent: false,
+  takeover: "inactive",
+  configuredModelIds: [],
+  mainModelId: null,
+};
+
+export async function loadOptionalClientSnapshot() {
+  const errors: Record<string, string> = {};
+  const fixed = await Promise.allSettled([
+    invoke<IntegrationStatus>("integration_status"),
+    invoke<ClaudeCliStatus>("detect_claude_code"),
+    invoke<ClaudeDesktopStatus>("claude_desktop_status"),
+    invoke<PiStatus>("pi_status"),
+    invoke<PiMcpExtensionStatus>("pi_mcp_extension_status"),
+    invoke<CodexStatus>("codex_status"),
+    invoke<ClientMcpStatus[]>("client_mcp_statuses"),
+  ]);
+  const additional = await Promise.allSettled(
+    additionalClients.map((client) =>
+      invoke<ClientIntegrationStatus>(client.status),
+    ),
+  );
+
+  function result<T>(
+    settled: PromiseSettledResult<T>,
+    fallback: T,
+    clientId: string,
+  ): T {
+    if (settled.status === "fulfilled") return settled.value;
+    errors[clientId] ??= errorMessage(settled.reason);
+    return fallback;
+  }
+
+  const integration = result(
+    fixed[0] as PromiseSettledResult<IntegrationStatus>,
+    unavailableIntegration,
+    "claude_code",
+  );
+  const claudeCli = result(
+    fixed[1] as PromiseSettledResult<ClaudeCliStatus>,
+    unavailableClaudeCli,
+    "claude_code",
+  );
+  const claudeDesktop = result(
+    fixed[2] as PromiseSettledResult<ClaudeDesktopStatus>,
+    unavailableClaudeDesktop,
+    "claude_desktop",
+  );
+  const piStatus = result(
+    fixed[3] as PromiseSettledResult<PiStatus>,
+    unavailablePi,
+    "pi",
+  );
+  const piMcpExtension = result(
+    fixed[4] as PromiseSettledResult<PiMcpExtensionStatus>,
+    { installed: false, packageSource: "pi-mcp-extension@1.5.0" },
+    "pi",
+  );
+  const codexStatus = result(
+    fixed[5] as PromiseSettledResult<CodexStatus>,
+    unavailableCodex,
+    "codex",
+  );
+  const mcpStatuses = result(
+    fixed[6] as PromiseSettledResult<ClientMcpStatus[]>,
+    [],
+    "mcp",
+  );
+  const clientStatuses = Object.fromEntries(
+    additionalClients.map((client, index) => [
+      client.id,
+      result(
+        additional[index] as PromiseSettledResult<ClientIntegrationStatus>,
+        unavailableClient,
+        client.id,
+      ),
+    ]),
+  ) as Record<string, ClientIntegrationStatus>;
+
+  return {
+    integration,
+    claudeCli,
+    claudeDesktop,
+    piStatus,
+    piMcpExtension,
+    codexStatus,
+    mcpStatuses,
+    clientStatuses,
+    errors,
+  };
 }
 
 function routeSupportLabel(protocol: Protocol) {
@@ -640,12 +849,72 @@ const providerBrandIcons: Array<[string[], string]> = [
   [["anthropic", "claude"], anthropicIcon],
   [["openai", "codex"], openaiIcon],
   [["deepseek"], deepseekIcon],
-  [["qwen", "dashscope", "alibaba", "aliyun"], qwenIcon],
+  [["qwen", "dashscope"], qwenIcon],
+  [["alibaba", "aliyun", "bailian"], alibabaIcon],
   [["openrouter"], openrouterIcon],
   [["ollama"], ollamaIcon],
-  [["google", "gemini"], googleIcon],
+  [["gemini"], geminiIcon],
+  [["google"], googleIcon],
   [["azure"], azureIcon],
+  [["kimi", "moonshot"], kimiIcon],
+  [["minimax"], minimaxIcon],
+  [["nvidia"], nvidiaIcon],
+  [["siliconflow"], siliconflowIcon],
+  [["stepfun"], stepfunIcon],
+  [["zhipu", "glm"], zhipuIcon],
+  [["xai", "grok"], xaiIcon],
+  [["modelscope"], modelscopeIcon],
+  [["novita"], novitaIcon],
+  [["baidu", "qianfan"], baiduIcon],
+  [["doubao"], doubaoIcon],
+  [["byteplus", "volcengine"], bytedanceIcon],
+  [["hunyuan", "tencent"], hunyuanIcon],
+  [["huggingface"], huggingfaceIcon],
+  [["cloudflare"], cloudflareIcon],
+  [["mistral"], mistralIcon],
+  [["cohere"], cohereIcon],
+  [["aihubmix"], aihubmixIcon],
+  [["longcat"], longcatIcon],
+  [["xiaomi", "mimo"], xiaomiIcon],
+  [["apinebula"], apinebulaIcon],
+  [["atlascloud"], atlascloudIcon],
+  [["code0"], code0Icon],
+  [["fenno"], fennoIcon],
 ];
+
+const clientBrandIcons: Record<string, string> = {
+  claude_code: anthropicIcon,
+  claude_desktop: anthropicIcon,
+  codex: openaiIcon,
+  pi: grillforgeLogo,
+  gemini: geminiIcon,
+  grok_build: grokIcon,
+  opencode: opencodeIcon,
+  hermes: hermesIcon,
+  kimi_code: kimiIcon,
+};
+
+function AppLogo({ className = "" }: { className?: string }) {
+  return <img className={className} src={grillforgeLogo} alt="" />;
+}
+
+function ClientLogo({ clientId, name }: { clientId: string; name: string }) {
+  const icon = clientBrandIcons[clientId] ?? grillforgeLogo;
+  return (
+    <span className="client-mark" title={name}>
+      <img src={icon} alt="" />
+    </span>
+  );
+}
+
+function AgentLogo({ sourceClientId }: { sourceClientId: string }) {
+  const icon = clientBrandIcons[sourceClientId] ?? grillforgeLogo;
+  return (
+    <span className="subagent-icon">
+      <img src={icon} alt="" />
+    </span>
+  );
+}
 
 function BrandLogo({
   identity,
@@ -660,15 +929,9 @@ function BrandLogo({
   const icon = providerBrandIcons.find(([aliases]) =>
     aliases.some((alias) => normalizedIdentity.includes(alias)),
   )?.[1];
-  const initials = name
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
   return (
     <span className={`provider-logo provider-logo--${size}`} title={name}>
-      {icon ? <img src={icon} alt="" /> : initials || "API"}
+      <img src={icon ?? grillforgeLogo} alt="" />
     </span>
   );
 }
@@ -697,6 +960,78 @@ function Badge({
   tone?: "neutral" | "good" | "warn";
 }) {
   return <span className={`badge badge--${tone}`}>{children}</span>;
+}
+
+export function ProviderProtocolFacts({
+  provider,
+  model,
+}: {
+  provider: Pick<Provider, "protocolEndpoints">;
+  model?: Pick<Model, "nativeProtocols" | "unsupportedNativeProtocols">;
+}) {
+  const providerProtocols = provider.protocolEndpoints.map(
+    (surface) => surface.protocol,
+  );
+  if (!model) {
+    return (
+      <>
+        {providerProtocols.length > 0 ? (
+          providerProtocols.map((protocol) => (
+            <Badge key={protocol} tone="good">
+              {nativeProtocolLabels[protocol]}
+            </Badge>
+          ))
+        ) : (
+          <Badge tone="neutral">尚未探测调用方式</Badge>
+        )}
+      </>
+    );
+  }
+  return (
+    <>
+      {model.nativeProtocols.map((protocol) => (
+        <Badge key={protocol} tone="good">
+          {nativeProtocolLabels[protocol]}
+        </Badge>
+      ))}
+      {model.unsupportedNativeProtocols
+        .filter((protocol) => providerProtocols.includes(protocol))
+        .map((protocol) => (
+          <Badge key={`unsupported-${protocol}`} tone="warn">
+            不支持 {nativeProtocolLabels[protocol]}
+          </Badge>
+        ))}
+    </>
+  );
+}
+
+export function ClientDetectionStatus({
+  name,
+  installed,
+  detail,
+  error,
+}: {
+  name: string;
+  installed: boolean;
+  detail: string;
+  error?: string;
+}) {
+  return (
+    <>
+      <div>
+        <strong>{name}</strong>
+        <small
+          className={error ? "client-detection-error" : undefined}
+          role={error ? "alert" : undefined}
+        >
+          {error ?? detail}
+        </small>
+      </div>
+      <Badge tone={error ? "warn" : installed ? "good" : "warn"}>
+        {error ? "检测失败" : installed ? "可用" : "未安装"}
+      </Badge>
+    </>
+  );
 }
 
 function Toggle({
@@ -861,6 +1196,9 @@ function App() {
     string,
     ClientIntegrationStatus
   > | null>(null);
+  const [clientStatusErrors, setClientStatusErrors] = useState<
+    Record<string, string>
+  >({});
   const [mcpStatuses, setMcpStatuses] = useState<Record<string, ClientMcpStatus>>(
     {},
   );
@@ -893,10 +1231,6 @@ function App() {
   const [managingProviderId, setManagingProviderId] = useState<string | null>(
     null,
   );
-  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>(
-    [],
-  );
-  const [selectedDiscovered, setSelectedDiscovered] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState("");
   const [slotProviderSelections, setSlotProviderSelections] = useState<
     Record<string, string>
@@ -926,62 +1260,37 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([
-      invoke<ControlPlaneState>("load_state"),
-      invoke<ProviderPresetCatalog>("provider_presets"),
-      invoke<IntegrationStatus>("integration_status"),
-      invoke<ClaudeCliStatus>("detect_claude_code"),
-      invoke<ClaudeDesktopStatus>("claude_desktop_status"),
-      invoke<PiStatus>("pi_status"),
-      invoke<PiMcpExtensionStatus>("pi_mcp_extension_status"),
-      invoke<CodexStatus>("codex_status"),
-      invoke<ClientMcpStatus[]>("client_mcp_statuses"),
-      Promise.all(
-        additionalClients.map(
-          async (client) =>
-            [
-              client.id,
-              await invoke<ClientIntegrationStatus>(client.status),
-            ] as const,
-        ),
-      ),
-    ])
-      .then(
-        ([
-          loaded,
-          presets,
-          integrationStatus,
-          cliStatus,
-          desktopStatus,
-          loadedPiStatus,
-          loadedPiMcpExtension,
-          loadedCodexStatus,
-          loadedMcpStatuses,
-          loadedClientStatuses,
-        ]) => {
-          if (!active) return;
-          setState(loaded);
-          setCatalog(presets);
-          setIntegration(integrationStatus);
-          setClaudeCli(cliStatus);
-          setClaudeDesktop(desktopStatus);
-          setPiStatus(loadedPiStatus);
-          setPiMcpExtension(loadedPiMcpExtension);
-          setCodexStatus(loadedCodexStatus);
-          setMcpStatuses(
-            Object.fromEntries(
-              loadedMcpStatuses.map((status) => [status.clientId, status]),
-            ),
-          );
-          setClientStatuses(Object.fromEntries(loadedClientStatuses));
-        },
-      )
-      .catch((cause) => {
+    void (async () => {
+      try {
+        const [loaded, presets] = await Promise.all([
+          invoke<ControlPlaneState>("load_state"),
+          invoke<ProviderPresetCatalog>("provider_presets"),
+        ]);
+        if (!active) return;
+        setState(loaded);
+        setCatalog(presets);
+
+        const optional = await loadOptionalClientSnapshot();
+        if (!active) return;
+        setIntegration(optional.integration);
+        setClaudeCli(optional.claudeCli);
+        setClaudeDesktop(optional.claudeDesktop);
+        setPiStatus(optional.piStatus);
+        setPiMcpExtension(optional.piMcpExtension);
+        setCodexStatus(optional.codexStatus);
+        setMcpStatuses(
+          Object.fromEntries(
+            optional.mcpStatuses.map((status) => [status.clientId, status]),
+          ),
+        );
+        setClientStatuses(optional.clientStatuses);
+        setClientStatusErrors(optional.errors);
+      } catch (cause) {
         if (active) setError(errorMessage(cause));
-      })
-      .finally(() => {
+      } finally {
         if (active) setLoading(false);
-      });
+      }
+    })();
     return () => {
       active = false;
     };
@@ -1001,9 +1310,7 @@ function App() {
   const availableModels = models.filter((model) =>
     enabledProviderIds.has(model.providerId),
   );
-  const gatewayProviders = providers.filter(
-    (provider) => provider.enabled && provider.protocol !== "gemini_native",
-  );
+  const gatewayProviders = providers.filter((provider) => provider.enabled);
   const extensionSubagents = state?.extensionSubagents ?? [];
   const localAgentRuntimes = Array.from(
     new Set(localAgents.map((agent) => agent.runtime)),
@@ -1207,42 +1514,34 @@ function App() {
     if (refreshingClients) return;
     setRefreshingClients(true);
     try {
-      const [
-        cliStatus,
-        desktopStatus,
-        loadedPiStatus,
-        loadedPiMcpExtension,
-        loadedCodexStatus,
-        loadedMcpStatuses,
-        loadedClientStatuses,
-      ] = await Promise.all([
-        invoke<ClaudeCliStatus>("detect_claude_code"),
-        invoke<ClaudeDesktopStatus>("claude_desktop_status"),
-        invoke<PiStatus>("pi_status"),
-        invoke<PiMcpExtensionStatus>("pi_mcp_extension_status"),
-        invoke<CodexStatus>("codex_status"),
-        invoke<ClientMcpStatus[]>("client_mcp_statuses"),
-        Promise.all(
-          additionalClients.map(
-            async (client) =>
-              [
-                client.id,
-                await invoke<ClientIntegrationStatus>(client.status),
-              ] as const,
+      const loaded = await loadOptionalClientSnapshot();
+      if (!loaded.errors.claude_code) {
+        setIntegration(loaded.integration);
+        setClaudeCli(loaded.claudeCli);
+      }
+      if (!loaded.errors.claude_desktop)
+        setClaudeDesktop(loaded.claudeDesktop);
+      if (!loaded.errors.pi) {
+        setPiStatus(loaded.piStatus);
+        setPiMcpExtension(loaded.piMcpExtension);
+      }
+      if (!loaded.errors.codex) setCodexStatus(loaded.codexStatus);
+      if (!loaded.errors.mcp) {
+        setMcpStatuses(
+          Object.fromEntries(
+            loaded.mcpStatuses.map((status) => [status.clientId, status]),
           ),
-        ),
-      ]);
-      setClaudeCli(cliStatus);
-      setClaudeDesktop(desktopStatus);
-      setPiStatus(loadedPiStatus);
-      setPiMcpExtension(loadedPiMcpExtension);
-      setCodexStatus(loadedCodexStatus);
-      setMcpStatuses(
-        Object.fromEntries(
-          loadedMcpStatuses.map((status) => [status.clientId, status]),
-        ),
-      );
-      setClientStatuses(Object.fromEntries(loadedClientStatuses));
+        );
+      }
+      setClientStatuses((current) => {
+        const next = { ...(current ?? {}) };
+        for (const client of additionalClients) {
+          if (!loaded.errors[client.id])
+            next[client.id] = loaded.clientStatuses[client.id];
+        }
+        return next;
+      });
+      setClientStatusErrors(loaded.errors);
     } catch (cause) {
       reportError(errorMessage(cause));
     } finally {
@@ -1255,8 +1554,18 @@ function App() {
     setDiscoveringLocalAgents(true);
     setLocalAgentError("");
     try {
-      const discovered = await invoke<LocalAgent[]>("discover_local_agents");
-      setLocalAgents(discovered);
+      const discovered = await invoke<LocalAgentDiscovery>(
+        "discover_local_agents",
+      );
+      setLocalAgents(discovered.agents);
+      setLocalAgentError(
+        discovered.errors
+          .map(
+            ({ runtime, message }) =>
+              `${clientLabels[runtime] ?? runtime}：${message}`,
+          )
+          .join("；"),
+      );
     } catch (cause) {
       setLocalAgentError(errorMessage(cause));
     } finally {
@@ -1425,6 +1734,7 @@ function App() {
       providerId: model.providerId,
       capabilities: model.capabilities.join(", "),
       protocolCapabilities: model.protocolCapabilities ?? [],
+      nativeProtocols: model.nativeProtocols ?? [],
     });
     setShowModelForm(true);
   }
@@ -1433,68 +1743,20 @@ function App() {
     closeProviderForm();
     closeModelForm();
     setManagingProviderId(provider.id);
-    setDiscoveredModels([]);
-    setSelectedDiscovered([]);
     setModelSearch("");
   }
 
   function closeProviderModels() {
     closeModelForm();
     setManagingProviderId(null);
-    setDiscoveredModels([]);
-    setSelectedDiscovered([]);
   }
 
-  async function discoverModels(provider: Provider) {
-    if (!begin(`discover:${provider.id}`)) return;
-    try {
-      const discovered = await invoke<DiscoveredModel[]>(
-        "discover_provider_models",
-        { providerId: provider.id },
-      );
-      setDiscoveredModels(discovered);
-      const imported = new Set(
-        models
-          .filter((model) => model.providerId === provider.id)
-          .map((model) => model.upstreamId),
-      );
-      setSelectedDiscovered(
-        discovered
-          .filter((model) => !imported.has(model.id))
-          .map((model) => model.id),
-      );
-      setNotice(`已从 ${provider.name} 获取 ${discovered.length} 个模型。`);
-    } catch (cause) {
-      reportError(errorMessage(cause));
-    } finally {
-      setPending("");
-    }
-  }
-
-  function toggleDiscovered(id: string) {
-    setSelectedDiscovered((current) =>
-      current.includes(id)
-        ? current.filter((modelId) => modelId !== id)
-        : [...current, id],
+  async function syncProviderModels(provider: Provider) {
+    await commit(
+      "sync_provider_models",
+      { providerId: provider.id },
+      `${provider.name} 的模型与协议支持已同步。`,
     );
-  }
-
-  async function importDiscovered(provider: Provider) {
-    const selected = discoveredModels.filter((model) =>
-      selectedDiscovered.includes(model.id),
-    );
-    if (selected.length === 0)
-      return reportError("请至少选择一个尚未导入的模型。");
-    if (
-      await commit(
-        "import_provider_models",
-        { providerId: provider.id, models: selected },
-        `已导入 ${selected.length} 个模型。`,
-      )
-    ) {
-      setDiscoveredModels([]);
-      setSelectedDiscovered([]);
-    }
   }
 
   function toggleProtocolFeature(id: ProtocolCapability) {
@@ -1618,8 +1880,13 @@ function App() {
         .map((value) => value.trim())
         .filter(Boolean),
       protocolCapabilities: modelDraft.protocolCapabilities,
+      nativeProtocols: modelDraft.nativeProtocols,
     };
-    const command = editingModelId ? "update_model" : "save_model";
+    if (input.nativeProtocols.length === 0)
+      return reportError("请至少选择一种模型原生支持的 API 协议。");
+    const command = editingModelId
+      ? "update_model_with_native_protocols"
+      : "save_model_with_native_protocols";
     if (
       await commit(
         command,
@@ -1821,9 +2088,7 @@ function App() {
               const model = models.find((item) => item.id === extension.modelId);
               return (
                 <article className="subagent-card" key={extension.id}>
-                  <span className="subagent-icon">
-                    {extension.name.slice(0, 1)}
-                  </span>
+                  <AgentLogo sourceClientId={extension.sourceClientId} />
                   <div className="subagent-main">
                     <div>
                       <h3>{extension.name}</h3>
@@ -1874,7 +2139,7 @@ function App() {
   if (loading) {
     return (
       <main className="startup">
-        <span className="brand-mark">GF</span>
+        <span className="brand-mark"><AppLogo /></span>
         <strong>正在加载 GrillForge…</strong>
       </main>
     );
@@ -1904,31 +2169,14 @@ function App() {
       ? state.clientConfigurations[selectedAdditionalClient.id]
       : null;
   const selectedClientProviders = selectedAdditionalClient
-    ? providers.filter((provider) => {
-        if (!provider.enabled) return false;
-        if (selectedAdditionalClient.protocol === "gemini") {
-          return (
-            provider.protocol === "gemini_native" &&
-            provider.endpointMode === "base_url" &&
-            provider.apiKeyPlacement === "x_api_key"
-          );
-        }
-        if (selectedAdditionalClient.protocol === "responses") {
-          return (
-            provider.protocol === "open_ai_responses" &&
-            provider.endpointMode === "base_url" &&
-            provider.apiKeyPlacement === "bearer"
-          );
-        }
-        return provider.protocol !== "gemini_native";
-      })
+    ? providers.filter((provider) => provider.enabled)
     : [];
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">GF</span>
+          <span className="brand-mark"><AppLogo /></span>
           <div>
             <strong>GrillForge</strong>
             <small>Coding Agent 配置中心</small>
@@ -2020,7 +2268,7 @@ function App() {
                             selectClient("claude_code");
                           }}
                         >
-                          <span className="client-mark">CC</span>
+                          <ClientLogo clientId="claude_code" name="Claude Code" />
                           <div>
                             <strong>Claude Code</strong>
                             <small>
@@ -2038,7 +2286,7 @@ function App() {
                             selectClient("claude_desktop");
                           }}
                         >
-                          <span className="client-mark">CD</span>
+                          <ClientLogo clientId="claude_desktop" name="Claude Client" />
                           <div>
                             <strong>Claude Client</strong>
                             <small>
@@ -2059,7 +2307,7 @@ function App() {
                             selectClient("pi");
                           }}
                         >
-                          <span className="client-mark">PI</span>
+                          <ClientLogo clientId="pi" name="Pi" />
                           <div>
                             <strong>Pi</strong>
                             <small>
@@ -2073,8 +2321,7 @@ function App() {
                       </div>
                     </div>
                     <div className="agent-orb">
-                      <span>⌁</span>
-                      <i>••</i>
+                      <AppLogo />
                     </div>
                   </article>
                   <article className="quick-action-card">
@@ -2145,7 +2392,7 @@ function App() {
                       </button>
                     </div>
                     <div className="recent-client">
-                      <span className="client-mark">CC</span>
+                      <ClientLogo clientId="claude_code" name="Claude Code" />
                       <div>
                         <strong>Claude Code CLI</strong>
                         <small>
@@ -2158,7 +2405,7 @@ function App() {
                       </Badge>
                     </div>
                     <div className="recent-client">
-                      <span className="client-mark">CD</span>
+                      <ClientLogo clientId="claude_desktop" name="Claude Client" />
                       <div>
                         <strong>Claude Client</strong>
                         <small>
@@ -2213,7 +2460,7 @@ function App() {
                 />
                 {localAgentError && (
                   <div className="inline-error" role="alert">
-                    <strong>无法同步本机 Agent</strong>
+                    <strong>部分客户端 Agent 未同步</strong>
                     <span>{localAgentError}</span>
                     <button
                       className="action-button"
@@ -2417,9 +2664,7 @@ function App() {
                         .map(([clientId]) => clientLabels[clientId] ?? clientId);
                       return (
                         <article className="subagent-card" key={extension.id}>
-                          <span className="subagent-icon">
-                            {extension.name.slice(0, 1)}
-                          </span>
+                          <AgentLogo sourceClientId={extension.sourceClientId} />
                           <div className="subagent-main">
                             <div>
                               <h3>{extension.name}</h3>
@@ -2491,70 +2736,66 @@ function App() {
                       setClientTab("slots");
                     }}
                   >
-                    <span className="client-mark">CC</span>
-                    <div>
-                      <strong>Claude Code</strong>
-                      <small>
-                        {claudeCli.installed
+                    <ClientLogo clientId="claude_code" name="Claude Code" />
+                    <ClientDetectionStatus
+                      name="Claude Code"
+                      installed={claudeCli.installed}
+                      detail={
+                        claudeCli.installed
                           ? (claudeCli.version ?? "已安装")
-                          : "未检测到 Claude CLI"}
-                      </small>
-                    </div>
-                    <Badge tone={claudeCli.installed ? "good" : "warn"}>
-                      {claudeCli.installed ? "可用" : "未安装"}
-                    </Badge>
+                          : "未检测到 Claude CLI"
+                      }
+                      error={clientStatusErrors.claude_code}
+                    />
                   </button>
                   <button
                     className={`client-card client-card--available ${selectedClient === "claude_desktop" ? "client-card--selected" : ""}`}
                     type="button"
                     onClick={() => selectClient("claude_desktop")}
                   >
-                    <span className="client-mark">CD</span>
-                    <div>
-                      <strong>Claude Client</strong>
-                      <small>
-                        {claudeDesktop.installed ? "已检测到" : "未检测到安装"}
-                      </small>
-                    </div>
-                    <Badge tone={claudeDesktop.installed ? "good" : "warn"}>
-                      {claudeDesktop.installed ? "可用" : "未安装"}
-                    </Badge>
+                    <ClientLogo clientId="claude_desktop" name="Claude Client" />
+                    <ClientDetectionStatus
+                      name="Claude Client"
+                      installed={claudeDesktop.installed}
+                      detail={
+                        claudeDesktop.installed ? "已检测到" : "未检测到安装"
+                      }
+                      error={clientStatusErrors.claude_desktop}
+                    />
                   </button>
                   <button
                     className={`client-card client-card--available ${selectedClient === "codex" ? "client-card--selected" : ""}`}
                     type="button"
                     onClick={() => selectClient("codex")}
                   >
-                    <span className="client-mark">CX</span>
-                    <div>
-                      <strong>Codex</strong>
-                      <small>
-                        {codexStatus.installed
+                    <ClientLogo clientId="codex" name="Codex" />
+                    <ClientDetectionStatus
+                      name="Codex"
+                      installed={codexStatus.installed}
+                      detail={
+                        codexStatus.installed
                           ? `${codexStatus.executablePath?.includes("/ChatGPT.app/") ? "ChatGPT 内置" : "独立 CLI"} · ${codexStatus.version ?? "已安装"}`
-                          : "未检测到 Codex CLI"}
-                      </small>
-                    </div>
-                    <Badge tone={codexStatus.installed ? "good" : "warn"}>
-                      {codexStatus.installed ? "可用" : "未安装"}
-                    </Badge>
+                          : "未检测到 Codex CLI"
+                      }
+                      error={clientStatusErrors.codex}
+                    />
                   </button>
                   <button
                     className={`client-card client-card--available ${selectedClient === "pi" ? "client-card--selected" : ""}`}
                     type="button"
                     onClick={() => selectClient("pi")}
                   >
-                    <span className="client-mark">PI</span>
-                    <div>
-                      <strong>Pi</strong>
-                      <small>
-                        {piStatus.installed
-                          ? `${piStatus.version ?? "已安装"}`
-                          : "未检测到 Pi CLI"}
-                      </small>
-                    </div>
-                    <Badge tone={piStatus.installed ? "good" : "warn"}>
-                      {piStatus.installed ? "可用" : "未安装"}
-                    </Badge>
+                    <ClientLogo clientId="pi" name="Pi" />
+                    <ClientDetectionStatus
+                      name="Pi"
+                      installed={piStatus.installed}
+                      detail={
+                        piStatus.installed
+                          ? (piStatus.version ?? "已安装")
+                          : "未检测到 Pi CLI"
+                      }
+                      error={clientStatusErrors.pi}
+                    />
                   </button>
                   {additionalClients.map((client) => {
                     const status = clientStatuses[client.id];
@@ -2565,22 +2806,26 @@ function App() {
                         key={client.id}
                         onClick={() => selectClient(client.id)}
                       >
-                        <span className="client-mark">{client.mark}</span>
-                        <div>
-                          <strong>{client.name}</strong>
-                          <small>
-                            {status.installed
+                        <ClientLogo clientId={client.id} name={client.name} />
+                        <ClientDetectionStatus
+                          name={client.name}
+                          installed={status.installed}
+                          detail={
+                            status.installed
                               ? (status.version ?? "已安装")
-                              : "未检测到客户端"}
-                          </small>
-                        </div>
-                        <Badge tone={status.installed ? "good" : "warn"}>
-                          {status.installed ? "可用" : "未安装"}
-                        </Badge>
+                              : "未检测到客户端"
+                          }
+                          error={clientStatusErrors[client.id]}
+                        />
                       </button>
                     );
                   })}
                 </section>
+                {clientStatusErrors.mcp && (
+                  <p className="inline-error client-status-error" role="alert">
+                    MCP 状态读取失败：{clientStatusErrors.mcp}
+                  </p>
+                )}
                 {!selectedClient && (
                   <div className="client-prompt">
                     <strong>请选择客户端</strong>
@@ -2644,7 +2889,7 @@ function App() {
                       ))}
                     </nav>
                     <section className="agent-card">
-                      <div className="agent-monogram">C</div>
+                      <ClientLogo clientId="claude_code" name="Claude Code" />
                       <div className="agent-copy">
                         <div>
                           <h2>Claude Code</h2>
@@ -2698,6 +2943,20 @@ function App() {
                             <p>先选择供应商，再选择该供应商下的模型。</p>
                           </div>
                         </div>
+                        {integration.nativeModelsError && (
+                          <div className="inline-error" role="alert">
+                            <strong>原生模型列表暂不可用</strong>
+                            <span>{integration.nativeModelsError}</span>
+                            <button
+                              className="button button--secondary"
+                              type="button"
+                              disabled={refreshingClients}
+                              onClick={() => void refreshClients()}
+                            >
+                              重新加载
+                            </button>
+                          </div>
+                        )}
                         <section className="slot-grid slot-grid--prominent">
                           <div className="slot-card slot-card--cascade">
                             <span>默认模型</span>
@@ -2750,6 +3009,7 @@ function App() {
                                       : ""
                                     : (state.claudeNativeModelSlots.main ??
                                       integration.nativeModelSlots.main ??
+                                      integration.nativeCurrentModel ??
                                       "default")
                                 }
                                 onChange={(event) => {
@@ -2795,7 +3055,9 @@ function App() {
                                     }))
                                   : claudeNativeModelOptions(
                                       state.claudeNativeModelSlots.main ??
-                                        integration.nativeModelSlots.main,
+                                        integration.nativeModelSlots.main ??
+                                        integration.nativeCurrentModel,
+                                      integration.nativeModels,
                                     )).map((model) => (
                                   <option key={model.id} value={model.id}>
                                     {model.label}
@@ -2893,6 +3155,7 @@ function App() {
                                       : claudeNativeModelOptions(
                                           state.claudeNativeModelSlots[slot] ??
                                             integration.nativeModelSlots[slot],
+                                          integration.nativeModels,
                                         )
                                     ).map((model) => (
                                         <option key={model.id} value={model.id}>
@@ -2948,9 +3211,7 @@ function App() {
                               );
                               return (
                                 <article className="subagent-card" key={extension.id}>
-                                  <span className="subagent-icon">
-                                    {extension.name.slice(0, 1)}
-                                  </span>
+                                  <AgentLogo sourceClientId={extension.sourceClientId} />
                                   <div className="subagent-main">
                                     <div>
                                       <h3>{extension.name}</h3>
@@ -3064,7 +3325,7 @@ function App() {
                           <p className="kicker">Client 对话 / Cowork</p>
                           <h2>对话角色模型</h2>
                           <p>
-                            先选择供应商，再选择模型；至少配置一个角色后才能应用。
+                            跟随原生时显示 Claude Client 当前选择；第三方模式需为全部角色选择模型。
                           </p>
                         </div>
                       </div>
@@ -3100,11 +3361,11 @@ function App() {
                                       void commit(
                                         "set_claude_desktop_model_slot",
                                         { slot, id: null },
-                                        `Claude Client ${modelSlotLabels[slot] ?? slot}已清除。`,
+                                        `Claude Client ${modelSlotLabels[slot] ?? slot}已恢复原生。`,
                                       );
                                   }}
                                 >
-                                  <option value="">不配置</option>
+                                  <option value="">跟随原生</option>
                                   {gatewayProviders.map((provider) => (
                                     <option
                                       key={provider.id}
@@ -3118,14 +3379,15 @@ function App() {
                               <label>
                                 <small>模型</small>
                                 <select
-                                  disabled={
-                                    Boolean(pending) || !selectedProviderId
-                                  }
+                                  disabled={Boolean(pending) || !selectedProviderId}
                                   value={
-                                    modelProviderId(selectedModelId) ===
                                     selectedProviderId
-                                      ? selectedModelId
-                                      : ""
+                                      ? modelProviderId(selectedModelId) ===
+                                        selectedProviderId
+                                        ? selectedModelId
+                                        : ""
+                                      : (claudeDesktop.nativeCurrentModel ??
+                                        "default")
                                   }
                                   onChange={(event) =>
                                     commit(
@@ -3135,20 +3397,46 @@ function App() {
                                     )
                                   }
                                 >
-                                  <option value="">选择模型</option>
-                                  {modelsForProvider(selectedProviderId).map(
-                                    (model) => (
-                                      <option key={model.id} value={model.id}>
-                                        {model.name} · {model.upstreamId}
-                                      </option>
-                                    ),
-                                  )}
+                                  {selectedProviderId ? (
+                                    <option value="">选择模型</option>
+                                  ) : null}
+                                  {(selectedProviderId
+                                    ? modelsForProvider(selectedProviderId).map(
+                                        (model) => ({
+                                          id: model.id,
+                                          label: `${model.name} · ${model.upstreamId}`,
+                                        }),
+                                      )
+                                    : claudeNativeModelOptions(
+                                        claudeDesktop.nativeCurrentModel ??
+                                          "default",
+                                        claudeDesktop.nativeModels,
+                                      )
+                                  ).map((model) => (
+                                    <option key={model.id} value={model.id}>
+                                      {model.label}
+                                    </option>
+                                  ))}
                                 </select>
                               </label>
                             </div>
                           );
                         })}
                       </section>
+                      {integration.nativeModelsError && (
+                        <div className="inline-error" role="alert">
+                          <strong>Code 原生模型列表暂不可用</strong>
+                          <span>{integration.nativeModelsError}</span>
+                          <button
+                            className="button button--secondary"
+                            type="button"
+                            disabled={refreshingClients}
+                            onClick={() => void refreshClients()}
+                          >
+                            重新加载
+                          </button>
+                        </div>
+                      )}
                       <ClaudeClientCodeSubagentSlot
                         disabled={Boolean(pending) || !claudeCli.installed}
                         selectedProviderId={
@@ -3160,6 +3448,7 @@ function App() {
                           state.claudeNativeModelSlots.subagent_default ??
                           integration.nativeModelSlots.subagent_default
                         }
+                        nativeModels={integration.nativeModels}
                         providers={gatewayProviders}
                         models={modelsForProvider(
                           slotProviderSelections.subagent_default ??
@@ -3194,7 +3483,10 @@ function App() {
                       />
                     </section>
                     <section className="agent-card">
-                      <div className="agent-monogram">D</div>
+                      <ClientLogo
+                        clientId="claude_desktop"
+                        name="Claude Client"
+                      />
                       <div className="agent-copy">
                         <div>
                           <h2>Claude Client</h2>
@@ -3507,9 +3799,7 @@ function App() {
                             );
                             return (
                               <article className="subagent-card" key={extension.id}>
-                                <span className="subagent-icon">
-                                  {extension.name.slice(0, 1)}
-                                </span>
+                                <AgentLogo sourceClientId={extension.sourceClientId} />
                                 <div className="subagent-main">
                                   <div>
                                     <h3>{extension.name}</h3>
@@ -3543,7 +3833,7 @@ function App() {
                     )}
                     {clientTab === "slots" && (
                     <section className="agent-card">
-                      <div className="agent-monogram">π</div>
+                      <ClientLogo clientId="pi" name="Pi" />
                       <div className="agent-copy">
                         <div>
                           <h2>Pi</h2>
@@ -3938,9 +4228,7 @@ function App() {
                                     className="subagent-card"
                                     key={agent.name}
                                   >
-                                    <span className="subagent-icon">
-                                      {agent.name.slice(0, 1).toUpperCase()}
-                                    </span>
+                                    <AgentLogo sourceClientId="codex" />
                                     <div className="subagent-main">
                                       <div>
                                         <h3>{agent.name}</h3>
@@ -4061,7 +4349,7 @@ function App() {
                         )}
                         {extensionBindingsFor("codex", "Codex")}
                         <section className="agent-card">
-                          <div className="agent-monogram">CX</div>
+                          <ClientLogo clientId="codex" name="Codex" />
                           <div className="agent-copy">
                             <div>
                               <h2>Codex CLI</h2>
@@ -4365,9 +4653,9 @@ function App() {
                           <section className="subagent-section">
                             <div className="config-heading">
                               <div>
-                                <p className="kicker">内置 Agent</p>
+                                <p className="kicker">可用 Agent</p>
                                 <h2>Kimi Code Agent</h2>
-                                <p>当前 CLI 可通过 --agent 精确选择的内置 Agent。</p>
+                                <p>当前 CLI 可精确选择的内建与自定义 Agent。</p>
                               </div>
                             </div>
                             <div className="subagent-list">
@@ -4377,13 +4665,11 @@ function App() {
                                     className="subagent-card"
                                     key={agent.name}
                                   >
-                                    <span className="subagent-icon">
-                                      {agent.name.slice(0, 1).toUpperCase()}
-                                    </span>
+                                    <AgentLogo sourceClientId="kimi_code" />
                                     <div className="subagent-main">
                                       <div>
                                         <h3>{agent.name}</h3>
-                                        <Badge tone="good">内置</Badge>
+                                        <Badge tone="good">可调用</Badge>
                                       </div>
                                       <p>{agent.description || "未填写说明"}</p>
                                     </div>
@@ -4401,9 +4687,10 @@ function App() {
                             selectedAdditionalClient.name,
                           )}
                         <section className="agent-card">
-                          <div className="agent-monogram">
-                            {selectedAdditionalClient.mark}
-                          </div>
+                          <ClientLogo
+                            clientId={selectedAdditionalClient.id}
+                            name={selectedAdditionalClient.name}
+                          />
                           <div className="agent-copy">
                             <div>
                               <h2>{selectedAdditionalClient.name}</h2>
@@ -4779,6 +5066,9 @@ function App() {
                             {provider.endpoint}
                           </code>
                         </div>
+                        <div className="provider-protocols" aria-label="支持的调用方式">
+                          <ProviderProtocolFacts provider={provider} />
+                        </div>
                         <dl className="provider-card-meta">
                           <div>
                             <dt>协议</dt>
@@ -4829,10 +5119,10 @@ function App() {
                             disabled={Boolean(pending) || !provider.enabled}
                             onClick={() => {
                               openProviderModels(provider);
-                              void discoverModels(provider);
+                              void syncProviderModels(provider);
                             }}
                           >
-                            {pending === `discover:${provider.id}`
+                            {pending === "sync_provider_models"
                               ? "同步中…"
                               : "同步模型"}
                           </button>
@@ -4920,7 +5210,7 @@ function App() {
                 />
                 <section className="route-status-grid">
                   <article>
-                    <span className="client-mark">CC</span>
+                    <ClientLogo clientId="claude_code" name="Claude Code" />
                     <div>
                       <strong>Claude Code</strong>
                       <small>
@@ -4933,7 +5223,7 @@ function App() {
                     </Badge>
                   </article>
                   <article>
-                    <span className="client-mark">CD</span>
+                    <ClientLogo clientId="claude_desktop" name="Claude Client" />
                     <div>
                       <strong>Claude Client 对话 / Cowork</strong>
                       <small>
@@ -4946,7 +5236,7 @@ function App() {
                     </Badge>
                   </article>
                   <article>
-                    <span className="client-mark">PI</span>
+                    <ClientLogo clientId="pi" name="Pi" />
                     <div>
                       <strong>Pi</strong>
                       <small>
@@ -4961,7 +5251,7 @@ function App() {
                 </section>
                 <section className="route-status-grid">
                   <article>
-                    <span className="client-mark">CX</span>
+                    <ClientLogo clientId="codex" name="Codex" />
                     <div>
                       <strong>Codex</strong>
                       <small>
@@ -4977,7 +5267,7 @@ function App() {
                     const config = state.clientConfigurations[client.id];
                     return (
                       <article key={client.id}>
-                        <span className="client-mark">{client.mark}</span>
+                        <ClientLogo clientId={client.id} name={client.name} />
                         <div>
                           <strong>{client.name}</strong>
                           <small>
@@ -4997,21 +5287,21 @@ function App() {
                   <div className="relation-column">
                     <p>客户端</p>
                     <article className="relation-node relation-node--accent">
-                      <span className="client-mark">CC</span>
+                      <ClientLogo clientId="claude_code" name="Claude Code" />
                       <div>
                         <strong>Claude Code CLI</strong>
                         <small>{takeoverLabel(integration.takeover)}</small>
                       </div>
                     </article>
                     <article className="relation-node relation-node--accent">
-                      <span className="client-mark">CD</span>
+                      <ClientLogo clientId="claude_desktop" name="Claude Client" />
                       <div>
                         <strong>Claude Client</strong>
                         <small>{takeoverLabel(claudeDesktop.takeover)}</small>
                       </div>
                     </article>
                     <article className="relation-node relation-node--accent">
-                      <span className="client-mark">PI</span>
+                      <ClientLogo clientId="pi" name="Pi" />
                       <div>
                         <strong>Pi</strong>
                         <small>{takeoverLabel(piStatus.takeover)}</small>
@@ -5142,7 +5432,9 @@ function App() {
                 <h2 id="provider-model-manager-title">
                   {managingProvider.name}
                 </h2>
-                <p>自动同步模型列表，或手动添加模型。</p>
+                <p>
+                  自动同步会为每个模型发送最小测试请求，并记录可直连与需桥接的协议。
+                </p>
               </div>
               <button
                 className="modal-close"
@@ -5152,6 +5444,12 @@ function App() {
                 ×
               </button>
             </header>
+            <div className="provider-surface-summary">
+              <strong>供应商支持的调用方式</strong>
+              <div className="provider-protocols">
+                <ProviderProtocolFacts provider={managingProvider} />
+              </div>
+            </div>
             <div className="model-manager-toolbar">
               <label>
                 <span>⌕</span>
@@ -5165,9 +5463,9 @@ function App() {
                 <button
                   className="button button--secondary"
                   disabled={Boolean(pending) || !managingProvider.enabled}
-                  onClick={() => discoverModels(managingProvider)}
+                  onClick={() => syncProviderModels(managingProvider)}
                 >
-                  {pending === `discover:${managingProvider.id}`
+                  {pending === "sync_provider_models"
                     ? "正在同步…"
                     : "↻ 自动同步"}
                 </button>
@@ -5184,68 +5482,6 @@ function App() {
                 </button>
               </div>
             </div>
-            {discoveredModels.length > 0 && (
-              <section className="discovery-panel">
-                <div className="panel-head">
-                  <div>
-                    <strong>同步候选</strong>
-                    <small>
-                      已发现 {discoveredModels.length} 个，确认后即可导入。
-                    </small>
-                  </div>
-                  <button
-                    className="button"
-                    disabled={
-                      Boolean(pending) || selectedDiscovered.length === 0
-                    }
-                    onClick={() => importDiscovered(managingProvider)}
-                  >
-                    导入已选 {selectedDiscovered.length} 个
-                  </button>
-                </div>
-                <div className="discovery-list">
-                  {discoveredModels.map((model) => {
-                    const imported = managingProviderModels.some(
-                      (existing) => existing.upstreamId === model.id,
-                    );
-                    return (
-                      <label
-                        className={
-                          imported
-                            ? "discovery-item discovery-item--imported"
-                            : "discovery-item"
-                        }
-                        key={model.id}
-                      >
-                        <input
-                          type="checkbox"
-                          disabled={imported}
-                          checked={
-                            imported || selectedDiscovered.includes(model.id)
-                          }
-                          onChange={() => toggleDiscovered(model.id)}
-                        />
-                        <span>
-                          <strong>{model.id}</strong>
-                          <small>
-                            {imported
-                              ? "已导入"
-                              : (model.ownedBy ?? "未声明所有者")}
-                          </small>
-                          <small>
-                            {(model.nativeProtocols ?? []).length > 0
-                              ? (model.nativeProtocols ?? [])
-                                  .map((protocol) => nativeProtocolLabels[protocol])
-                                  .join(" · ")
-                              : "协议未知"}
-                          </small>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
             {showModelForm && (
               <form
                 className="inline-form inline-form--model model-manager-form"
@@ -5308,6 +5544,31 @@ function App() {
                     placeholder="coding, review, refactor（逗号分隔）"
                   />
                 </label>
+                <fieldset className="protocol-features field-wide">
+                  <legend>模型原生 API 协议</legend>
+                  <p>仅勾选该模型真实可直接调用的协议；GrillForge 会为客户端自动桥接其余协议。</p>
+                  <div>
+                    {(Object.entries(nativeProtocolLabels) as [NativeProtocol, string][]).map(
+                      ([protocol, label]) => (
+                        <label key={protocol}>
+                          <input
+                            type="checkbox"
+                            checked={modelDraft.nativeProtocols.includes(protocol)}
+                            onChange={() =>
+                              setModelDraft((current) => ({
+                                ...current,
+                                nativeProtocols: current.nativeProtocols.includes(protocol)
+                                  ? current.nativeProtocols.filter((value) => value !== protocol)
+                                  : [...current.nativeProtocols, protocol],
+                              }))
+                            }
+                          />
+                          {label}
+                        </label>
+                      ),
+                    )}
+                  </div>
+                </fieldset>
                 <details className="protocol-features field-wide">
                   <summary>高级模型选项</summary>
                   <div>
@@ -5375,9 +5636,7 @@ function App() {
                           className="model-row-main"
                           onClick={() => setSelectedModelId(model.id)}
                         >
-                          <span className="model-avatar">
-                            {model.name.slice(0, 1)}
-                          </span>
+                          <ProviderLogo provider={managingProvider} />
                           <span>
                             <strong>{model.name}</strong>
                             <code>{model.upstreamId}</code>
@@ -5387,9 +5646,10 @@ function App() {
                           {model.capabilities.slice(0, 3).map((capability) => (
                             <Badge key={capability}>{capability}</Badge>
                           ))}
-                          {(model.nativeProtocols ?? []).map((protocol) => (
-                            <Badge key={protocol}>{nativeProtocolLabels[protocol]}</Badge>
-                          ))}
+                          <ProviderProtocolFacts
+                            provider={managingProvider}
+                            model={model}
+                          />
                           {referenceCount > 0 && (
                             <Badge tone="good">
                               {referenceCount} 个 SubAgent
@@ -5589,7 +5849,7 @@ function App() {
                 <ProviderLogo provider={selectedModelProvider} size="large" />
               ) : (
                 <span className="model-avatar">
-                  {selectedModel.name.slice(0, 1)}
+                  <AppLogo />
                 </span>
               )}
               <div>

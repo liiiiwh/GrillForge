@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
+use toml_edit::Item;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +14,43 @@ pub struct LocalAgent {
     pub runtime: &'static str,
     pub agent_id: String,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAgentDiscoveryError {
+    pub runtime: &'static str,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAgentDiscovery {
+    pub agents: Vec<LocalAgent>,
+    pub errors: Vec<LocalAgentDiscoveryError>,
+}
+
+impl LocalAgentDiscovery {
+    pub fn from_runtime_results(
+        results: impl IntoIterator<Item = (&'static str, Result<Vec<LocalAgent>, String>)>,
+    ) -> Self {
+        let mut agents = BTreeMap::new();
+        let mut errors = Vec::new();
+        for (runtime, result) in results {
+            match result {
+                Ok(discovered) => {
+                    for agent in discovered {
+                        agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+                    }
+                }
+                Err(message) => errors.push(LocalAgentDiscoveryError { runtime, message }),
+            }
+        }
+        Self {
+            agents: agents.into_values().collect(),
+            errors,
+        }
+    }
 }
 
 pub fn discover_claude_code_agents(claude_root: &Path) -> Result<Vec<LocalAgent>, String> {
@@ -72,6 +110,31 @@ pub fn discover_codex_agents_for_project(
         .map(|agent| (agent.agent_id.clone(), agent))
         .collect::<BTreeMap<_, _>>();
     for (agent, _) in discover_codex_agents_in(&project_root.join(".codex/agents"))? {
+        agents.insert(agent.agent_id.clone(), agent);
+    }
+    Ok(agents.into_values().collect())
+}
+
+pub fn discover_gemini_agents(gemini_root: &Path) -> Result<Vec<LocalAgent>, String> {
+    let mut agents = gemini_builtin_agents()
+        .into_iter()
+        .map(|agent| (agent.agent_id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    for agent in discover_gemini_agents_in(&gemini_root.join("agents"))? {
+        agents.insert(agent.agent_id.clone(), agent);
+    }
+    Ok(agents.into_values().collect())
+}
+
+pub fn discover_gemini_agents_for_project(
+    gemini_root: &Path,
+    project_root: &Path,
+) -> Result<Vec<LocalAgent>, String> {
+    let mut agents = discover_gemini_agents(gemini_root)?
+        .into_iter()
+        .map(|agent| (agent.agent_id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    for agent in discover_gemini_agents_in(&project_root.join(".gemini/agents"))? {
         agents.insert(agent.agent_id.clone(), agent);
     }
     Ok(agents.into_values().collect())
@@ -152,18 +215,216 @@ pub fn discover_opencode_agents(config_root: &Path) -> Result<Vec<LocalAgent>, S
         .into_iter()
         .map(|agent| (agent.agent_id.clone(), agent))
         .collect::<BTreeMap<_, _>>();
+    for config_name in ["opencode.json", "opencode.jsonc"] {
+        for (agent, mode, _) in discover_opencode_agents_in_config(&config_root.join(config_name))?
+        {
+            if matches!(mode, OpenCodeAgentMode::Subagent | OpenCodeAgentMode::All) {
+                agents.insert(agent.agent_id.clone(), agent);
+            }
+        }
+    }
     for (agent, mode, _) in discover_opencode_agents_in(&config_root.join("agents"))? {
-        if mode != OpenCodeAgentMode::Subagent {
+        if matches!(mode, OpenCodeAgentMode::Subagent | OpenCodeAgentMode::All) {
             agents.insert(agent.agent_id.clone(), agent);
         }
     }
     Ok(agents.into_values().collect())
 }
 
-pub fn discover_kimi_agents() -> Vec<LocalAgent> {
+pub fn discover_kimi_agents(kimi_root: &Path, home: &Path) -> Result<Vec<LocalAgent>, String> {
+    discover_kimi_agents_from_scopes(kimi_root, home, None)
+}
+
+pub(crate) fn kimi_user_home(kimi_root: &Path) -> Result<PathBuf, String> {
+    if std::env::var_os("KIMI_CODE_HOME")
+        .map(PathBuf::from)
+        .as_deref()
+        == Some(kimi_root)
+    {
+        return dirs::home_dir().ok_or_else(|| "home directory is unavailable".to_string());
+    }
+    kimi_root.parent().map(Path::to_path_buf).ok_or_else(|| {
+        format!(
+            "Kimi Code configuration root has no home directory: {}",
+            kimi_root.display()
+        )
+    })
+}
+
+pub fn discover_kimi_agents_for_project(
+    kimi_root: &Path,
+    home: &Path,
+    project_root: &Path,
+) -> Result<Vec<LocalAgent>, String> {
+    discover_kimi_agents_from_scopes(kimi_root, home, Some(project_root))
+}
+
+pub fn resolve_kimi_agent_file(
+    kimi_root: &Path,
+    home: &Path,
+    project_root: &Path,
+    agent_id: &str,
+) -> Result<Option<PathBuf>, String> {
+    Ok(
+        discover_kimi_agent_definitions(kimi_root, home, Some(project_root))?
+            .remove(agent_id)
+            .and_then(|definition| definition.path),
+    )
+}
+
+fn discover_kimi_agents_from_scopes(
+    kimi_root: &Path,
+    home: &Path,
+    project_root: Option<&Path>,
+) -> Result<Vec<LocalAgent>, String> {
+    Ok(
+        discover_kimi_agent_definitions(kimi_root, home, project_root)?
+            .into_values()
+            .map(|definition| definition.agent)
+            .collect(),
+    )
+}
+
+#[derive(Debug)]
+struct KimiAgentDefinition {
+    agent: LocalAgent,
+    path: Option<PathBuf>,
+    overrides_builtin: bool,
+}
+
+fn discover_kimi_agent_definitions(
+    kimi_root: &Path,
+    home: &Path,
+    project_root: Option<&Path>,
+) -> Result<BTreeMap<String, KimiAgentDefinition>, String> {
+    let mut agents = kimi_builtin_agents()
+        .into_iter()
+        .map(|agent| {
+            (
+                agent.agent_id.clone(),
+                KimiAgentDefinition {
+                    agent,
+                    path: None,
+                    overrides_builtin: true,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut merge_scope = |roots: Vec<PathBuf>| -> Result<(), String> {
+        let mut scope = BTreeMap::new();
+        for root in roots {
+            for definition in discover_kimi_agents_in(&root)? {
+                scope
+                    .entry(definition.agent.agent_id.clone())
+                    .or_insert(definition);
+            }
+        }
+        for (name, definition) in scope {
+            if is_kimi_builtin_agent(&name) && !definition.overrides_builtin {
+                continue;
+            }
+            agents.insert(name, definition);
+        }
+        Ok(())
+    };
+
+    merge_scope(kimi_plugin_agent_roots(kimi_root)?)?;
+    merge_scope(vec![kimi_root.join("agents"), home.join(".agents/agents")])?;
+
+    let project_base = project_root.map(nearest_project_root);
+    let extra_roots = kimi_extra_agent_roots(kimi_root, home, project_base.as_deref())?;
+    merge_scope(extra_roots)?;
+
+    if let Some(project) = project_base {
+        merge_scope(vec![
+            project.join(".kimi-code/agents"),
+            project.join(".agents/agents"),
+        ])?;
+    }
+    Ok(agents)
+}
+
+fn kimi_plugin_agent_roots(kimi_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let installed_path = kimi_root.join("plugins/installed.json");
+    let contents = match fs::read_to_string(&installed_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "could not read {}: {error}",
+                installed_path.display()
+            ));
+        }
+    };
+    let installed: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|error| format!("could not parse {}: {error}", installed_path.display()))?;
+    let plugins = installed
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            format!(
+                "{} does not contain a plugins array",
+                installed_path.display()
+            )
+        })?;
+    let mut roots = Vec::new();
+    for plugin in plugins {
+        if plugin.get("enabled").and_then(serde_json::Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(root) = plugin
+            .get("root")
+            .and_then(serde_json::Value::as_str)
+            .filter(|root| !root.trim().is_empty())
+            .map(PathBuf::from)
+        else {
+            continue;
+        };
+        let root_manifest = root.join("kimi.plugin.json");
+        let nested_manifest = root.join(".kimi-plugin/plugin.json");
+        let manifest_path = if root_manifest.is_file() {
+            root_manifest
+        } else if nested_manifest.is_file() {
+            nested_manifest
+        } else {
+            continue;
+        };
+        let manifest = fs::read_to_string(&manifest_path)
+            .map_err(|error| format!("could not read {}: {error}", manifest_path.display()))?;
+        let manifest: serde_json::Value = serde_json::from_str(&manifest)
+            .map_err(|error| format!("could not parse {}: {error}", manifest_path.display()))?;
+        match manifest.get("agents") {
+            None => roots.push(root.join("agents")),
+            Some(serde_json::Value::String(directory)) => roots.push(root.join(directory)),
+            Some(serde_json::Value::Array(directories)) => {
+                for directory in directories {
+                    let Some(directory) = directory.as_str() else {
+                        return Err(format!(
+                            "Kimi Code plugin agents must contain strings: {}",
+                            manifest_path.display()
+                        ));
+                    };
+                    roots.push(root.join(directory));
+                }
+            }
+            Some(_) => {
+                return Err(format!(
+                    "Kimi Code plugin agents must be a string or array: {}",
+                    manifest_path.display()
+                ));
+            }
+        }
+    }
+    Ok(roots)
+}
+
+fn kimi_builtin_agents() -> Vec<LocalAgent> {
     [
-        ("default", "Kimi Code 内建默认 Agent"),
-        ("okabe", "Kimi Code 内建实验 Agent"),
+        ("agent", "Kimi Code 内建主 Agent"),
+        ("coder", "Kimi Code 内建编码 SubAgent"),
+        ("explore", "Kimi Code 内建探索 SubAgent"),
+        ("plan", "Kimi Code 内建规划 SubAgent"),
     ]
     .into_iter()
     .map(|(agent_id, description)| LocalAgent {
@@ -174,6 +435,178 @@ pub fn discover_kimi_agents() -> Vec<LocalAgent> {
     .collect()
 }
 
+pub(crate) fn is_kimi_builtin_agent(agent_id: &str) -> bool {
+    matches!(agent_id, "agent" | "coder" | "explore" | "plan")
+}
+
+fn discover_kimi_agents_in(directory: &Path) -> Result<Vec<KimiAgentDefinition>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", directory.display())),
+    };
+    let mut pending = entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| format!("could not read Kimi Code Agent entry: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut agents = Vec::new();
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') || name == "node_modules" {
+                continue;
+            }
+            let children = fs::read_dir(&path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            for child in children {
+                pending.push(
+                    child
+                        .map_err(|error| format!("could not read Kimi Code Agent entry: {error}"))?
+                        .path(),
+                );
+            }
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let frontmatter = contents
+            .strip_prefix("---\n")
+            .and_then(|contents| contents.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+            .ok_or_else(|| {
+                format!(
+                    "Kimi Code Agent must contain YAML frontmatter: {}",
+                    path.display()
+                )
+            })?;
+        let value = serde_yaml::from_str::<serde_yaml::Value>(frontmatter).map_err(|error| {
+            format!(
+                "invalid Kimi Code Agent frontmatter {}: {error}",
+                path.display()
+            )
+        })?;
+        let object = value.as_mapping().ok_or_else(|| {
+            format!(
+                "Kimi Code Agent frontmatter must be a mapping: {}",
+                path.display()
+            )
+        })?;
+        let name = object
+            .get(serde_yaml::Value::String("name".into()))
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_string)
+            });
+        let description = object
+            .get(serde_yaml::Value::String("description".into()))
+            .and_then(serde_yaml::Value::as_str);
+        let name = name
+            .ok_or_else(|| format!("Kimi Code Agent has no valid file name: {}", path.display()))?;
+        let description = description
+            .filter(|description| !description.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "Kimi Code Agent description is required: {}",
+                    path.display()
+                )
+            })?;
+        if !valid_kimi_agent_name(&name) {
+            return Err(format!(
+                "invalid Kimi Code Agent name `{name}`: {}",
+                path.display()
+            ));
+        }
+        let overrides_builtin = match object.get(serde_yaml::Value::String("override".into())) {
+            Some(value) => value.as_bool().ok_or_else(|| {
+                format!(
+                    "Kimi Code Agent override must be boolean: {}",
+                    path.display()
+                )
+            })?,
+            None => false,
+        };
+        agents.push(KimiAgentDefinition {
+            agent: LocalAgent {
+                runtime: "kimi_code",
+                agent_id: name,
+                description: description.to_string(),
+            },
+            path: Some(path),
+            overrides_builtin,
+        });
+    }
+    agents.sort_by(|left, right| left.agent.agent_id.cmp(&right.agent.agent_id));
+    Ok(agents)
+}
+
+fn kimi_extra_agent_roots(
+    kimi_root: &Path,
+    home: &Path,
+    project_root: Option<&Path>,
+) -> Result<Vec<PathBuf>, String> {
+    let config = kimi_root.join("config.toml");
+    let contents = match fs::read_to_string(&config) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", config.display())),
+    };
+    let document = contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("invalid Kimi Code TOML {}: {error}", config.display()))?;
+    let Some(directories) = document.get("extra_agent_dirs").and_then(Item::as_array) else {
+        return Ok(Vec::new());
+    };
+    let base = project_root.unwrap_or(kimi_root);
+    directories
+        .iter()
+        .map(|item| {
+            let directory = item.as_str().ok_or_else(|| {
+                format!(
+                    "Kimi Code extra_agent_dirs must contain strings: {}",
+                    config.display()
+                )
+            })?;
+            if directory == "~" {
+                Ok(home.to_path_buf())
+            } else if let Some(relative) = directory.strip_prefix("~/") {
+                Ok(home.join(relative))
+            } else {
+                let path = PathBuf::from(directory);
+                Ok(if path.is_absolute() {
+                    path
+                } else {
+                    base.join(path)
+                })
+            }
+        })
+        .collect()
+}
+
+fn nearest_project_root(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find(|ancestor| ancestor.join(".git").exists())
+        .unwrap_or(path)
+        .to_path_buf()
+}
+
+fn valid_kimi_agent_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 pub fn discover_opencode_agents_for_project(
     config_root: &Path,
     project_root: &Path,
@@ -182,8 +615,16 @@ pub fn discover_opencode_agents_for_project(
         .into_iter()
         .map(|agent| (agent.agent_id.clone(), agent))
         .collect::<BTreeMap<_, _>>();
+    for config_name in ["opencode.json", "opencode.jsonc"] {
+        for (agent, mode, _) in discover_opencode_agents_in_config(&project_root.join(config_name))?
+        {
+            if matches!(mode, OpenCodeAgentMode::Subagent | OpenCodeAgentMode::All) {
+                agents.insert(agent.agent_id.clone(), agent);
+            }
+        }
+    }
     for (agent, mode, _) in discover_opencode_agents_in(&project_root.join(".opencode/agents"))? {
-        if mode != OpenCodeAgentMode::Subagent {
+        if matches!(mode, OpenCodeAgentMode::Subagent | OpenCodeAgentMode::All) {
             agents.insert(agent.agent_id.clone(), agent);
         }
     }
@@ -200,15 +641,35 @@ pub(crate) fn resolve_opencode_agent(
         "general" | "explore" | "scout" => Some(OpenCodeAgentMode::Subagent),
         _ => None,
     };
-    for directory in [
-        project_root.join(".opencode/agents"),
-        config_root.join("agents"),
+    for (directory, configs) in [
+        (
+            project_root.join(".opencode/agents"),
+            [
+                project_root.join("opencode.json"),
+                project_root.join("opencode.jsonc"),
+            ],
+        ),
+        (
+            config_root.join("agents"),
+            [
+                config_root.join("opencode.json"),
+                config_root.join("opencode.jsonc"),
+            ],
+        ),
     ] {
         if let Some((_, mode, path)) = discover_opencode_agents_in(&directory)?
             .into_iter()
             .find(|(agent, _, _)| agent.agent_id == agent_id)
         {
             return Ok(Some((mode, Some(path))));
+        }
+        for config in configs.into_iter().rev() {
+            if let Some((_, mode, path)) = discover_opencode_agents_in_config(&config)?
+                .into_iter()
+                .find(|(agent, _, _)| agent.agent_id == agent_id)
+            {
+                return Ok(Some((mode, Some(path))));
+            }
         }
     }
     Ok(builtin.map(|mode| (mode, None)))
@@ -293,10 +754,101 @@ fn codex_builtin_agents() -> Vec<LocalAgent> {
     .collect()
 }
 
+fn gemini_builtin_agents() -> Vec<LocalAgent> {
+    [
+        ("codebase_investigator", "Gemini CLI 内建代码库调查 Agent"),
+        ("cli_help", "Gemini CLI 内建帮助 Agent"),
+        ("generalist", "Gemini CLI 内建通用 Agent"),
+    ]
+    .into_iter()
+    .map(|(agent_id, description)| LocalAgent {
+        runtime: "gemini",
+        agent_id: agent_id.into(),
+        description: description.into(),
+    })
+    .collect()
+}
+
+fn discover_gemini_agents_in(directory: &Path) -> Result<Vec<LocalAgent>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", directory.display())),
+    };
+    let mut paths = entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| format!("could not read Gemini Agent entry: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    let mut agents = Vec::new();
+    let mut names = BTreeMap::<String, PathBuf>::new();
+    for path in paths {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let frontmatter = contents
+            .strip_prefix("---\n")
+            .and_then(|contents| contents.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+            .ok_or_else(|| format!("invalid Gemini Agent frontmatter: {}", path.display()))?;
+        let value: serde_yaml::Value = serde_yaml::from_str(frontmatter).map_err(|error| {
+            format!(
+                "invalid Gemini Agent frontmatter {}: {error}",
+                path.display()
+            )
+        })?;
+        let object = value
+            .as_mapping()
+            .ok_or_else(|| format!("invalid Gemini Agent frontmatter: {}", path.display()))?;
+        let name = object
+            .get(serde_yaml::Value::String("name".into()))
+            .and_then(serde_yaml::Value::as_str)
+            .ok_or_else(|| format!("Gemini Agent name is required: {}", path.display()))?;
+        if name.is_empty()
+            || !name.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            })
+        {
+            return Err(format!(
+                "invalid Gemini Agent name in {}: {name}",
+                path.display()
+            ));
+        }
+        let description = object
+            .get(serde_yaml::Value::String("description".into()))
+            .and_then(serde_yaml::Value::as_str)
+            .filter(|description| {
+                !description.trim().is_empty()
+                    && description.trim() == *description
+                    && !description.chars().any(char::is_control)
+            })
+            .ok_or_else(|| format!("Gemini Agent description is invalid: {}", path.display()))?;
+        if let Some(first) = names.insert(name.to_string(), path.clone()) {
+            return Err(format!(
+                "duplicate Gemini Agent name: {name} ({} and {})",
+                first.display(),
+                path.display()
+            ));
+        }
+        agents.push(LocalAgent {
+            runtime: "gemini",
+            agent_id: name.into(),
+            description: description.into(),
+        });
+    }
+    Ok(agents)
+}
+
 fn opencode_builtin_agents() -> Vec<LocalAgent> {
     [
-        ("build", "OpenCode 内建构建 Agent"),
-        ("plan", "OpenCode 内建计划 Agent"),
+        ("general", "OpenCode 内建通用 SubAgent"),
+        ("explore", "OpenCode 内建探索 SubAgent"),
+        ("scout", "OpenCode 内建调研 SubAgent"),
     ]
     .into_iter()
     .map(|(agent_id, description)| LocalAgent {
@@ -305,6 +857,66 @@ fn opencode_builtin_agents() -> Vec<LocalAgent> {
         description: description.into(),
     })
     .collect()
+}
+
+fn discover_opencode_agents_in_config(
+    path: &Path,
+) -> Result<Vec<(LocalAgent, OpenCodeAgentMode, PathBuf)>, String> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+    };
+    let value = json5::from_str::<serde_json::Value>(&contents)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
+    let Some(configured) = value.get("agent") else {
+        return Ok(Vec::new());
+    };
+    let configured = configured.as_object().ok_or_else(|| {
+        format!(
+            "OpenCode agent configuration must be an object: {}",
+            path.display()
+        )
+    })?;
+    let mut agents = Vec::new();
+    for (agent_id, definition) in configured {
+        let Some(definition) = definition.as_object() else {
+            continue;
+        };
+        if definition
+            .get("disable")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            continue;
+        }
+        let Some(description) = definition
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .filter(|description| !description.trim().is_empty())
+        else {
+            continue;
+        };
+        let Some(mode) =
+            opencode_agent_mode(definition.get("mode").and_then(serde_json::Value::as_str))
+        else {
+            continue;
+        };
+        if !valid_opencode_agent_name(agent_id) {
+            continue;
+        }
+        agents.push((
+            LocalAgent {
+                runtime: "opencode",
+                agent_id: agent_id.clone(),
+                description: description.to_string(),
+            },
+            mode,
+            path.to_path_buf(),
+        ));
+    }
+    agents.sort_by(|left, right| left.0.agent_id.cmp(&right.0.agent_id));
+    Ok(agents)
 }
 
 fn discover_opencode_agents_in(
@@ -355,6 +967,13 @@ fn discover_opencode_agents_in(
         let Some(object) = value.as_mapping() else {
             continue;
         };
+        if object
+            .get(serde_yaml::Value::String("disable".into()))
+            .and_then(serde_yaml::Value::as_bool)
+            == Some(true)
+        {
+            continue;
+        }
         let Some(description) = object
             .get(serde_yaml::Value::String("description".into()))
             .and_then(serde_yaml::Value::as_str)
@@ -362,15 +981,12 @@ fn discover_opencode_agents_in(
         else {
             continue;
         };
-        let mode = match object
-            .get(serde_yaml::Value::String("mode".into()))
-            .and_then(serde_yaml::Value::as_str)
-            .unwrap_or("all")
-        {
-            "primary" => OpenCodeAgentMode::Primary,
-            "subagent" => OpenCodeAgentMode::Subagent,
-            "all" => OpenCodeAgentMode::All,
-            _ => continue,
+        let Some(mode) = opencode_agent_mode(
+            object
+                .get(serde_yaml::Value::String("mode".into()))
+                .and_then(serde_yaml::Value::as_str),
+        ) else {
+            continue;
         };
         let Ok(relative) = path.strip_prefix(directory) else {
             continue;
@@ -394,6 +1010,15 @@ fn discover_opencode_agents_in(
     }
     agents.sort_by(|left, right| left.0.agent_id.cmp(&right.0.agent_id));
     Ok(agents)
+}
+
+fn opencode_agent_mode(value: Option<&str>) -> Option<OpenCodeAgentMode> {
+    match value.unwrap_or("all") {
+        "primary" => Some(OpenCodeAgentMode::Primary),
+        "subagent" => Some(OpenCodeAgentMode::Subagent),
+        "all" => Some(OpenCodeAgentMode::All),
+        _ => None,
+    }
 }
 
 fn valid_opencode_agent_name(value: &str) -> bool {
@@ -738,78 +1363,109 @@ fn read_plugin_settings(settings_path: &Path) -> Result<BTreeMap<String, bool>, 
 #[tauri::command]
 pub async fn discover_local_agents(
     project_root: Option<String>,
-) -> Result<Vec<LocalAgent>, String> {
+) -> Result<LocalAgentDiscovery, String> {
     let home = dirs::home_dir().ok_or_else(|| "home directory is unavailable".to_string())?;
     let claude_root = home.join(".claude");
     let project_root = project_root
         .filter(|project_root| !project_root.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    let discovered = match &project_root {
-        Some(project_root) => discover_claude_code_agents_for_project(&claude_root, project_root)?,
-        None => discover_claude_code_agents(&claude_root)?,
-    };
-    let mut agents = BTreeMap::new();
-    if let Some(runtime) =
-        crate::adapters::claude_code::detect_claude_cli().map_err(|error| error.to_string())?
-    {
-        for agent in discover_claude_builtin_agents(&runtime.path)? {
-            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+    let claude = (|| {
+        let mut agents = Vec::new();
+        if let Some(runtime) =
+            crate::adapters::claude_code::detect_claude_cli().map_err(|error| error.to_string())?
+        {
+            agents.extend(discover_claude_builtin_agents(&runtime.path)?);
         }
-    }
-    for agent in discovered {
-        agents.insert((agent.runtime, agent.agent_id.clone()), agent);
-    }
-    if crate::adapters::codex::detect_codex_cli()
-        .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        let codex_root = home.join(".codex");
-        let codex_agents = match &project_root {
-            Some(project_root) => discover_codex_agents_for_project(&codex_root, project_root)?,
-            None => discover_codex_agents(&codex_root)?,
-        };
-        for agent in codex_agents {
-            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
-        }
-    }
-    if crate::adapters::pi::detect_pi_cli()
-        .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        let pi_root = home.join(".pi/agent");
-        let pi_agents = match &project_root {
-            Some(project_root) => discover_pi_agents_for_project(&pi_root, project_root)?,
-            None => discover_pi_agents(&pi_root)?,
-        };
-        for agent in pi_agents {
-            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
-        }
-    }
-    if crate::adapters::opencode::detect_opencode_cli()
-        .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        let opencode_root = home.join(".config/opencode");
-        let opencode_agents = match &project_root {
+        agents.extend(match &project_root {
             Some(project_root) => {
-                discover_opencode_agents_for_project(&opencode_root, project_root)?
+                discover_claude_code_agents_for_project(&claude_root, project_root)?
             }
-            None => discover_opencode_agents(&opencode_root)?,
-        };
-        for agent in opencode_agents {
-            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+            None => discover_claude_code_agents(&claude_root)?,
+        });
+        Ok(agents)
+    })();
+
+    let codex = (|| {
+        if crate::adapters::codex::detect_codex_cli()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(Vec::new());
         }
-    }
-    if crate::adapters::kimi_code::detect_kimi_code_cli()
-        .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        for agent in discover_kimi_agents() {
-            agents.insert((agent.runtime, agent.agent_id.clone()), agent);
+        let root = home.join(".codex");
+        match &project_root {
+            Some(project_root) => discover_codex_agents_for_project(&root, project_root),
+            None => discover_codex_agents(&root),
         }
-    }
-    Ok(agents.into_values().collect())
+    })();
+
+    let gemini = (|| {
+        if crate::adapters::gemini::detect_gemini_cli()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(Vec::new());
+        }
+        let root = home.join(".gemini");
+        match &project_root {
+            Some(project_root) => discover_gemini_agents_for_project(&root, project_root),
+            None => discover_gemini_agents(&root),
+        }
+    })();
+
+    let pi = (|| {
+        if crate::adapters::pi::detect_pi_cli()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(Vec::new());
+        }
+        let root = home.join(".pi/agent");
+        match &project_root {
+            Some(project_root) => discover_pi_agents_for_project(&root, project_root),
+            None => discover_pi_agents(&root),
+        }
+    })();
+
+    let opencode = (|| {
+        if crate::adapters::opencode::detect_opencode_cli()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(Vec::new());
+        }
+        let root = home.join(".config/opencode");
+        match &project_root {
+            Some(project_root) => discover_opencode_agents_for_project(&root, project_root),
+            None => discover_opencode_agents(&root),
+        }
+    })();
+
+    let kimi = (|| {
+        if crate::adapters::kimi_code::detect_kimi_code_cli()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(Vec::new());
+        }
+        let root = std::env::var_os("KIMI_CODE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".kimi-code"));
+        match &project_root {
+            Some(project_root) => discover_kimi_agents_for_project(&root, &home, project_root),
+            None => discover_kimi_agents(&root, &home),
+        }
+    })();
+
+    Ok(LocalAgentDiscovery::from_runtime_results([
+        ("claude_code", claude),
+        ("codex", codex),
+        ("gemini", gemini),
+        ("pi", pi),
+        ("opencode", opencode),
+        ("kimi_code", kimi),
+    ]))
 }
 
 fn parse_claude_agent(contents: &str) -> Option<LocalAgent> {

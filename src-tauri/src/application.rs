@@ -1,15 +1,15 @@
-use crate::adapters::claude_code::MODEL_SLOT_IDS;
+use crate::adapters::claude_code::{MODEL_SLOT_IDS, is_claude_native_model};
 use crate::adapters::codex::{
     CodexConfiguredModel, CodexModelSelection, CodexProviderRequest, CodexRequest,
 };
 use crate::configuration::{
     AgentRecord, CodexAgentModelRecord, ConfigurationDocuments, ConfigurationFiles,
-    ExtensionSubAgentRecord, MainRecord, ModelRecord, ProviderRecord,
+    ExtensionSubAgentRecord, MainRecord, ModelRecord, ProviderProtocolEndpoint, ProviderRecord,
 };
 use crate::core::model::{NativeProtocol, ProtocolCapability};
 use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use crate::gateway::GatewayStatus;
-use crate::model_discovery::{self, DiscoveredModel};
+use crate::model_discovery;
 use crate::usage_query::{UsageQueryCredentials, UsageQueryPreset, UsageSnapshot};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -20,7 +20,6 @@ use tauri::State;
 
 const CLAUDE_CODE_AGENT: &str = "claude_code";
 const CLAUDE_CODE_MAIN_NATIVE_SLOT: &str = "main";
-const CLAUDE_CODE_NATIVE_MODELS: &[&str] = &["default", "sonnet", "opus", "fable", "haiku"];
 const CLAUDE_DESKTOP_AGENT: &str = "claude_desktop";
 const PI_AGENT: &str = "pi";
 const CODEX_AGENT: &str = "codex";
@@ -94,6 +93,16 @@ pub struct PublicProvider {
     pub enabled: bool,
     pub credential_set: bool,
     pub models_url: Option<String>,
+    pub protocol_endpoints: Vec<PublicProviderProtocolEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicProviderProtocolEndpoint {
+    pub protocol: NativeProtocol,
+    pub endpoint: String,
+    pub endpoint_mode: EndpointMode,
+    pub api_key_placement: ApiKeyPlacement,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -106,6 +115,7 @@ pub struct PublicModel {
     pub capabilities: Vec<String>,
     pub protocol_capabilities: Vec<ProtocolCapability>,
     pub native_protocols: Vec<NativeProtocol>,
+    pub unsupported_native_protocols: Vec<NativeProtocol>,
     pub route_alias: String,
 }
 
@@ -144,6 +154,14 @@ pub struct ModelInput {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub protocol_capabilities: Vec<ProtocolCapability>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelWithNativeProtocolsInput {
+    #[serde(flatten)]
+    pub model: ModelInput,
+    pub native_protocols: Vec<NativeProtocol>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -297,6 +315,7 @@ impl ControlPlaneService {
             api_key_placement: input.api_key_placement,
             api_key,
             models_url: input.models_url,
+            protocol_endpoints: Vec::new(),
         };
         match existing {
             Some(index) => documents.config.providers[index] = record,
@@ -345,6 +364,7 @@ impl ControlPlaneService {
             (Some(value), false) => value,
             (None, false) => documents.config.providers[index].api_key.clone(),
         };
+        let provider_id = input.id.clone();
         documents.config.providers[index] = ProviderRecord {
             id: input.id,
             name: input.name,
@@ -355,45 +375,73 @@ impl ControlPlaneService {
             api_key_placement: input.api_key_placement,
             api_key,
             models_url: input.models_url,
+            protocol_endpoints: Vec::new(),
         };
+        for model in documents
+            .models
+            .models
+            .iter_mut()
+            .filter(|model| model.provider_id == provider_id)
+        {
+            model.native_protocols = None;
+            model.unsupported_native_protocols.clear();
+        }
         self.save_and_return(documents)
     }
 
-    pub async fn discover_provider_models(
+    pub async fn sync_provider_models(
         &self,
         provider_id: &str,
-    ) -> Result<Vec<DiscoveredModel>, String> {
-        let documents = self.documents()?;
-        let provider = documents
+    ) -> Result<ControlPlaneState, String> {
+        let before = self.documents()?;
+        let provider = before
             .config
             .providers
             .iter()
             .find(|provider| provider.id == provider_id)
+            .cloned()
             .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
-        model_discovery::discover(provider).await
-    }
-
-    pub fn import_provider_models(
-        &self,
-        provider_id: &str,
-        discovered: Vec<DiscoveredModel>,
-    ) -> Result<ControlPlaneState, String> {
+        let discovered = model_discovery::discover(&provider).await?;
         if discovered.is_empty() {
-            return Err("select at least one model to import".to_string());
+            return Err("provider model discovery returned no models".to_string());
         }
+        let probes = model_discovery::probe_protocols(&provider, &discovered).await?;
+
+        // Network work happens outside the atomic file write. Refuse to apply
+        // stale probe facts if the Provider changed while synchronization ran.
         let mut documents = self.documents()?;
-        if !documents
+        let current_provider = documents
             .config
             .providers
-            .iter()
-            .any(|provider| provider.id == provider_id)
-        {
-            return Err(format!("unknown provider: {provider_id}"));
+            .iter_mut()
+            .find(|item| item.id == provider_id)
+            .ok_or_else(|| format!("provider {provider_id} was deleted during model sync"))?;
+        if *current_provider != provider {
+            return Err(format!(
+                "provider {provider_id} changed during model sync; run synchronization again"
+            ));
         }
+        current_provider.protocol_endpoints = probes.provider_endpoints.clone();
         for model in discovered {
-            if documents.models.models.iter().any(|existing| {
+            let supported = probes
+                .models
+                .get(&model.id)
+                .map(|probe| probe.supported.clone())
+                .unwrap_or_default();
+            let unsupported = [
+                NativeProtocol::AnthropicMessages,
+                NativeProtocol::OpenAiResponses,
+                NativeProtocol::OpenAiChat,
+                NativeProtocol::GeminiNative,
+            ]
+            .into_iter()
+            .filter(|protocol| !supported.contains(protocol))
+            .collect::<Vec<_>>();
+            if let Some(existing) = documents.models.models.iter_mut().find(|existing| {
                 existing.provider_id == provider_id && existing.upstream_id == model.id
             }) {
+                existing.native_protocols = Some(supported);
+                existing.unsupported_native_protocols = unsupported;
                 continue;
             }
             let id = model_slug(&model.id);
@@ -403,12 +451,7 @@ impl ControlPlaneService {
                     model.id
                 ));
             }
-            if documents
-                .models
-                .models
-                .iter()
-                .any(|existing| existing.id == id)
-            {
+            if documents.models.models.iter().any(|item| item.id == id) {
                 return Err(format!("model slug collision: {id}"));
             }
             let protocol_capabilities = crate::presets::catalog()
@@ -418,7 +461,6 @@ impl ControlPlaneService {
                 .find(|preset| preset.id == provider_id)
                 .and_then(|preset| preset.model_protocol_capabilities.get(&model.id).cloned())
                 .unwrap_or_default();
-            let native_protocols = import_native_protocols(provider_id, &model)?;
             documents.models.models.push(ModelRecord {
                 id,
                 provider_id: provider_id.to_string(),
@@ -426,7 +468,8 @@ impl ControlPlaneService {
                 display_name: model.id,
                 capabilities: Vec::new(),
                 protocol_capabilities,
-                native_protocols: Some(native_protocols),
+                native_protocols: Some(supported),
+                unsupported_native_protocols: unsupported,
             });
         }
         documents
@@ -438,6 +481,18 @@ impl ControlPlaneService {
 
     pub fn save_model(&self, input: ModelInput) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
+        let default_protocol = documents
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.id == input.provider_id)
+            .map(|provider| native_protocol(provider.protocol))
+            .ok_or_else(|| format!("unknown provider: {}", input.provider_id))?;
+        ensure_provider_protocol_endpoints(
+            &mut documents,
+            &input.provider_id,
+            &[default_protocol],
+        )?;
         let record = ModelRecord {
             id: input.id,
             provider_id: input.provider_id,
@@ -445,7 +500,41 @@ impl ControlPlaneService {
             display_name: input.name,
             capabilities: input.capabilities,
             protocol_capabilities: input.protocol_capabilities,
-            native_protocols: None,
+            native_protocols: Some(vec![default_protocol]),
+            unsupported_native_protocols: Vec::new(),
+        };
+        if documents
+            .models
+            .models
+            .iter()
+            .any(|model| model.id == record.id)
+        {
+            return Err(format!("duplicate model id: {}", record.id));
+        }
+        documents.models.models.push(record);
+        self.save_and_return(documents)
+    }
+
+    pub fn save_model_with_native_protocols(
+        &self,
+        input: ModelWithNativeProtocolsInput,
+    ) -> Result<ControlPlaneState, String> {
+        let mut documents = self.documents()?;
+        validate_native_protocols(&input.model.id, &input.native_protocols)?;
+        ensure_provider_protocol_endpoints(
+            &mut documents,
+            &input.model.provider_id,
+            &input.native_protocols,
+        )?;
+        let record = ModelRecord {
+            id: input.model.id,
+            provider_id: input.model.provider_id,
+            upstream_id: input.model.upstream_id,
+            display_name: input.model.name,
+            capabilities: input.model.capabilities,
+            protocol_capabilities: input.model.protocol_capabilities,
+            native_protocols: Some(input.native_protocols),
+            unsupported_native_protocols: Vec::new(),
         };
         if documents
             .models
@@ -468,6 +557,9 @@ impl ControlPlaneService {
             .position(|model| model.id == input.id)
             .ok_or_else(|| format!("unknown model: {}", input.id))?;
         let native_protocols = documents.models.models[index].native_protocols.clone();
+        let unsupported_native_protocols = documents.models.models[index]
+            .unsupported_native_protocols
+            .clone();
         documents.models.models[index] = ModelRecord {
             id: input.id,
             provider_id: input.provider_id,
@@ -476,6 +568,37 @@ impl ControlPlaneService {
             capabilities: input.capabilities,
             protocol_capabilities: input.protocol_capabilities,
             native_protocols,
+            unsupported_native_protocols,
+        };
+        self.save_and_return(documents)
+    }
+
+    pub fn update_model_with_native_protocols(
+        &self,
+        input: ModelWithNativeProtocolsInput,
+    ) -> Result<ControlPlaneState, String> {
+        let mut documents = self.documents()?;
+        validate_native_protocols(&input.model.id, &input.native_protocols)?;
+        ensure_provider_protocol_endpoints(
+            &mut documents,
+            &input.model.provider_id,
+            &input.native_protocols,
+        )?;
+        let index = documents
+            .models
+            .models
+            .iter()
+            .position(|model| model.id == input.model.id)
+            .ok_or_else(|| format!("unknown model: {}", input.model.id))?;
+        documents.models.models[index] = ModelRecord {
+            id: input.model.id,
+            provider_id: input.model.provider_id,
+            upstream_id: input.model.upstream_id,
+            display_name: input.model.name,
+            capabilities: input.model.capabilities,
+            protocol_capabilities: input.model.protocol_capabilities,
+            native_protocols: Some(input.native_protocols),
+            unsupported_native_protocols: Vec::new(),
         };
         self.save_and_return(documents)
     }
@@ -490,9 +613,16 @@ impl ControlPlaneService {
             return Err(format!("unknown model: {id}"));
         }
         protocols.sort();
-        if protocols.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(format!("duplicate native protocol for model: {id}"));
-        }
+        validate_native_protocols(id, &protocols)?;
+        let provider_id = documents
+            .models
+            .models
+            .iter()
+            .find(|model| model.id == id)
+            .expect("validated model")
+            .provider_id
+            .clone();
+        ensure_provider_protocol_endpoints(&mut documents, &provider_id, &protocols)?;
         documents
             .models
             .models
@@ -549,7 +679,7 @@ impl ControlPlaneService {
             return Err(format!("unsupported Claude Code native model slot: {slot}"));
         }
         if let Some(model) = model.as_deref() {
-            if !CLAUDE_CODE_NATIVE_MODELS.contains(&model) {
+            if !is_claude_native_model(model) {
                 return Err(format!("unsupported Claude Code native model: {model}"));
             }
         }
@@ -1157,22 +1287,6 @@ impl ControlPlaneService {
         gateway_base_url: &str,
         id: &str,
     ) -> Result<ConnectionResult, String> {
-        let documents = self.documents()?;
-        let private_model = documents
-            .models
-            .models
-            .iter()
-            .find(|model| model.id == id)
-            .ok_or_else(|| format!("unknown model: {id}"))?;
-        let private_provider = documents
-            .config
-            .providers
-            .iter()
-            .find(|provider| provider.id == private_model.provider_id)
-            .ok_or_else(|| format!("model {id} references unknown provider"))?;
-        if private_provider.protocol == Protocol::GeminiNative {
-            return test_gemini_connection(private_provider, private_model).await;
-        }
         let state = self.state()?;
         let model = state
             .models
@@ -1261,76 +1375,6 @@ impl ControlPlaneService {
     }
 }
 
-async fn test_gemini_connection(
-    provider: &ProviderRecord,
-    model: &ModelRecord,
-) -> Result<ConnectionResult, String> {
-    if !provider.enabled {
-        return Err(format!(
-            "model {} uses disabled provider {}",
-            model.id, provider.id
-        ));
-    }
-    if provider.endpoint_mode != EndpointMode::BaseUrl
-        || provider.api_key_placement != ApiKeyPlacement::XApiKey
-    {
-        return Err(format!(
-            "Gemini Native connection requires an API-key Base URL provider: {}",
-            provider.id
-        ));
-    }
-    let base = provider.endpoint.trim_end_matches('/');
-    let prefix = if base.ends_with("/v1beta") {
-        base.to_string()
-    } else {
-        format!("{base}/v1beta")
-    };
-    let endpoint = format!("{prefix}/models/{}:generateContent", model.upstream_id);
-    let response = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("could not create Gemini connection test client: {error}"))?
-        .post(&endpoint)
-        .header("x-goog-api-key", &provider.api_key)
-        .json(&json!({
-            "contents": [{"role": "user", "parts": [{"text": "Reply with OK."}]}],
-            "generationConfig": {"maxOutputTokens": 16}
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("Gemini model connection failed: {error}"))?;
-    let status = response.status();
-    let body = response
-        .json::<Value>()
-        .await
-        .map_err(|_| "Gemini model connection returned invalid JSON".to_string())?;
-    if !status.is_success() {
-        let message = body
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .unwrap_or("upstream request failed")
-            .replace(['\r', '\n'], " ");
-        return Err(format!(
-            "Gemini model connection returned HTTP {}: {}",
-            status.as_u16(),
-            message.chars().take(300).collect::<String>()
-        ));
-    }
-    if body
-        .get("candidates")
-        .and_then(Value::as_array)
-        .is_none_or(Vec::is_empty)
-    {
-        return Err("Gemini model connection returned no candidates".into());
-    }
-    Ok(ConnectionResult {
-        model_id: model.id.clone(),
-        provider_id: provider.id.clone(),
-        upstream_id: model.upstream_id.clone(),
-    })
-}
-
 fn model_slug(value: &str) -> String {
     let mut slug = String::new();
     let mut needs_separator = false;
@@ -1348,54 +1392,68 @@ fn model_slug(value: &str) -> String {
     slug
 }
 
-fn import_native_protocols(
-    provider_id: &str,
-    model: &DiscoveredModel,
-) -> Result<Vec<NativeProtocol>, String> {
-    if !model.native_protocols.is_empty() {
-        let mut protocols = model.native_protocols.clone();
-        protocols.sort();
-        if protocols.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(format!(
-                "duplicate native protocol metadata for model: {}",
-                model.id
-            ));
-        }
-        return Ok(protocols);
+fn native_protocol(protocol: Protocol) -> NativeProtocol {
+    match protocol {
+        Protocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
+        Protocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
+        Protocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
+        Protocol::GeminiNative => NativeProtocol::GeminiNative,
     }
-    // Pinned cc-switch 413c09e documents three different DeepSeek surfaces:
-    // Codex uses native Responses for Flash, Claude uses /anthropic for both
-    // models, and OpenCode uses the OpenAI-compatible Chat API. That revision
-    // also warns that Pro's Responses integration may reject requests. Keep
-    // these model facts separate from the Provider default.
-    if provider_id == "deepseek" {
-        return Ok(match model.id.as_str() {
-            "deepseek-v4-flash" => vec![
-                NativeProtocol::AnthropicMessages,
-                NativeProtocol::OpenAiResponses,
-                NativeProtocol::OpenAiChat,
-            ],
-            "deepseek-v4-pro" => vec![
-                NativeProtocol::AnthropicMessages,
-                NativeProtocol::OpenAiChat,
-            ],
-            _ => Vec::new(),
+}
+
+fn ensure_provider_protocol_endpoints(
+    documents: &mut ConfigurationDocuments,
+    provider_id: &str,
+    protocols: &[NativeProtocol],
+) -> Result<(), String> {
+    let provider = documents
+        .config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
+    for protocol in protocols {
+        if provider
+            .protocol_endpoints
+            .iter()
+            .any(|entry| entry.protocol == *protocol)
+        {
+            continue;
+        }
+        let mut endpoint = provider.endpoint.clone();
+        if provider_id == "deepseek" && *protocol == NativeProtocol::AnthropicMessages {
+            let mut url = url::Url::parse(&endpoint)
+                .map_err(|_| format!("provider {provider_id} has an invalid endpoint"))?;
+            if url.host_str() == Some("api.deepseek.com") {
+                url.set_path("/anthropic");
+                endpoint = url.to_string().trim_end_matches('/').to_string();
+            }
+        }
+        provider.protocol_endpoints.push(ProviderProtocolEndpoint {
+            protocol: *protocol,
+            endpoint,
+            endpoint_mode: provider.endpoint_mode,
+            api_key_placement: provider.api_key_placement,
         });
     }
-    let preset = crate::presets::catalog()
-        .map_err(|_| "built-in Provider catalog is invalid".to_string())?
-        .presets
-        .into_iter()
-        .find(|preset| preset.id == provider_id);
-    let Some(preset) = preset.filter(|preset| preset.suggested_models.contains(&model.id)) else {
-        return Ok(Vec::new());
-    };
-    Ok(vec![match preset.protocol {
-        crate::presets::PresetProtocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
-        crate::presets::PresetProtocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
-        crate::presets::PresetProtocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
-        crate::presets::PresetProtocol::GeminiNative => NativeProtocol::GeminiNative,
-    }])
+    provider
+        .protocol_endpoints
+        .sort_by_key(|entry| entry.protocol);
+    Ok(())
+}
+
+fn validate_native_protocols(id: &str, protocols: &[NativeProtocol]) -> Result<(), String> {
+    if protocols.is_empty() {
+        return Err(format!(
+            "model {id} requires at least one verified native protocol"
+        ));
+    }
+    let mut sorted = protocols.to_vec();
+    sorted.sort();
+    if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(format!("duplicate native protocol for model: {id}"));
+    }
+    Ok(())
 }
 
 fn claude_agent(documents: &ConfigurationDocuments) -> Result<&AgentRecord, String> {
@@ -1636,15 +1694,6 @@ fn validate_codex_registry_model(
             provider.id
         ));
     }
-    if !matches!(
-        provider.protocol,
-        Protocol::AnthropicMessages | Protocol::OpenAiResponses | Protocol::OpenAiChatCompletions
-    ) {
-        return Err(format!(
-            "Codex local routing does not support provider protocol {:?}: {}",
-            provider.protocol, provider.id
-        ));
-    }
     Ok(())
 }
 
@@ -1718,22 +1767,13 @@ fn validate_client_model(
             provider.id
         ));
     }
-    let compatible = match client_id {
-        GEMINI_AGENT => {
-            provider.protocol == Protocol::GeminiNative
-                && provider.endpoint_mode == EndpointMode::BaseUrl
-                && provider.api_key_placement == ApiKeyPlacement::XApiKey
-        }
-        GROK_BUILD_AGENT => {
-            provider.protocol == Protocol::OpenAiResponses
-                && provider.endpoint_mode == EndpointMode::BaseUrl
-                && provider.api_key_placement == ApiKeyPlacement::Bearer
-        }
-        OPENCODE_AGENT | HERMES_AGENT | KIMI_CODE_AGENT => {
-            provider.protocol != Protocol::GeminiNative
-        }
-        _ => false,
-    };
+    // Every managed client is pointed at GrillForge's protocol-specific local
+    // ingress. Provider protocol compatibility is therefore resolved per
+    // model by the gateway, not by rejecting the selection here.
+    let compatible = matches!(
+        client_id,
+        GEMINI_AGENT | GROK_BUILD_AGENT | OPENCODE_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
+    );
     if compatible {
         Ok(())
     } else {
@@ -1800,6 +1840,16 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
                 enabled: provider.enabled,
                 credential_set: !provider.api_key.trim().is_empty(),
                 models_url: provider.models_url.clone(),
+                protocol_endpoints: provider
+                    .protocol_endpoints
+                    .iter()
+                    .map(|entry| PublicProviderProtocolEndpoint {
+                        protocol: entry.protocol,
+                        endpoint: entry.endpoint.clone(),
+                        endpoint_mode: entry.endpoint_mode,
+                        api_key_placement: entry.api_key_placement,
+                    })
+                    .collect(),
             })
             .collect(),
         models: documents
@@ -1814,6 +1864,7 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
                 capabilities: model.capabilities.clone(),
                 protocol_capabilities: model.protocol_capabilities.clone(),
                 native_protocols: model.native_protocols.clone().unwrap_or_default(),
+                unsupported_native_protocols: model.unsupported_native_protocols.clone(),
                 route_alias: format!("grillforge/{}", model.id),
             })
             .collect(),
@@ -1906,45 +1957,27 @@ pub fn update_provider(
 }
 
 #[tauri::command]
-pub async fn discover_provider_models(
+pub async fn sync_provider_models(
     service: State<'_, ControlPlaneService>,
     provider_id: String,
-) -> Result<Vec<DiscoveredModel>, String> {
-    service.discover_provider_models(&provider_id).await
+) -> Result<ControlPlaneState, String> {
+    service.sync_provider_models(&provider_id).await
 }
 
 #[tauri::command]
-pub fn import_provider_models(
+pub fn save_model_with_native_protocols(
     service: State<'_, ControlPlaneService>,
-    provider_id: String,
-    models: Vec<DiscoveredModel>,
+    input: ModelWithNativeProtocolsInput,
 ) -> Result<ControlPlaneState, String> {
-    service.import_provider_models(&provider_id, models)
+    service.save_model_with_native_protocols(input)
 }
 
 #[tauri::command]
-pub fn save_model(
+pub fn update_model_with_native_protocols(
     service: State<'_, ControlPlaneService>,
-    input: ModelInput,
+    input: ModelWithNativeProtocolsInput,
 ) -> Result<ControlPlaneState, String> {
-    service.save_model(input)
-}
-
-#[tauri::command]
-pub fn update_model(
-    service: State<'_, ControlPlaneService>,
-    input: ModelInput,
-) -> Result<ControlPlaneState, String> {
-    service.update_model(input)
-}
-
-#[tauri::command]
-pub fn set_model_native_protocols(
-    service: State<'_, ControlPlaneService>,
-    id: String,
-    protocols: Vec<NativeProtocol>,
-) -> Result<ControlPlaneState, String> {
-    service.set_model_native_protocols(&id, protocols)
+    service.update_model_with_native_protocols(input)
 }
 
 #[tauri::command]

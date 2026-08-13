@@ -4,6 +4,46 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-08-13
+
+### Added
+
+- Provider synchronization now probes every discovered model through
+  Anthropic Messages, OpenAI Responses, OpenAI Chat, and Gemini Native, then
+  stores the verified supported and unsupported protocols atomically.
+- Gemini protocol bridging and client ingress now participate in the same
+  local routing path as Anthropic and OpenAI protocols.
+- Extension SubAgent discovery and exact native-runtime execution now cover
+  the verified Claude Code, Codex, Pi, Kimi Code, Gemini CLI, and OpenCode
+  Agent sources.
+
+### Changed
+
+- The gateway connects directly when a model supports the client protocol and
+  otherwise bridges to a protocol verified for that exact Provider/model pair.
+- Claude and Codex native model catalogs are read from the installed clients;
+  optional client failures remain local to their own cards and Agent sources.
+- Kimi Code uses its current `.kimi-code` configuration and Agent layout.
+- OpenCode exposes actual SubAgents instead of primary session Agents.
+- README now focuses on native cross-client Agent reuse and task-specific
+  model routing without release-specific download names.
+
+### Fixed
+
+- DeepSeek V4 Pro no longer uses an unsupported Responses route; bounded live
+  probes and connection tests pass for both V4 Pro and V4 Flash.
+- Valid incomplete Responses results are returned as partial max-token results
+  instead of misleading HTTP 502 errors.
+- MCP instructions prioritize GrillForge extension SubAgents for explicit
+  delegation, with scoped native web access only when requested.
+
+### Verification
+
+- Full Rust tests, all-target Clippy with warnings denied, frontend tests, and
+  the production frontend build pass.
+- Installed Claude Code, ChatGPT-bundled Codex, and Pi CLIs passed native
+  catalog, configuration, discovery, authentication, MCP, and tool-loop tests.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
@@ -198,6 +238,7 @@ The project follows [Semantic Versioning](https://semver.org/).
   even when the GUI application is not on the login-shell PATH.
 
 [0.1.6]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.6
+[0.2.1]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.2.1
 [0.2.0]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.2.0
 [0.1.5]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.5
 [0.1.4]: https://github.com/liiiiwh/GrillForge/releases/tag/v0.1.4

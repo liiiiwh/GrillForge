@@ -1,5 +1,6 @@
 use crate::adapters::claude_code::{
-    ClaudeCodeAdapter, ClaudeCodeTakeoverStatus, EnableRequest, MODEL_SLOT_IDS, detect_claude_cli,
+    ClaudeCodeAdapter, ClaudeCodeTakeoverStatus, ClaudeNativeModel, EnableRequest, MODEL_SLOT_IDS,
+    detect_claude_cli, discover_claude_native_models,
 };
 use crate::application::ControlPlaneService;
 use crate::application::ControlPlaneState;
@@ -28,6 +29,9 @@ pub struct IntegrationStatus {
     pub managed_main_alias: Option<String>,
     pub native_model_slots: BTreeMap<String, String>,
     pub supported_model_slots: Vec<&'static str>,
+    pub native_models: Vec<ClaudeNativeModel>,
+    pub native_models_error: Option<String>,
+    pub native_current_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -40,6 +44,9 @@ pub struct ClaudeCliStatus {
 
 pub struct IntegrationService {
     adapter: ClaudeCodeAdapter,
+    claude_config_root: PathBuf,
+    claude_state_path: PathBuf,
+    claude_desktop_cache: Option<PathBuf>,
     activated_this_session: AtomicBool,
 }
 
@@ -52,8 +59,26 @@ impl IntegrationService {
         let grillforge_root = grillforge_root.into();
         Self {
             adapter: ClaudeCodeAdapter::new(&claude_config_root, &grillforge_root),
+            claude_state_path: claude_config_root
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(".claude.json"),
+            claude_desktop_cache: claude_config_root
+                .parent()
+                .map(|home| home.join("Library/Application Support/Claude/Local Storage/leveldb")),
+            claude_config_root,
             activated_this_session: AtomicBool::new(false),
         }
+    }
+
+    pub fn with_native_catalog_paths(
+        mut self,
+        state_path: impl Into<PathBuf>,
+        desktop_cache: Option<PathBuf>,
+    ) -> Self {
+        self.claude_state_path = state_path.into();
+        self.claude_desktop_cache = desktop_cache;
+        self
     }
 
     pub fn apply(
@@ -142,6 +167,15 @@ impl IntegrationService {
             }
             ClaudeCodeTakeoverStatus::Active => IntegrationTakeover::Active,
         };
+        let (native_models, native_models_error, native_current_model) =
+            match discover_claude_native_models(
+                &self.claude_config_root,
+                &self.claude_state_path,
+                self.claude_desktop_cache.as_deref(),
+            ) {
+                Ok(catalog) => (catalog.models, None, catalog.cli_current_model),
+                Err(error) => (Vec::new(), Some(error.to_string()), None),
+            };
         Ok(IntegrationStatus {
             snapshot_present: status.snapshot_present,
             takeover,
@@ -149,6 +183,9 @@ impl IntegrationService {
             managed_main_alias: status.managed_main_alias,
             native_model_slots: status.native_model_slots,
             supported_model_slots: MODEL_SLOT_IDS.to_vec(),
+            native_models,
+            native_models_error,
+            native_current_model,
         })
     }
 

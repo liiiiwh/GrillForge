@@ -1,6 +1,6 @@
 use grillforge_lib::adapters::kimi_code::{
     KimiCodeAdapter, KimiCodeModel, KimiCodePaths, KimiCodeRequest, KimiCodeTakeoverStatus,
-    detect_kimi_code_cli_in, discover_kimi_code_agents, paths_from_home,
+    detect_kimi_code_cli_in, mcp_path_from_home, paths_from_home,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -20,19 +20,25 @@ fn request() -> KimiCodeRequest {
 }
 
 #[test]
-fn kimi_code_uses_the_current_share_directory() {
+fn kimi_code_uses_the_current_data_directory() {
     let paths = paths_from_home("/Users/tester");
 
     assert_eq!(
         paths.config_path,
-        std::path::Path::new("/Users/tester/.kimi/config.toml")
+        std::path::Path::new("/Users/tester/.kimi-code/config.toml")
+    );
+    assert_eq!(
+        mcp_path_from_home("/Users/tester"),
+        std::path::Path::new("/Users/tester/.kimi-code/mcp.json")
     );
 }
 
 #[test]
 fn kimi_code_rejects_capabilities_outside_the_current_cli_schema() {
-    let error = KimiCodeModel::new("grillforge/coder", ["tool_use"])
-        .expect_err("Kimi Code 1.49 does not expose a tool_use model capability");
+    KimiCodeModel::new("grillforge/coder", ["tool_use", "audio_in"])
+        .expect("current Kimi Code exposes tool and audio model capabilities");
+    let error = KimiCodeModel::new("grillforge/coder", ["unknown"])
+        .expect_err("unknown capability must fail fast");
 
     assert!(error.to_string().contains("capabilities"));
 }
@@ -40,12 +46,15 @@ fn kimi_code_rejects_capabilities_outside_the_current_cli_schema() {
 #[test]
 fn kimi_code_apply_preserves_user_toml_and_writes_the_default_model_pool() {
     let temp = tempdir().unwrap();
-    let config = temp.path().join("home/.kimi/config.toml");
+    let config = temp.path().join("home/.kimi-code/config.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     fs::write(
         &config,
         r#"telemetry = false
 default_permission_mode = "manual"
+
+[secondary_model]
+default_model = "user/model"
 
 [providers.user]
 type = "openai"
@@ -76,10 +85,37 @@ api_key = "user-secret"
         Some("http://127.0.0.1:19191/clients/kimi-code")
     );
     assert_eq!(written["default_model"].as_str(), Some("grillforge/coder"));
-    assert!(written.get("secondary_model").is_none());
+    assert_eq!(
+        written["experimental"]["secondary-model"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        written["secondary_model"]["default_model"].as_str(),
+        Some("grillforge/coder")
+    );
+    assert_eq!(
+        written["secondary_model"]["models"]["grillforge/coder"].as_str(),
+        Some("")
+    );
+    assert_eq!(
+        written["secondary_model"]["models"]["grillforge/reviewer"].as_str(),
+        Some("")
+    );
+    assert!(
+        written["secondary_model"]["models"]
+            .get("user/model")
+            .is_none()
+    );
     assert_eq!(
         written["models"]["grillforge/coder"]["provider"].as_str(),
         Some("grillforge")
+    );
+    assert!(
+        written["models"]["grillforge/coder"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability.as_str() == Some("tool_use"))
     );
     assert!(
         written["models"]["grillforge/coder"]
@@ -92,7 +128,7 @@ api_key = "user-secret"
 #[test]
 fn kimi_code_disable_restores_exact_original_bytes_and_drift_refuses_overwrite() {
     let temp = tempdir().unwrap();
-    let config = temp.path().join("home/.kimi/config.toml");
+    let config = temp.path().join("home/.kimi-code/config.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     let original = b"# keep this comment\ndefault_permission_mode = \"manual\"\n";
     fs::write(&config, original).unwrap();
@@ -146,14 +182,24 @@ fn kimi_code_cli_detection_executes_the_real_candidate() {
 }
 
 #[test]
-fn kimi_code_exposes_only_the_two_selectable_builtin_agents() {
-    let agents = discover_kimi_code_agents();
+#[ignore = "set KIMI_LIVE_CLI to the current official kimi-code executable"]
+fn current_official_kimi_cli_accepts_the_generated_configuration() {
+    let executable = std::env::var_os("KIMI_LIVE_CLI").expect("KIMI_LIVE_CLI is required");
+    let temp = tempdir().unwrap();
+    let config = temp.path().join(".kimi-code/config.toml");
+    let adapter = KimiCodeAdapter::new(KimiCodePaths::new(&config), temp.path().join("grillforge"));
+    adapter.apply(request()).unwrap();
 
-    assert_eq!(
-        agents
-            .iter()
-            .map(|agent| agent.name.as_str())
-            .collect::<Vec<_>>(),
-        ["default", "okabe"]
+    let output = std::process::Command::new(executable)
+        .args(["doctor", "config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

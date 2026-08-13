@@ -27,7 +27,7 @@ describe("ClaudeClientCodeSubagentSlot", () => {
       />,
     );
 
-    expect(screen.getByRole("option", { name: "Haiku" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Haiku/ })).toBeTruthy();
     await user.selectOptions(screen.getByLabelText("SubAgent 默认模型"), "sonnet");
     expect(changeModel).toHaveBeenCalledWith("sonnet");
     await user.selectOptions(screen.getByLabelText("SubAgent 默认供应商"), "deepseek");

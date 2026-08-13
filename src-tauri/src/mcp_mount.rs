@@ -613,6 +613,17 @@ fn update_codex_toml(
     }
     let mut server = toml_edit::Table::new();
     server["url"] = toml_edit::value(url);
+    server["enabled"] = toml_edit::value(true);
+    server["required"] = toml_edit::value(true);
+    let mut enabled_tools = toml_edit::Array::new();
+    enabled_tools.push("list_agents");
+    enabled_tools.push("run_agent");
+    server["enabled_tools"] = toml_edit::value(enabled_tools);
+    let mut omitted_surfaces = toml_edit::Array::new();
+    omitted_surfaces.push("deferred");
+    omitted_surfaces.push("code_mode");
+    server["omit_tools_from"] = toml_edit::value(omitted_surfaces);
+    server["default_tools_approval_mode"] = toml_edit::value("approve");
     let mut headers = toml_edit::InlineTable::new();
     headers.insert("Authorization", format!("Bearer {token}").into());
     server["http_headers"] = toml_edit::value(headers);

@@ -37,7 +37,10 @@ pub use codex_anthropic_streaming::{
 };
 pub use codex_chat::{chat_to_codex_response, codex_response_to_chat};
 pub use codex_chat_streaming::chat_sse_to_codex_responses;
-pub use gemini::GeminiNativeBridge;
+pub use gemini::{
+    GeminiNativeBridge, anthropic_response_to_gemini, anthropic_sse_to_gemini,
+    gemini_request_to_anthropic,
+};
 pub use streaming_chat::chat_sse_to_anthropic;
 pub use streaming_responses::{
     responses_sse_to_anthropic, responses_sse_to_anthropic_with_capabilities,
@@ -831,10 +834,26 @@ fn responses_to_anthropic(
     if status == "failed" || object.get("error").is_some_and(|error| !error.is_null()) {
         return Err(response_envelope_error(object)?);
     }
-    if status != "completed" {
+    let incomplete = status == "incomplete";
+    if status != "completed" && !incomplete {
         return Err(BridgeError::InvalidResponse(format!(
             "status must be completed, got {status}"
         )));
+    }
+    if incomplete {
+        let reason = object
+            .get("incomplete_details")
+            .and_then(Value::as_object)
+            .and_then(|details| details.get("reason"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                BridgeError::InvalidResponse("incomplete response must identify its reason".into())
+            })?;
+        if reason != "max_output_tokens" {
+            return Err(BridgeError::InvalidResponse(format!(
+                "unsupported incomplete response reason: {reason}"
+            )));
+        }
     }
 
     let output = object
@@ -912,7 +931,7 @@ fn responses_to_anthropic(
         "role": "assistant",
         "content": content,
         "model": required_response_string(object.get("model"), "model")?,
-        "stop_reason": if has_tool_use { "tool_use" } else { "end_turn" },
+        "stop_reason": if has_tool_use { "tool_use" } else if incomplete { "max_tokens" } else { "end_turn" },
         "stop_sequence": null,
         "usage": usage
     }))
