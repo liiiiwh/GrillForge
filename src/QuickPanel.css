@@ -1,0 +1,31 @@
+html:has(.quick-panel), body:has(.quick-panel), #root:has(.quick-panel) {
+  margin: 0;
+  min-height: 100%;
+  background: #f7f8fc;
+  overscroll-behavior: none;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #202435;
+}
+.quick-panel { padding: 18px; }
+.quick-panel > header { display:flex; align-items:center; justify-content:space-between; gap:12px; position:sticky; top:0; z-index:2; padding:4px 0 14px; background:#f7f8fc; }
+.quick-panel > header > div { display:flex; align-items:center; gap:10px; }
+.quick-panel header img { width:38px; height:38px; border-radius:10px; }
+.quick-panel header strong, .quick-panel header small { display:block; }
+.quick-panel header small { color:#8990a4; margin-top:2px; }
+.quick-panel button { border:1px solid #dde1ec; border-radius:10px; padding:8px 12px; background:white; color:#4f46d9; font-weight:600; cursor:pointer; }
+.quick-clients { display:grid; gap:10px; }
+.quick-clients details { background:white; border:1px solid #e1e4ee; border-radius:14px; overflow:hidden; box-shadow:0 8px 25px rgba(39,45,77,.05); }
+.quick-clients summary { display:flex; align-items:center; justify-content:space-between; padding:13px 14px; cursor:pointer; }
+.quick-clients summary button { margin-left:auto; margin-right:8px; padding:5px 10px; }
+.quick-section { border-top:1px solid #eceef4; padding:12px 14px; }
+.quick-section h2 { margin:0 0 10px; font-size:12px; letter-spacing:.08em; color:#6a5cf0; text-transform:uppercase; }
+.quick-section p { color:#9298aa; font-size:12px; }
+.quick-slot { display:grid; grid-template-columns:minmax(92px,1fr) minmax(110px,1.2fr) minmax(120px,1.4fr); gap:8px; align-items:center; margin:8px 0; }
+.quick-slot > span { font-size:13px; font-weight:600; }
+.quick-slot select { min-width:0; width:100%; border:1px solid #dfe2ed; border-radius:9px; background:#fafbfe; padding:7px 8px; color:#2d3142; }
+.quick-extension-head, .quick-extension { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.quick-extension { padding:7px 0; font-size:13px; }
+.quick-switch { display:flex; align-items:center; gap:8px; font-size:12px; }
+.quick-panel input[type="checkbox"] { width:34px; height:19px; accent-color:#6555ed; }
+.quick-error { position:sticky; top:64px; z-index:3; padding:10px 12px; border:1px solid #f2b8ae; border-radius:10px; background:#fff0ed; color:#a64235; font-size:12px; }
+.quick-empty { padding:30px; text-align:center; color:#9298aa; }

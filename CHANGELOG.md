@@ -4,6 +4,29 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.6] - 2026-08-13
+
+### Added
+
+- A compact macOS menu-bar panel lists every installed client and exposes each
+  real model slot as linked Provider and model selectors.
+- The same panel can apply client configuration, mount or unmount Extension
+  SubAgents, and enable each authorized Extension Agent.
+
+### Changed
+
+- Extension mount actions use concise user-facing wording instead of exposing
+  the MCP transport implementation.
+- MCP instructions now treat workflow and parallel requests as GrillForge
+  routes, not as implicit permission to bypass Extension Agents with the
+  client's native Workflow or SubAgent tools.
+
+### Verification
+
+- Added frontend regressions for linked Provider/model selectors and Extension
+  Agent switches.
+- Full Rust tests, strict Clippy, frontend tests, and production build pass.
+
 ## [0.2.5] - 2026-08-13
 
 ### Changed

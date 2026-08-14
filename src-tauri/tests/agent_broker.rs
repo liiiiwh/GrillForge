@@ -190,9 +190,10 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     let instruction_prefix = instructions.chars().take(512).collect::<String>();
     assert!(instruction_prefix.contains("先调用 list_agents"));
     assert!(instruction_prefix.contains("DEFAULT SUBAGENT ROUTE"));
+    assert!(instruction_prefix.contains("workflow 或并行不是原生 Agent 的例外"));
     assert!(instruction_prefix.contains("不要先启动客户端内置 Agent"));
     assert!(instructions.contains("run_agent"));
-    assert!(instructions.contains("用户明确要求使用原生 Agent"));
+    assert!(instructions.contains("用户明确说“使用客户端原生 Agent”或“不要 GrillForge”"));
     assert!(instructions.contains("webAccess=true"));
 
     let tools: Value = client
@@ -216,6 +217,11 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
         .as_str()
         .expect("list_agents description");
     assert!(list_description.contains("必须优先调用本工具"));
+    assert!(list_description.contains("workflow 或并行"));
+    let run_description = tools["result"]["tools"][1]["description"]
+        .as_str()
+        .expect("run_agent description");
+    assert!(run_description.contains("Do not use the client's native Workflow"));
     assert_eq!(
         tools["result"]["tools"][1]["inputSchema"]["properties"]["webAccess"]["type"],
         "boolean"

@@ -10,6 +10,7 @@ import {
   DashboardMascot,
   DashboardQuickActions,
   SidebarServiceStatus,
+  extensionMountCopy,
 } from "./App";
 
 describe("control center clients", () => {
@@ -55,7 +56,29 @@ describe("control center clients", () => {
     render(<SidebarServiceStatus ready mountedClientCount={3} />);
 
     expect(screen.getByText("GrillForge 已就绪")).toBeTruthy();
-    expect(screen.getByText("3 个客户端已挂载 MCP")).toBeTruthy();
+    expect(screen.getByText("3 个客户端已挂载扩展 SubAgent")).toBeTruthy();
+  });
+
+  it("keeps MCP implementation terms out of extension mount actions", () => {
+    expect(
+      extensionMountCopy({
+        clientId: "codex",
+        desiredMounted: false,
+        mounted: false,
+        configurationChanged: false,
+      }),
+    ).toEqual({ badge: "扩展未挂载", action: "挂载扩展" });
+    expect(
+      extensionMountCopy({
+        clientId: "codex",
+        desiredMounted: true,
+        mounted: true,
+        configurationChanged: false,
+      }),
+    ).toEqual({
+      badge: "扩展已挂载",
+      action: "卸载扩展",
+    });
   });
 
   it("opens the new extension SubAgent flow from quick actions", () => {

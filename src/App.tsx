@@ -139,6 +139,26 @@ type ClientMcpStatus = {
   configurationChanged: boolean;
 };
 
+export function extensionMountCopy(status?: ClientMcpStatus) {
+  const mounted = Boolean(status?.mounted);
+  const needsReapply = Boolean(status?.configurationChanged);
+
+  return {
+    badge: needsReapply
+      ? "扩展配置有变化"
+      : mounted
+        ? "扩展已挂载"
+        : status?.desiredMounted
+          ? "扩展等待恢复"
+          : "扩展未挂载",
+    action: needsReapply
+      ? "重新挂载扩展"
+      : mounted || Boolean(status?.desiredMounted)
+        ? "卸载扩展"
+        : "挂载扩展",
+  };
+}
+
 type ClientConfiguration = {
   mainModelId: string | null;
   enabledModelIds: string[];
@@ -1018,7 +1038,7 @@ export function SidebarServiceStatus({
         <strong>{ready ? "GrillForge 已就绪" : "服务不可用"}</strong>
         <small>
           {ready
-            ? `${mountedClientCount} 个客户端已挂载 MCP`
+            ? `${mountedClientCount} 个客户端已挂载扩展 SubAgent`
             : "请重新启动应用"}
         </small>
       </div>
@@ -2100,7 +2120,7 @@ function App() {
             }
           : current,
       );
-      setNotice(`MCP 已${mounted ? "挂载" : "卸载"}。`);
+      setNotice(`扩展 SubAgent 已${mounted ? "挂载" : "卸载"}。`);
       if (clientId === "claude_desktop") {
         setClaudeRestartError("");
         setClaudeRestartPrompt(true);
@@ -2117,7 +2137,7 @@ function App() {
     try {
       await invoke("restart_claude_client");
       setClaudeRestartPrompt(false);
-      setNotice("Claude Client 已重新打开，MCP 配置将在新进程中加载。");
+      setNotice("Claude Client 已重新打开，扩展 SubAgent 将在新进程中加载。");
     } catch (cause) {
       setClaudeRestartError(errorMessage(cause));
     } finally {
@@ -2129,19 +2149,13 @@ function App() {
     const status = mcpStatuses[clientId];
     const mounted = Boolean(status?.mounted);
     const needsReapply = Boolean(status?.configurationChanged);
-    const label = status?.configurationChanged
-      ? "配置有变化"
-      : mounted
-        ? "已挂载"
-        : status?.desiredMounted
-          ? "等待恢复"
-          : "未挂载";
+    const copy = extensionMountCopy(status);
     return (
       <>
         <Badge
           tone={mounted ? "good" : status?.configurationChanged ? "warn" : "neutral"}
         >
-          MCP {label}
+          {copy.badge}
         </Badge>
         <button
           className={
@@ -2155,11 +2169,7 @@ function App() {
             )
           }
         >
-          {needsReapply
-            ? "重新挂载"
-            : mounted || status?.desiredMounted
-              ? "卸载 MCP"
-              : "挂载 MCP"}
+          {copy.action}
         </button>
       </>
     );
@@ -2905,7 +2915,7 @@ function App() {
                 </section>
                 {clientStatusErrors.mcp && (
                   <p className="inline-error client-status-error" role="alert">
-                    MCP 状态读取失败：{clientStatusErrors.mcp}
+                    扩展状态读取失败：{clientStatusErrors.mcp}
                   </p>
                 )}
                 {!selectedClient && (
@@ -3258,7 +3268,7 @@ function App() {
                           <div>
                             <p className="kicker">扩展 SubAgent</p>
                             <h2>Claude Code 可用的扩展 SubAgent</h2>
-                            <p>先挂载 MCP，再选择允许 Claude Code 使用的扩展 SubAgent。</p>
+                            <p>先挂载扩展，再选择允许 Claude Code 使用的扩展 SubAgent。</p>
                           </div>
                           <div className="agent-actions">
                             {mcpMountActions("claude_code")}
@@ -3838,7 +3848,7 @@ function App() {
                         <div>
                           <p className="kicker">扩展 SubAgent</p>
                           <h2>Pi 可用的扩展 SubAgent</h2>
-                          <p>挂载 MCP 后，由 Pi MCP 扩展调用已授权的本机 Agent。</p>
+                          <p>挂载扩展后，由 Pi MCP 扩展调用已授权的本机 Agent。</p>
                         </div>
                         <div className="agent-actions">
                           {mcpMountActions("pi")}
@@ -6008,7 +6018,7 @@ function App() {
           >
             <p className="kicker">需要重启</p>
             <h2 id="claude-restart-title">重新打开 Claude Client</h2>
-            <p>Claude Client 需要重启一次，才能加载刚刚更新的本地 MCP 配置。</p>
+            <p>Claude Client 需要重启一次，才能加载刚刚更新的扩展 SubAgent 配置。</p>
             {claudeRestartError && (
               <p className="pi-mcp-install-error" role="alert">
                 {claudeRestartError}

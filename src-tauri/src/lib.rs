@@ -17,6 +17,7 @@ pub mod model_discovery;
 pub mod pi_integration;
 pub mod pi_mcp_extension;
 pub mod presets;
+pub mod quick_menu;
 pub mod storage;
 pub mod usage_query;
 
@@ -26,6 +27,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
+            quick_menu::initialize(app)?;
             let home = app.path().home_dir()?;
             let root = home.join(".grillforge");
             let executable = std::env::current_exe()?;
@@ -192,6 +194,7 @@ pub fn run() {
             application::query_provider_usage,
             gateway::gateway_status,
             presets::provider_presets,
+            quick_menu::show_main_window,
             integration::integration_status,
             integration::detect_claude_code,
             integration::apply_claude_code,

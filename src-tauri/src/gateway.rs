@@ -2051,7 +2051,7 @@ async fn agent_broker_mcp_for_client(
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。run_agent 会等待本机原生 Agent 完成；运行期间只通过 MCP progress 展示简短状态，不会把中间输出写入主会话，结束后只返回一次最终结果。不要轮询中间输出。并行任务可并发调用多个 run_agent。不要先启动客户端内置 Agent。仅当列表为空、没有匹配项，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
+            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。workflow 或并行不是原生 Agent 的例外：有匹配项时，必须并发调用多个 run_agent，不得改用客户端内置 Workflow、Agent 或 SubAgent。只有用户明确说“使用客户端原生 Agent”或“不要 GrillForge”才视为原生例外。run_agent 会等待本机原生 Agent 完成；运行期间只通过 MCP progress 展示简短状态，不会把中间输出写入主会话，结束后只返回一次最终结果。不要轮询中间输出。不要先启动客户端内置 Agent。列表为空或没有匹配项时才使用客户端内置 Agent。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -2059,7 +2059,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "list_agents",
                     "title": "列出扩展 SubAgent",
-                    "description": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先调用本工具。列出当前客户端获授权的 GrillForge 扩展 Agent，并在调用 run_agent 前选择匹配的 extensionId；列表为空时不要调用 run_agent。DEFAULT first step for any SubAgent, delegation, parallel, or background task.",
+                    "description": "当需要要求使用 SubAgent、委派、workflow、并行或后台 Agent 时，必须优先调用本工具。workflow 或并行不允许绕过 GrillForge 改用客户端内置 Agent。列出当前客户端获授权的 GrillForge 扩展 Agent，并在调用 run_agent 前选择匹配的 extensionId；列表为空时不要调用 run_agent。DEFAULT first step for any SubAgent, delegation, workflow, parallel, or background task.",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": true,
@@ -2075,7 +2075,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
-                    "description": "Runs one delegated task and returns only its final result. When the MCP client supports progress notifications, it shows coarse runtime status without adding Agent output to the main conversation. The local source Coding Agent owns the Agent loop and tools. Calls may run for up to three hours; do not poll intermediate output. Workflow clients may invoke multiple run_agent calls concurrently. Provide cwd and a complete prompt; set webAccess=true only when explicitly needed. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务并等待最终结果。",
+                    "description": "Runs one delegated task and returns only its final result. For workflow or parallel requests, invoke multiple run_agent calls concurrently. Do not use the client's native Workflow, Agent, or SubAgent when list_agents returned a matching extension. When the MCP client supports progress notifications, it shows coarse runtime status without adding Agent output to the main conversation. The local source Coding Agent owns the Agent loop and tools. Calls may run for up to three hours; do not poll intermediate output. Provide cwd and a complete prompt; set webAccess=true only when explicitly needed. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务并等待最终结果。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": false,
