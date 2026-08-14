@@ -1,6 +1,7 @@
 //! Provider model discovery, adapted from cc-switch's bounded `/models` slice.
-//! GrillForge resolves exactly one endpoint: an explicit `models_url` wins;
-//! otherwise the endpoint is derived deterministically from the Provider URL.
+//! An explicit `models_url` wins. Otherwise GrillForge tries cc-switch's small,
+//! deterministic candidate set and falls back to a matching preset's pinned
+//! model IDs only when every listing endpoint is absent.
 
 use crate::configuration::{ProviderProtocolEndpoint, ProviderRecord};
 use crate::core::model::NativeProtocol;
@@ -72,46 +73,73 @@ pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>,
     if !provider.enabled {
         return Err(format!("provider {} is disabled", provider.id));
     }
-    let endpoint = models_endpoint(provider)?;
+    let endpoints = models_endpoints(provider)?;
     let client = reqwest::Client::builder()
         .connect_timeout(FETCH_TIMEOUT)
         .timeout(FETCH_TIMEOUT)
         .build()
         .map_err(|error| format!("could not create model discovery client: {error}"))?;
-    let mut request = client.get(endpoint.clone());
-    request = match (provider.protocol, provider.api_key_placement) {
-        (Protocol::GeminiNative, ApiKeyPlacement::XApiKey) => request.header(
-            HeaderName::from_static("x-goog-api-key"),
-            HeaderValue::from_str(&provider.api_key)
-                .map_err(|_| "provider API key contains invalid header characters".to_string())?,
-        ),
-        (_, ApiKeyPlacement::None) => request,
-        (_, ApiKeyPlacement::Bearer) => request.header(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", provider.api_key))
-                .map_err(|_| "provider API key contains invalid header characters".to_string())?,
-        ),
-        (_, ApiKeyPlacement::XApiKey) => request.header(
-            HeaderName::from_static("x-api-key"),
-            HeaderValue::from_str(&provider.api_key)
-                .map_err(|_| "provider API key contains invalid header characters".to_string())?,
-        ),
-    };
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("model discovery request failed: {error}"))?;
-    let status = response.status();
-    if !status.is_success() {
+    let mut body = None;
+    let mut last_missing = None;
+    for endpoint in endpoints {
+        let mut request = client.get(endpoint.clone());
+        request = match (provider.protocol, provider.api_key_placement) {
+            (Protocol::GeminiNative, ApiKeyPlacement::XApiKey) => request.header(
+                HeaderName::from_static("x-goog-api-key"),
+                HeaderValue::from_str(&provider.api_key).map_err(|_| {
+                    "provider API key contains invalid header characters".to_string()
+                })?,
+            ),
+            (_, ApiKeyPlacement::None) => request,
+            (_, ApiKeyPlacement::Bearer) => request.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", provider.api_key)).map_err(|_| {
+                    "provider API key contains invalid header characters".to_string()
+                })?,
+            ),
+            (_, ApiKeyPlacement::XApiKey) => request.header(
+                HeaderName::from_static("x-api-key"),
+                HeaderValue::from_str(&provider.api_key).map_err(|_| {
+                    "provider API key contains invalid header characters".to_string()
+                })?,
+            ),
+        };
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format!("model discovery request failed: {error}"))?;
+        let status = response.status();
+        if status.is_success() {
+            body = Some(
+                response
+                    .bytes()
+                    .await
+                    .map_err(|_| "model discovery response body could not be read".to_string())?,
+            );
+            break;
+        }
+        if matches!(status.as_u16(), 404 | 405) {
+            last_missing = Some(format!(
+                "model discovery returned HTTP {} from {endpoint}",
+                status.as_u16()
+            ));
+            continue;
+        }
         return Err(format!(
             "model discovery returned HTTP {} from {endpoint}",
             status.as_u16()
         ));
     }
-    let body = response
-        .bytes()
-        .await
-        .map_err(|_| "model discovery response body could not be read".to_string())?;
+    let Some(body) = body else {
+        let suggested = matching_preset(provider)?
+            .map(|preset| preset.suggested_models)
+            .unwrap_or_default();
+        if suggested.is_empty() {
+            return Err(last_missing
+                .unwrap_or_else(|| "provider has no usable model discovery endpoint".into()));
+        }
+        return discovered_from_suggestions(suggested);
+    };
     let entries = if provider.protocol == Protocol::GeminiNative {
         serde_json::from_slice::<GeminiModelsResponse>(&body)
             .map_err(|_| "Gemini model discovery returned invalid JSON data".to_string())?
@@ -149,6 +177,65 @@ pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>,
     }
     models.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(models)
+}
+
+pub(crate) fn matching_preset(
+    provider: &ProviderRecord,
+) -> Result<Option<crate::presets::ProviderPreset>, String> {
+    let catalog = crate::presets::catalog()
+        .map_err(|_| "built-in Provider catalog is invalid".to_string())?;
+    if let Some(preset) = catalog
+        .presets
+        .iter()
+        .find(|preset| preset.id == provider.id)
+    {
+        return Ok(Some(preset.clone()));
+    }
+    let endpoint = provider.endpoint.trim_end_matches('/');
+    Ok(catalog.presets.into_iter().find(|preset| {
+        let protocol_matches = matches!(
+            (preset.protocol, provider.protocol),
+            (
+                crate::presets::PresetProtocol::AnthropicMessages,
+                Protocol::AnthropicMessages
+            ) | (
+                crate::presets::PresetProtocol::OpenAiResponses,
+                Protocol::OpenAiResponses
+            ) | (
+                crate::presets::PresetProtocol::OpenAiChatCompletions,
+                Protocol::OpenAiChatCompletions
+            ) | (
+                crate::presets::PresetProtocol::GeminiNative,
+                Protocol::GeminiNative
+            )
+        );
+        protocol_matches
+            && matches!(
+                &preset.endpoint,
+                crate::presets::PresetEndpoint::Literal { url }
+                    if url.trim_end_matches('/') == endpoint
+            )
+    }))
+}
+
+fn discovered_from_suggestions(models: Vec<String>) -> Result<Vec<DiscoveredModel>, String> {
+    let mut seen = HashSet::new();
+    let mut discovered = Vec::new();
+    for model in models {
+        let id = model.trim();
+        if id.is_empty() || id.chars().any(char::is_control) {
+            return Err("built-in Provider preset contains an invalid model ID".into());
+        }
+        if seen.insert(id.to_string()) {
+            discovered.push(DiscoveredModel {
+                id: id.into(),
+                owned_by: None,
+                native_protocols: Vec::new(),
+            });
+        }
+    }
+    discovered.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(discovered)
 }
 
 pub async fn probe_protocols(
@@ -402,9 +489,10 @@ fn valid_protocol_response(protocol: NativeProtocol, body: &Value) -> bool {
     }
 }
 
-fn models_endpoint(provider: &ProviderRecord) -> Result<Url, String> {
+fn models_endpoints(provider: &ProviderRecord) -> Result<Vec<Url>, String> {
     if let Some(models_url) = provider.models_url.as_deref() {
         return Url::parse(models_url)
+            .map(|url| vec![url])
             .map_err(|_| format!("provider {} has an invalid models URL", provider.id));
     }
     let mut endpoint = Url::parse(&provider.endpoint)
@@ -417,15 +505,15 @@ fn models_endpoint(provider: &ProviderRecord) -> Result<Url, String> {
             format!("{path}/v1beta/models")
         };
         endpoint.set_path(&models_path);
-        return Ok(endpoint);
+        return Ok(vec![endpoint]);
     }
-    let models_path = match provider.endpoint_mode {
+    let paths = match provider.endpoint_mode {
         EndpointMode::ExactUrl => {
             if let Some(index) = path.find("/v1/") {
-                format!("{}/v1/models", &path[..index])
+                vec![format!("{}/v1/models", &path[..index])]
             } else {
                 let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-                format!("{parent}/models")
+                vec![format!("{parent}/models")]
             }
         }
         EndpointMode::BaseUrl => {
@@ -433,18 +521,33 @@ fn models_endpoint(provider: &ProviderRecord) -> Result<Url, String> {
                 .iter()
                 .find_map(|suffix| path.strip_suffix(suffix))
             {
-                format!("{root}/v1/models")
+                vec![
+                    format!("{path}/v1/models"),
+                    format!("{root}/v1/models"),
+                    format!("{root}/models"),
+                ]
             } else if is_version_path(path) {
-                format!("{path}/models")
+                let mut paths = vec![format!("{path}/models")];
+                if !path.ends_with("/v1") {
+                    paths.push(format!("{path}/v1/models"));
+                }
+                paths
             } else {
-                format!("{path}/v1/models")
+                vec![format!("{path}/v1/models")]
             }
         }
     };
-    endpoint.set_path(&models_path);
-    endpoint.set_query(None);
-    endpoint.set_fragment(None);
-    Ok(endpoint)
+    let mut endpoints = Vec::new();
+    for path in paths {
+        let mut candidate = endpoint.clone();
+        candidate.set_path(&path);
+        candidate.set_query(None);
+        candidate.set_fragment(None);
+        if !endpoints.contains(&candidate) {
+            endpoints.push(candidate);
+        }
+    }
+    Ok(endpoints)
 }
 
 fn is_version_path(path: &str) -> bool {

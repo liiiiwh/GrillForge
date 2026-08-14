@@ -324,6 +324,62 @@ impl ControlPlaneService {
         self.save_and_return(documents)
     }
 
+    pub async fn save_provider_with_model_check(
+        &self,
+        input: ProviderInput,
+    ) -> Result<ControlPlaneState, String> {
+        let before = self.documents()?;
+        if before
+            .config
+            .providers
+            .iter()
+            .any(|provider| provider.id == input.id)
+        {
+            return Err(format!("duplicate provider id: {}", input.id));
+        }
+        let no_auth = input.api_key_placement == ApiKeyPlacement::None;
+        let api_key = match (input.api_key, no_auth) {
+            (_, true) => String::new(),
+            (Some(value), false) if !value.is_empty() => value,
+            _ => return Err("provider API key must not be empty".to_string()),
+        };
+        let mut provider = ProviderRecord {
+            id: input.id,
+            name: input.name,
+            enabled: input.enabled,
+            protocol: input.protocol,
+            endpoint: input.endpoint,
+            endpoint_mode: input.endpoint_mode,
+            api_key_placement: input.api_key_placement,
+            api_key,
+            models_url: input.models_url,
+            protocol_endpoints: Vec::new(),
+        };
+        let discovered = model_discovery::discover(&provider).await?;
+        if discovered.is_empty() {
+            return Err("provider model discovery returned no models".to_string());
+        }
+        let probes = model_discovery::probe_protocols(&provider, &discovered).await?;
+        if probes.provider_endpoints.is_empty() {
+            return Err("provider model checks found no supported API protocol".to_string());
+        }
+        provider.protocol_endpoints = probes.provider_endpoints.clone();
+
+        let mut documents = self.documents()?;
+        if documents
+            .config
+            .providers
+            .iter()
+            .any(|current| current.id == provider.id)
+        {
+            return Err(format!("duplicate provider id: {}", provider.id));
+        }
+        let provider_id = provider.id.clone();
+        documents.config.providers.push(provider);
+        apply_discovered_models(&mut documents, &provider_id, discovered, &probes)?;
+        self.save_and_return(documents)
+    }
+
     pub fn delete_provider(&self, id: &str) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
         let blocking: Vec<_> = documents
@@ -422,60 +478,7 @@ impl ControlPlaneService {
             ));
         }
         current_provider.protocol_endpoints = probes.provider_endpoints.clone();
-        for model in discovered {
-            let supported = probes
-                .models
-                .get(&model.id)
-                .map(|probe| probe.supported.clone())
-                .unwrap_or_default();
-            let unsupported = [
-                NativeProtocol::AnthropicMessages,
-                NativeProtocol::OpenAiResponses,
-                NativeProtocol::OpenAiChat,
-                NativeProtocol::GeminiNative,
-            ]
-            .into_iter()
-            .filter(|protocol| !supported.contains(protocol))
-            .collect::<Vec<_>>();
-            if let Some(existing) = documents.models.models.iter_mut().find(|existing| {
-                existing.provider_id == provider_id && existing.upstream_id == model.id
-            }) {
-                existing.native_protocols = Some(supported);
-                existing.unsupported_native_protocols = unsupported;
-                continue;
-            }
-            let id = model_slug(&model.id);
-            if id.is_empty() {
-                return Err(format!(
-                    "model ID cannot produce a stable slug: {}",
-                    model.id
-                ));
-            }
-            if documents.models.models.iter().any(|item| item.id == id) {
-                return Err(format!("model slug collision: {id}"));
-            }
-            let protocol_capabilities = crate::presets::catalog()
-                .map_err(|_| "built-in Provider catalog is invalid".to_string())?
-                .presets
-                .into_iter()
-                .find(|preset| preset.id == provider_id)
-                .and_then(|preset| preset.model_protocol_capabilities.get(&model.id).cloned())
-                .unwrap_or_default();
-            documents.models.models.push(ModelRecord {
-                id,
-                provider_id: provider_id.to_string(),
-                upstream_id: model.id.clone(),
-                display_name: model.id,
-                capabilities: Vec::new(),
-                protocol_capabilities,
-                native_protocols: Some(supported),
-                unsupported_native_protocols: unsupported,
-            });
-        }
-        documents
-            .models
-            .models
-            .sort_by(|left, right| left.id.cmp(&right.id));
+        apply_discovered_models(&mut documents, provider_id, discovered, &probes)?;
         self.save_and_return(documents)
     }
 
@@ -1392,6 +1395,89 @@ fn model_slug(value: &str) -> String {
     slug
 }
 
+fn apply_discovered_models(
+    documents: &mut ConfigurationDocuments,
+    provider_id: &str,
+    discovered: Vec<model_discovery::DiscoveredModel>,
+    probes: &model_discovery::ProtocolProbeSummary,
+) -> Result<(), String> {
+    let provider = documents
+        .config
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
+    let preset = model_discovery::matching_preset(provider)?;
+    for model in discovered {
+        let supported = probes
+            .models
+            .get(&model.id)
+            .map(|probe| probe.supported.clone())
+            .unwrap_or_default();
+        let unsupported = [
+            NativeProtocol::AnthropicMessages,
+            NativeProtocol::OpenAiResponses,
+            NativeProtocol::OpenAiChat,
+            NativeProtocol::GeminiNative,
+        ]
+        .into_iter()
+        .filter(|protocol| !supported.contains(protocol))
+        .collect::<Vec<_>>();
+        if let Some(existing) = documents.models.models.iter_mut().find(|existing| {
+            existing.provider_id == provider_id && existing.upstream_id == model.id
+        }) {
+            existing.native_protocols = Some(supported);
+            existing.unsupported_native_protocols = unsupported;
+            continue;
+        }
+        let upstream_slug = model_slug(&model.id);
+        if upstream_slug.is_empty() {
+            return Err(format!(
+                "model ID cannot produce a stable slug: {}",
+                model.id
+            ));
+        }
+        let id = if documents
+            .models
+            .models
+            .iter()
+            .any(|item| item.id == upstream_slug)
+        {
+            let provider_slug = model_slug(provider_id);
+            if provider_slug.is_empty() {
+                return Err(format!(
+                    "provider ID cannot produce a stable model namespace: {provider_id}"
+                ));
+            }
+            format!("{provider_slug}-{upstream_slug}")
+        } else {
+            upstream_slug
+        };
+        if documents.models.models.iter().any(|item| item.id == id) {
+            return Err(format!("model route collision: {id}"));
+        }
+        let protocol_capabilities = preset
+            .as_ref()
+            .and_then(|preset| preset.model_protocol_capabilities.get(&model.id).cloned())
+            .unwrap_or_default();
+        documents.models.models.push(ModelRecord {
+            id,
+            provider_id: provider_id.to_string(),
+            upstream_id: model.id.clone(),
+            display_name: model.id,
+            capabilities: Vec::new(),
+            protocol_capabilities,
+            native_protocols: Some(supported),
+            unsupported_native_protocols: unsupported,
+        });
+    }
+    documents
+        .models
+        .models
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(())
+}
+
 fn native_protocol(protocol: Protocol) -> NativeProtocol {
     match protocol {
         Protocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
@@ -1575,13 +1661,25 @@ fn validate_extension_subagent_input(
     }
     let mut capabilities = HashSet::new();
     for capability in &input.capabilities {
-        if !is_lowercase_slug(capability) || !capabilities.insert(capability) {
+        let normalized = capability.to_ascii_lowercase();
+        if !is_capability_label(capability) || !capabilities.insert(normalized) {
             return Err(format!(
                 "invalid or duplicate extension SubAgent capability: {capability}"
             ));
         }
     }
     Ok(())
+}
+
+fn is_capability_label(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with(['-', '_'])
+        && !value.ends_with(['-', '_'])
+        && !value.contains("--")
+        && !value.contains("__")
+        && value
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, b'-' | b'_'))
 }
 
 fn is_lowercase_slug(value: &str) -> bool {
@@ -1962,6 +2060,14 @@ pub async fn sync_provider_models(
     provider_id: String,
 ) -> Result<ControlPlaneState, String> {
     service.sync_provider_models(&provider_id).await
+}
+
+#[tauri::command]
+pub async fn save_provider_with_model_check(
+    service: State<'_, ControlPlaneService>,
+    input: ProviderInput,
+) -> Result<ControlPlaneState, String> {
+    service.save_provider_with_model_check(input).await
 }
 
 #[tauri::command]

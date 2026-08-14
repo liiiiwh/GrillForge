@@ -4,6 +4,30 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.7] - 2026-08-13
+
+### Changed
+
+- Adding a Provider now discovers its models, checks each model against the
+  Provider's supported API surfaces, and saves the verified result atomically.
+- Model discovery uses cc-switch's bounded endpoint candidates. Presets such
+  as Kimi For Coding that do not expose a model-list endpoint validate their
+  pinned model IDs directly instead of failing on `/v1/models`.
+- A second credential profile for the same Provider receives deterministic,
+  Provider-scoped model routes instead of colliding with existing model IDs.
+- Extension SubAgent capability labels preserve user casing while duplicate
+  labels are rejected case-insensitively.
+- The macOS menu-bar control is now a compact native hierarchical menu instead
+  of a large webview, with client, slot, Provider, model, and Extension Agent
+  submenus.
+
+### Verification
+
+- Added regressions for Kimi preset discovery fallback, atomic Provider
+  creation, duplicate upstream models across credential profiles, and
+  case-preserving capability labels.
+- Full Rust tests, strict Clippy, frontend tests, and production build pass.
+
 ## [0.2.6] - 2026-08-13
 
 ### Added

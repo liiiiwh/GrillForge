@@ -332,6 +332,42 @@ fn invalid_extension_subagent_input_is_rejected_without_changing_state() {
 }
 
 #[test]
+fn extension_subagent_capabilities_preserve_case_and_deduplicate_case_insensitively() {
+    let root = tempfile::tempdir().expect("configuration root");
+    let service = configured_service(root.path());
+
+    let state = service
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            source_client_id: "claude_code".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: Some("coder".into()),
+            capabilities: vec!["Gener".into(), "CodeReview".into()],
+        })
+        .expect("mixed-case capability labels are valid");
+    assert_eq!(
+        state.extension_subagents[0].capabilities,
+        vec!["Gener", "CodeReview"]
+    );
+
+    let error = service
+        .update_extension_subagent(ExtensionSubAgentInput {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            source_client_id: "claude_code".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: Some("coder".into()),
+            capabilities: vec!["Review".into(), "review".into()],
+        })
+        .expect_err("capability labels differing only by case are duplicates");
+    assert_eq!(
+        error,
+        "invalid or duplicate extension SubAgent capability: review"
+    );
+}
+
+#[test]
 fn extension_subagent_rejects_a_model_from_a_disabled_provider() {
     let root = tempfile::tempdir().expect("configuration root");
     let service = configured_service(root.path());

@@ -1987,12 +1987,14 @@ function App() {
       enabled: true,
       modelsUrl: providerDraft.modelsUrl.trim() || null,
     };
-    const command = editingProviderId ? "update_provider" : "save_provider";
+    const command = editingProviderId
+      ? "update_provider"
+      : "save_provider_with_model_check";
     if (
       await commit(
         command,
         { input },
-        `${name} 已${editingProviderId ? "更新" : "保存"}。`,
+        `${name} 已${editingProviderId ? "更新" : "保存并完成模型检查"}。`,
       )
     ) {
       closeProviderForm();

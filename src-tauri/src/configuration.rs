@@ -471,7 +471,8 @@ fn validate(
         }
         let mut capabilities = HashSet::new();
         for capability in &extension.capabilities {
-            if !is_agent_key(capability) || !capabilities.insert(capability) {
+            let normalized = capability.to_ascii_lowercase();
+            if !is_capability_label(capability) || !capabilities.insert(normalized) {
                 return Err(ConfigurationError::Invalid(format!(
                     "invalid or duplicate extension SubAgent capability: {capability}"
                 )));
@@ -637,6 +638,17 @@ fn validate(
     }
 
     Ok(())
+}
+
+fn is_capability_label(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with(['-', '_'])
+        && !value.ends_with(['-', '_'])
+        && !value.contains("--")
+        && !value.contains("__")
+        && value
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, b'-' | b'_'))
 }
 
 fn is_agent_key(value: &str) -> bool {

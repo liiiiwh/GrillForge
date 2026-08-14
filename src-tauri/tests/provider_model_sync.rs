@@ -235,6 +235,158 @@ async fn sync_probes_each_discovered_model_on_each_provider_protocol_once() {
 }
 
 #[tokio::test]
+async fn adding_kimi_preset_checks_its_pinned_model_when_listing_is_unavailable() {
+    async fn anthropic_probe(Json(body): Json<Value>) -> (axum::http::StatusCode, Json<Value>) {
+        assert_eq!(body["model"], "kimi-for-coding");
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({
+                "id": "msg_kimi",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "OK"}],
+                "model": "kimi-for-coding",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })),
+        )
+    }
+
+    let upstream = Router::new()
+        .route("/coding/v1/messages", post(anthropic_probe))
+        .fallback(|| async {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error":{"message":"not found"}})),
+            )
+        });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let root = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(root.path());
+    let state = service
+        .save_provider_with_model_check(ProviderInput {
+            id: "kimi-for-coding".into(),
+            name: "Kimi For Coding".into(),
+            protocol: Protocol::AnthropicMessages,
+            endpoint: format!("http://{address}/coding/"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .await
+        .expect("a preset without /models must validate its pinned model");
+
+    let provider = state
+        .providers
+        .iter()
+        .find(|provider| provider.id == "kimi-for-coding")
+        .unwrap();
+    assert_eq!(
+        provider
+            .protocol_endpoints
+            .iter()
+            .map(|entry| entry.protocol)
+            .collect::<Vec<_>>(),
+        vec![NativeProtocol::AnthropicMessages]
+    );
+    let model = state
+        .models
+        .iter()
+        .find(|model| model.upstream_id == "kimi-for-coding")
+        .unwrap();
+    assert_eq!(
+        model.native_protocols,
+        vec![NativeProtocol::AnthropicMessages]
+    );
+}
+
+#[tokio::test]
+async fn adding_the_same_upstream_models_under_two_providers_namespaces_the_second_routes() {
+    async fn models() -> Json<Value> {
+        Json(json!({"data": [{"id": "shared-model"}]}))
+    }
+    async fn chat_probe() -> Json<Value> {
+        Json(json!({
+            "id": "chat",
+            "object": "chat.completion",
+            "choices": [{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]
+        }))
+    }
+    let upstream = Router::new()
+        .route("/v1/models", get(models))
+        .route("/v1/chat/completions", post(chat_probe))
+        .fallback(|| async {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(json!({"error":{"message":"unsupported"}})),
+            )
+        });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let root = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(root.path());
+    for (id, name) in [("vendor", "Vendor"), ("vendor-2", "Vendor 2")] {
+        service
+            .save_provider_with_model_check(ProviderInput {
+                id: id.into(),
+                name: name.into(),
+                protocol: Protocol::OpenAiChatCompletions,
+                endpoint: format!("http://{address}"),
+                endpoint_mode: EndpointMode::BaseUrl,
+                api_key_placement: ApiKeyPlacement::None,
+                api_key: None,
+                enabled: true,
+                models_url: None,
+            })
+            .await
+            .expect("each credential profile must own independent model routes");
+    }
+
+    let state = service.state().unwrap();
+    assert_eq!(state.models.len(), 2);
+    assert_eq!(state.models[0].id, "shared-model");
+    assert_eq!(state.models[1].id, "vendor-2-shared-model");
+    assert_ne!(state.models[0].route_alias, state.models[1].route_alias);
+    assert_eq!(state.models[0].upstream_id, state.models[1].upstream_id);
+}
+
+#[tokio::test]
+async fn adding_a_provider_keeps_configuration_unchanged_when_models_cannot_be_checked() {
+    let upstream = Router::new().fallback(|| async { axum::http::StatusCode::NOT_FOUND });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let root = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(root.path());
+    let error = service
+        .save_provider_with_model_check(ProviderInput {
+            id: "unknown-vendor".into(),
+            name: "Unknown Vendor".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: format!("http://{address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(error.contains("model discovery returned HTTP 404"));
+    let state = service.state().unwrap();
+    assert!(state.providers.is_empty());
+    assert!(state.models.is_empty());
+}
+
+#[tokio::test]
 async fn sync_fails_fast_on_authentication_without_persisting_partial_probe_facts() {
     let upstream = Router::new()
         .route(

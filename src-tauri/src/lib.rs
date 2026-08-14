@@ -27,7 +27,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
-            quick_menu::initialize(app)?;
             let home = app.path().home_dir()?;
             let root = home.join(".grillforge");
             let executable = std::env::current_exe()?;
@@ -149,6 +148,7 @@ pub fn run() {
                     .expect("GrillForge gateway stopped unexpectedly");
             });
             app.manage(status);
+            quick_menu::initialize(app)?;
 
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -161,6 +161,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             application::load_state,
             application::save_provider,
+            application::save_provider_with_model_check,
             application::update_provider,
             application::delete_provider,
             application::sync_provider_models,
@@ -194,7 +195,6 @@ pub fn run() {
             application::query_provider_usage,
             gateway::gateway_status,
             presets::provider_presets,
-            quick_menu::show_main_window,
             integration::integration_status,
             integration::detect_claude_code,
             integration::apply_claude_code,
