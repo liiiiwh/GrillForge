@@ -5089,7 +5089,11 @@ function App() {
                         disabled={Boolean(pending)}
                         type="submit"
                       >
-                        {editingProviderId ? "更新供应商" : "保存供应商"}
+                        {editingProviderId
+                          ? "更新供应商"
+                          : pending === "save_provider_with_model_check"
+                            ? "正在检查模型…"
+                            : "检查并保存"}
                       </button>
                     </div>
                   </form>

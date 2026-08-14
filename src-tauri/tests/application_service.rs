@@ -59,6 +59,68 @@ fn creating_the_same_provider_slug_twice_is_rejected() {
 }
 
 #[test]
+fn deleting_a_provider_cascades_its_unreferenced_models() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let service = ControlPlaneService::new(directory.path());
+    service.save_provider(provider()).expect("provider");
+    service.save_model(model()).expect("model");
+
+    let state = service.delete_provider("local").expect("provider deletion");
+
+    assert!(state.providers.is_empty());
+    assert!(state.models.is_empty());
+}
+
+#[test]
+fn deleting_a_provider_refuses_models_selected_by_a_client() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let service = ControlPlaneService::new(directory.path());
+    service.save_provider(provider()).expect("provider");
+    service.save_model(model()).expect("model");
+    service
+        .set_main_model(Some("local-coder".into()))
+        .expect("selection");
+
+    let error = service
+        .delete_provider("local")
+        .expect_err("selected model must block deletion");
+    let state = service.state().expect("unchanged state");
+
+    assert!(error.contains("local-coder"));
+    assert!(error.contains("claude_code"));
+    assert_eq!(state.providers.len(), 1);
+    assert_eq!(state.models.len(), 1);
+}
+
+#[test]
+fn deleting_a_provider_refuses_models_selected_by_an_extension_subagent() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let service = ControlPlaneService::new(directory.path());
+    service.save_provider(provider()).expect("provider");
+    service.save_model(model()).expect("model");
+    service
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            source_client_id: "claude_code".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: Some("local-coder".into()),
+            capabilities: vec![],
+        })
+        .expect("extension SubAgent");
+
+    let error = service
+        .delete_provider("local")
+        .expect_err("extension model must block deletion");
+    let state = service.state().expect("unchanged state");
+
+    assert!(error.contains("local-coder"));
+    assert!(error.contains("reviewer"));
+    assert_eq!(state.providers.len(), 1);
+    assert_eq!(state.models.len(), 1);
+}
+
+#[test]
 fn explicit_provider_update_can_rotate_a_key_without_exposing_it() {
     let directory = tempfile::tempdir().expect("temp directory");
     let service = ControlPlaneService::new(directory.path());

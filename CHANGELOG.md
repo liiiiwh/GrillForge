@@ -4,6 +4,30 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.8] - 2026-08-14
+
+### Fixed
+
+- Kimi model synchronization now observes `reasoning_content` in real Chat
+  Completions responses and persists the required protocol capability before
+  routing or connection testing existing and newly discovered models.
+- Pi MCP extension installation now exposes the selected Pi runtime's sibling
+  Node executable to `env` shebangs without changing the application's global
+  environment.
+- Deleting a Provider atomically removes its unreferenced models. Models still
+  selected by a client or Extension SubAgent continue to block deletion with
+  the exact reference in the error.
+- Pi installation errors use the available dialog width instead of collapsing
+  into a narrow vertical column.
+
+### Verification
+
+- Every model discovered from the configured Kimi For Coding account passed a
+  live synchronization and Gateway connection test.
+- DeepSeek V4 Flash and V4 Pro passed live protocol synchronization and
+  Gateway connection tests.
+- Full Rust tests, strict Clippy, frontend tests, and the production build pass.
+
 ## [0.2.7] - 2026-08-13
 
 ### Changed

@@ -7,7 +7,9 @@ use crate::configuration::{
     ExtensionSubAgentRecord, MainRecord, ModelRecord, ProviderProtocolEndpoint, ProviderRecord,
 };
 use crate::core::model::{NativeProtocol, ProtocolCapability};
-use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
+use crate::core::provider::{
+    ApiKeyPlacement, Auth, EndpointMode, Protocol, Provider, ProviderDraft,
+};
 use crate::gateway::GatewayStatus;
 use crate::model_discovery;
 use crate::usage_query::{UsageQueryCredentials, UsageQueryPreset, UsageSnapshot};
@@ -355,6 +357,7 @@ impl ControlPlaneService {
             models_url: input.models_url,
             protocol_endpoints: Vec::new(),
         };
+        validate_provider_record(&provider)?;
         let discovered = model_discovery::discover(&provider).await?;
         if discovered.is_empty() {
             return Err("provider model discovery returned no models".to_string());
@@ -382,27 +385,42 @@ impl ControlPlaneService {
 
     pub fn delete_provider(&self, id: &str) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
-        let blocking: Vec<_> = documents
+        if !documents
+            .config
+            .providers
+            .iter()
+            .any(|provider| provider.id == id)
+        {
+            return Err(format!("unknown provider: {id}"));
+        }
+        let owned_model_ids: Vec<_> = documents
             .models
             .models
             .iter()
             .filter(|model| model.provider_id == id)
-            .map(|model| model.display_name.as_str())
+            .map(|model| model.id.clone())
+            .collect();
+        let blocking: Vec<_> = owned_model_ids
+            .iter()
+            .filter_map(|model_id| {
+                model_reference(&documents, model_id)
+                    .map(|selected_by| format!("{model_id} by {selected_by}"))
+            })
             .collect();
         if !blocking.is_empty() {
             return Err(format!(
-                "provider {id} is referenced by models: {}",
+                "provider {id} still has selected models: {}",
                 blocking.join(", ")
             ));
         }
-        let before = documents.config.providers.len();
         documents
             .config
             .providers
             .retain(|provider| provider.id != id);
-        if documents.config.providers.len() == before {
-            return Err(format!("unknown provider: {id}"));
-        }
+        documents
+            .models
+            .models
+            .retain(|model| model.provider_id != id);
         self.save_and_return(documents)
     }
 
@@ -638,17 +656,8 @@ impl ControlPlaneService {
 
     pub fn delete_model(&self, id: &str) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
-        let selected_by = documents.agents.agents.iter().find(|agent| {
-            matches!(&agent.main, MainRecord::Managed(model) if model == id)
-                || agent.model_pool.iter().any(|model| model == id)
-                || agent.model_slots.values().any(|model| model == id)
-                || agent
-                    .codex_agent_models
-                    .iter()
-                    .any(|agent_model| agent_model.model_id == id)
-        });
-        if let Some(agent) = selected_by {
-            return Err(format!("model {id} is selected by {}", agent.id));
+        if let Some(selected_by) = model_reference(&documents, id) {
+            return Err(format!("model {id} is selected by {selected_by}"));
         }
         let before = documents.models.models.len();
         documents.models.models.retain(|model| model.id != id);
@@ -1378,6 +1387,26 @@ impl ControlPlaneService {
     }
 }
 
+fn model_reference(documents: &ConfigurationDocuments, model_id: &str) -> Option<String> {
+    if let Some(agent) = documents.agents.agents.iter().find(|agent| {
+        matches!(&agent.main, MainRecord::Managed(model) if model == model_id)
+            || agent.model_pool.iter().any(|model| model == model_id)
+            || agent.model_slots.values().any(|model| model == model_id)
+            || agent
+                .codex_agent_models
+                .iter()
+                .any(|agent_model| agent_model.model_id == model_id)
+    }) {
+        return Some(agent.id.clone());
+    }
+    documents
+        .agents
+        .extension_subagents
+        .iter()
+        .find(|extension| extension.model_id.as_deref() == Some(model_id))
+        .map(|extension| format!("extension SubAgent {}", extension.id))
+}
+
 fn model_slug(value: &str) -> String {
     let mut slug = String::new();
     let mut needs_separator = false;
@@ -1393,6 +1422,24 @@ fn model_slug(value: &str) -> String {
         }
     }
     slug
+}
+
+fn validate_provider_record(record: &ProviderRecord) -> Result<(), String> {
+    Provider::try_from(ProviderDraft {
+        id: record.id.clone(),
+        name: record.name.clone(),
+        enabled: record.enabled,
+        protocol: record.protocol,
+        endpoint: record.endpoint.clone(),
+        endpoint_mode: record.endpoint_mode,
+        auth: match record.api_key_placement {
+            ApiKeyPlacement::None => Auth::none(),
+            placement => Auth::api_key(placement, record.api_key.clone()),
+        },
+        models_url: record.models_url.clone(),
+    })
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 fn apply_discovered_models(
@@ -1423,11 +1470,27 @@ fn apply_discovered_models(
         .into_iter()
         .filter(|protocol| !supported.contains(protocol))
         .collect::<Vec<_>>();
+        let mut protocol_capabilities = probes
+            .models
+            .get(&model.id)
+            .map(|probe| probe.protocol_capabilities.clone())
+            .unwrap_or_default();
+        if let Some(preset_capabilities) = preset
+            .as_ref()
+            .and_then(|preset| preset.model_protocol_capabilities.get(&model.id))
+        {
+            for capability in preset_capabilities {
+                if !protocol_capabilities.contains(capability) {
+                    protocol_capabilities.push(*capability);
+                }
+            }
+        }
         if let Some(existing) = documents.models.models.iter_mut().find(|existing| {
             existing.provider_id == provider_id && existing.upstream_id == model.id
         }) {
             existing.native_protocols = Some(supported);
             existing.unsupported_native_protocols = unsupported;
+            existing.protocol_capabilities = protocol_capabilities;
             continue;
         }
         let upstream_slug = model_slug(&model.id);
@@ -1456,10 +1519,6 @@ fn apply_discovered_models(
         if documents.models.models.iter().any(|item| item.id == id) {
             return Err(format!("model route collision: {id}"));
         }
-        let protocol_capabilities = preset
-            .as_ref()
-            .and_then(|preset| preset.model_protocol_capabilities.get(&model.id).cloned())
-            .unwrap_or_default();
         documents.models.models.push(ModelRecord {
             id,
             provider_id: provider_id.to_string(),

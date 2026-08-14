@@ -56,6 +56,36 @@ fn one_click_install_uses_the_selected_working_pi_cli_and_rechecks_settings() {
 
 #[cfg(unix)]
 #[test]
+fn one_click_install_exposes_the_selected_pi_runtime_node_to_env_shebangs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("root");
+    let bin = root.path().join("runtime/bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let settings = root.path().join("settings.json");
+    let cli = bin.join("pi");
+    let node = bin.join("node");
+    fs::write(&cli, "#!/usr/bin/env node\n").expect("pi entrypoint");
+    fs::write(
+        &node,
+        format!(
+            "#!/bin/sh\nshift\nmkdir -p '{}'\nprintf '{{\"packages\":[\"{}\"]}}' > '{}'\n",
+            settings.parent().unwrap().display(),
+            PI_MCP_EXTENSION_SOURCE,
+            settings.display(),
+        ),
+    )
+    .expect("node shim");
+    for executable in [&cli, &node] {
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let status = install_pi_mcp_extension_with(&cli, &settings).expect("install through node");
+    assert!(status.installed);
+}
+
+#[cfg(unix)]
+#[test]
 fn install_surfaces_nonzero_exit_and_success_without_registration() {
     use std::os::unix::fs::PermissionsExt;
 

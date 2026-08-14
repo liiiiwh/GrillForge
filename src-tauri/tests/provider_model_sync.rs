@@ -6,7 +6,7 @@ use axum::{
 use grillforge_lib::application::{
     ControlPlaneService, ModelInput, ModelWithNativeProtocolsInput, ProviderInput,
 };
-use grillforge_lib::core::model::NativeProtocol;
+use grillforge_lib::core::model::{NativeProtocol, ProtocolCapability};
 use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::gateway::Gateway;
 use serde_json::{Value, json};
@@ -95,6 +95,69 @@ async fn live_deepseek_sync_records_protocols_and_connects_both_v4_models() {
 }
 
 #[tokio::test]
+#[ignore = "uses the explicitly supplied Kimi key and sends bounded live protocol probes"]
+async fn live_kimi_sync_records_reasoning_and_connects_every_discovered_model() {
+    let key = env::var("GRILLFORGE_LIVE_KIMI_KEY").expect("GRILLFORGE_LIVE_KIMI_KEY must be set");
+    let root = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(root.path());
+    let synchronized = timeout(
+        Duration::from_secs(180),
+        service.save_provider_with_model_check(ProviderInput {
+            id: "kimi-for-coding".into(),
+            name: "Kimi For Coding".into(),
+            protocol: Protocol::AnthropicMessages,
+            endpoint: "https://api.kimi.com/coding/".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::Bearer,
+            api_key: Some(key),
+            enabled: true,
+            models_url: None,
+        }),
+    )
+    .await
+    .expect("Kimi synchronization timed out")
+    .expect("Kimi synchronization");
+    let kimi_models = synchronized
+        .models
+        .iter()
+        .filter(|model| model.provider_id == "kimi-for-coding")
+        .collect::<Vec<_>>();
+    assert!(!kimi_models.is_empty(), "Kimi returned no models");
+    for model in &kimi_models {
+        assert!(model.native_protocols.contains(&NativeProtocol::OpenAiChat));
+        assert!(
+            model
+                .protocol_capabilities
+                .contains(&ProtocolCapability::ReasoningContent),
+            "{} did not expose reasoning_content",
+            model.upstream_id
+        );
+    }
+
+    let gateway = Gateway::new(root.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    tokio::spawn({
+        let router = gateway.router();
+        async move { axum::serve(listener, router).await.unwrap() }
+    });
+    for model in kimi_models {
+        let _route = gateway
+            .status(base_url.clone())
+            .allow_connection_test(&model.id)
+            .unwrap();
+        timeout(
+            Duration::from_secs(90),
+            service.test_model_connection(&base_url, &model.id),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{} connection timed out", model.upstream_id))
+        .unwrap_or_else(|error| panic!("{} connection failed: {error}", model.upstream_id));
+    }
+}
+
+#[tokio::test]
 async fn sync_probes_each_discovered_model_on_each_provider_protocol_once() {
     #[derive(Clone, Default)]
     struct Calls(Arc<Mutex<Vec<(String, String)>>>);
@@ -133,7 +196,7 @@ async fn sync_probes_each_discovered_model_on_each_provider_protocol_once() {
             ("/v1/chat/completions", "alpha" | "beta") => (
                 axum::http::StatusCode::OK,
                 Json(
-                    json!({"id":"chat","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}),
+                    json!({"id":"chat","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"OK","reasoning_content":"checked"},"finish_reason":"stop"}]}),
                 ),
             ),
             _ => (
@@ -203,6 +266,10 @@ async fn sync_probes_each_discovered_model_on_each_provider_protocol_once() {
     );
     let beta = state.models.iter().find(|item| item.id == "beta").unwrap();
     assert_eq!(beta.native_protocols, vec![NativeProtocol::OpenAiChat]);
+    assert_eq!(
+        beta.protocol_capabilities,
+        vec![ProtocolCapability::ReasoningContent]
+    );
     assert_eq!(
         beta.unsupported_native_protocols,
         vec![
@@ -355,6 +422,101 @@ async fn adding_the_same_upstream_models_under_two_providers_namespaces_the_seco
     assert_eq!(state.models[1].id, "vendor-2-shared-model");
     assert_ne!(state.models[0].route_alias, state.models[1].route_alias);
     assert_eq!(state.models[0].upstream_id, state.models[1].upstream_id);
+}
+
+#[tokio::test]
+async fn sync_records_observed_chat_reasoning_before_the_model_is_routed() {
+    let upstream = Router::new()
+        .route(
+            "/v1/models",
+            get(|| async { Json(json!({"data": [{"id": "reasoning-model"}]})) }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(|Json(body): Json<Value>| async move {
+                Json(json!({
+                    "id": "chat_reasoning",
+                    "object": "chat.completion",
+                    "model": body["model"],
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "OK",
+                            "reasoning_content": "checked"
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                }))
+            }),
+        )
+        .fallback(|| async {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(json!({"error":{"message":"unsupported"}})),
+            )
+        });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let root = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(root.path());
+    service
+        .save_provider(ProviderInput {
+            id: "reasoning-vendor".into(),
+            name: "Reasoning Vendor".into(),
+            protocol: Protocol::OpenAiChatCompletions,
+            endpoint: format!("http://{address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .expect("provider");
+    service
+        .save_model(ModelInput {
+            id: "reasoning-model".into(),
+            name: "Reasoning Model".into(),
+            upstream_id: "reasoning-model".into(),
+            provider_id: "reasoning-vendor".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .expect("existing model without protocol capability");
+    let state = service
+        .sync_provider_models("reasoning-vendor")
+        .await
+        .expect("synchronization repairs the existing model facts");
+    let model = state
+        .models
+        .iter()
+        .find(|model| model.upstream_id == "reasoning-model")
+        .unwrap();
+    assert_eq!(
+        model.protocol_capabilities,
+        vec![ProtocolCapability::ReasoningContent]
+    );
+
+    let gateway = Gateway::new(root.path());
+    let gateway_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_address = gateway_listener.local_addr().unwrap();
+    let _connection_test = gateway
+        .status(format!("http://{gateway_address}"))
+        .allow_connection_test(&model.id)
+        .unwrap();
+    tokio::spawn(async move {
+        axum::serve(gateway_listener, gateway.router())
+            .await
+            .unwrap()
+    });
+
+    service
+        .test_model_connection(&format!("http://{gateway_address}"), &model.id)
+        .await
+        .expect("observed reasoning_content must be accepted by the bridge");
 }
 
 #[tokio::test]

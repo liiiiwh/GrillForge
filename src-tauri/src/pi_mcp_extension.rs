@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -36,8 +37,17 @@ pub fn install_pi_mcp_extension_with_timeout(
     if !cli_path.is_file() {
         return Err(format!("Pi CLI does not exist: {}", cli_path.display()));
     }
-    let mut child = Command::new(cli_path)
-        .args(["install", PI_MCP_EXTENSION_SOURCE, "--approve"])
+    let mut command = Command::new(cli_path);
+    command.args(["install", PI_MCP_EXTENSION_SOURCE, "--approve"]);
+    if let Some(bin_dir) = cli_path.parent() {
+        let mut path = OsString::from(bin_dir.as_os_str());
+        if let Some(existing) = std::env::var_os("PATH").filter(|value| !value.is_empty()) {
+            path.push(if cfg!(windows) { ";" } else { ":" });
+            path.push(existing);
+        }
+        command.env("PATH", path);
+    }
+    let mut child = command
         .env_remove("PI_OFFLINE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -327,7 +327,7 @@ button.client-card { width: 100%; cursor: pointer; }
 .pi-mcp-install-confirm h2 { margin: 5px 0 10px; }
 .pi-mcp-install-confirm > p:last-of-type { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.7; }
 .pi-mcp-install-confirm footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
-.pi-mcp-install-error { display: block; max-width: 420px; margin-top: 8px; color: #a34538; font-size: 8px; line-height: 1.5; }
+.pi-mcp-install-error { display: block; width: min(720px,100%); margin-top: 8px; color: #a34538; font-size: 8px; line-height: 1.5; text-align: left; overflow-wrap: break-word; }
 .provider-picker-backdrop { background: rgba(24,27,38,.34); }
 .provider-picker { display: grid; grid-template-rows: auto auto minmax(0,1fr) auto; width: min(900px,100%); max-height: min(760px,calc(100vh - 48px)); overflow: hidden; border: 1px solid #e0e2e8; border-radius: 16px; background: #fff; box-shadow: 0 28px 90px rgba(25,27,39,.26); }
 .provider-picker > header { display: flex; align-items: center; gap: 14px; padding: 22px 24px 17px; }

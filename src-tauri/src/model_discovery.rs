@@ -4,7 +4,7 @@
 //! model IDs only when every listing endpoint is absent.
 
 use crate::configuration::{ProviderProtocolEndpoint, ProviderRecord};
-use crate::core::model::NativeProtocol;
+use crate::core::model::{NativeProtocol, ProtocolCapability};
 use crate::core::provider::{ApiKeyPlacement, EndpointMode, Protocol, build_request_endpoint};
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,7 @@ pub struct DiscoveredModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelProtocolProbe {
     pub supported: Vec<NativeProtocol>,
+    pub protocol_capabilities: Vec<ProtocolCapability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,16 +253,25 @@ pub async fn probe_protocols(
         .build()
         .map_err(|error| format!("could not create protocol probe client: {error}"))?;
     let mut supported_by_model = BTreeMap::<String, Vec<NativeProtocol>>::new();
+    let mut capabilities_by_model = BTreeMap::<String, Vec<ProtocolCapability>>::new();
     let mut provider_supported = HashSet::new();
 
     for endpoint in &endpoints {
         for model in models {
-            if probe_model_protocol(&client, provider, endpoint, &model.id).await? {
+            if let Some(capabilities) =
+                probe_model_protocol(&client, provider, endpoint, &model.id).await?
+            {
                 provider_supported.insert(endpoint.protocol);
                 supported_by_model
                     .entry(model.id.clone())
                     .or_default()
                     .push(endpoint.protocol);
+                let observed = capabilities_by_model.entry(model.id.clone()).or_default();
+                for capability in capabilities {
+                    if !observed.contains(&capability) {
+                        observed.push(capability);
+                    }
+                }
             }
         }
     }
@@ -277,6 +287,9 @@ pub async fn probe_protocols(
                 model.id.clone(),
                 ModelProtocolProbe {
                     supported: supported_by_model.remove(&model.id).unwrap_or_default(),
+                    protocol_capabilities: capabilities_by_model
+                        .remove(&model.id)
+                        .unwrap_or_default(),
                 },
             )
         })
@@ -315,6 +328,38 @@ fn protocol_probe_endpoints(
         }
     }
 
+    // cc-switch keeps protocol-specific variants as sibling presets. When the
+    // Provider still uses the exact preset endpoint, reuse those verified
+    // surfaces for probing instead of guessing that every protocol shares one
+    // URL. A user-edited endpoint remains authoritative and is never replaced.
+    if let Some(selected) = matching_preset(provider)? {
+        if preset_literal_endpoint(&selected)
+            .is_some_and(|endpoint| same_endpoint(endpoint, &provider.endpoint))
+        {
+            let family = selected.name.split(" · ").next().unwrap_or(&selected.name);
+            let catalog = crate::presets::catalog()
+                .map_err(|_| "built-in Provider catalog is invalid".to_string())?;
+            for preset in catalog
+                .presets
+                .iter()
+                .filter(|preset| preset.name.split(" · ").next() == Some(family))
+            {
+                let Some(endpoint) = preset_literal_endpoint(preset) else {
+                    continue;
+                };
+                let protocol = preset_native_protocol(preset.protocol);
+                if let Some(surface) = endpoints
+                    .iter_mut()
+                    .find(|surface| surface.protocol == protocol)
+                {
+                    surface.endpoint = endpoint.to_string();
+                    surface.endpoint_mode = EndpointMode::BaseUrl;
+                    surface.api_key_placement = preset_api_key_placement(preset.auth);
+                }
+            }
+        }
+    }
+
     // DeepSeek exposes its Anthropic-compatible surface under a distinct base
     // path. Keep this one verified upstream fact next to the probe rather than
     // teaching the generic router provider-specific URL heuristics.
@@ -335,12 +380,39 @@ fn protocol_probe_endpoints(
     Ok(endpoints)
 }
 
+fn preset_literal_endpoint(preset: &crate::presets::ProviderPreset) -> Option<&str> {
+    match &preset.endpoint {
+        crate::presets::PresetEndpoint::Literal { url } => Some(url),
+        crate::presets::PresetEndpoint::Parameterized { .. } => None,
+    }
+}
+
+fn same_endpoint(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
+}
+
+fn preset_native_protocol(protocol: crate::presets::PresetProtocol) -> NativeProtocol {
+    match protocol {
+        crate::presets::PresetProtocol::AnthropicMessages => NativeProtocol::AnthropicMessages,
+        crate::presets::PresetProtocol::OpenAiResponses => NativeProtocol::OpenAiResponses,
+        crate::presets::PresetProtocol::OpenAiChatCompletions => NativeProtocol::OpenAiChat,
+        crate::presets::PresetProtocol::GeminiNative => NativeProtocol::GeminiNative,
+    }
+}
+
+fn preset_api_key_placement(auth: crate::presets::PresetAuth) -> ApiKeyPlacement {
+    match auth {
+        crate::presets::PresetAuth::Bearer => ApiKeyPlacement::Bearer,
+        crate::presets::PresetAuth::XApiKey => ApiKeyPlacement::XApiKey,
+    }
+}
+
 async fn probe_model_protocol(
     client: &reqwest::Client,
     provider: &ProviderRecord,
     surface: &ProviderProtocolEndpoint,
     model: &str,
-) -> Result<bool, String> {
+) -> Result<Option<Vec<ProtocolCapability>>, String> {
     let base = Url::parse(&surface.endpoint).map_err(|_| {
         format!(
             "provider {} has an invalid {:?} endpoint",
@@ -392,7 +464,7 @@ async fn probe_model_protocol(
     request = apply_probe_auth(request, provider, surface)?;
     let response = match request.send().await {
         Ok(response) => response,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
     let status = response.status();
     let primary_protocol = match provider.protocol {
@@ -416,13 +488,19 @@ async fn probe_model_protocol(
         ));
     }
     if !status.is_success() {
-        return Ok(false);
+        return Ok(None);
     }
     let body = match response.json::<Value>().await {
         Ok(body) => body,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
-    Ok(valid_protocol_response(surface.protocol, &body))
+    if !valid_protocol_response(surface.protocol, &body) {
+        return Ok(None);
+    }
+    Ok(Some(observed_protocol_capabilities(
+        surface.protocol,
+        &body,
+    )))
 }
 
 fn apply_probe_auth(
@@ -489,6 +567,37 @@ fn valid_protocol_response(protocol: NativeProtocol, body: &Value) -> bool {
     }
 }
 
+fn observed_protocol_capabilities(
+    protocol: NativeProtocol,
+    body: &Value,
+) -> Vec<ProtocolCapability> {
+    match protocol {
+        NativeProtocol::OpenAiChat
+            if body
+                .pointer("/choices/0/message/reasoning_content")
+                .is_some_and(|value| !value.is_null()) =>
+        {
+            vec![ProtocolCapability::ReasoningContent]
+        }
+        NativeProtocol::OpenAiResponses
+            if body
+                .get("output")
+                .and_then(Value::as_array)
+                .is_some_and(|output| {
+                    output.iter().any(|item| {
+                        matches!(
+                            item.get("type").and_then(Value::as_str),
+                            Some("reasoning" | "reasoning_item")
+                        )
+                    })
+                }) =>
+        {
+            vec![ProtocolCapability::ReasoningItems]
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn models_endpoints(provider: &ProviderRecord) -> Result<Vec<Url>, String> {
     if let Some(models_url) = provider.models_url.as_deref() {
         return Url::parse(models_url)
@@ -513,7 +622,7 @@ fn models_endpoints(provider: &ProviderRecord) -> Result<Vec<Url>, String> {
                 vec![format!("{}/v1/models", &path[..index])]
             } else {
                 let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-                vec![format!("{parent}/models")]
+                vec![format!("{parent}/v1/models")]
             }
         }
         EndpointMode::BaseUrl => {
@@ -556,4 +665,141 @@ fn is_version_path(path: &str) -> bool {
             !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(endpoint: &str, mode: EndpointMode) -> ProviderRecord {
+        ProviderRecord {
+            id: "test".into(),
+            name: "Test".into(),
+            enabled: true,
+            protocol: Protocol::AnthropicMessages,
+            endpoint: endpoint.into(),
+            endpoint_mode: mode,
+            api_key_placement: ApiKeyPlacement::Bearer,
+            api_key: "secret".into(),
+            models_url: None,
+            protocol_endpoints: Vec::new(),
+        }
+    }
+
+    fn urls(provider: &ProviderRecord) -> Vec<String> {
+        models_endpoints(provider)
+            .unwrap()
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn compatible_subpaths_use_the_same_bounded_candidates_as_cc_switch() {
+        assert_eq!(
+            urls(&provider(
+                "https://api.kimi.com/coding/",
+                EndpointMode::BaseUrl
+            )),
+            vec![
+                "https://api.kimi.com/coding/v1/models",
+                "https://api.kimi.com/v1/models",
+                "https://api.kimi.com/models",
+            ]
+        );
+        assert_eq!(
+            urls(&provider(
+                "https://open.bigmodel.cn/api/anthropic",
+                EndpointMode::BaseUrl
+            )),
+            vec![
+                "https://open.bigmodel.cn/api/anthropic/v1/models",
+                "https://open.bigmodel.cn/v1/models",
+                "https://open.bigmodel.cn/models",
+            ]
+        );
+    }
+
+    #[test]
+    fn versioned_and_exact_endpoints_match_cc_switch_derivation() {
+        assert_eq!(
+            urls(&provider(
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+                EndpointMode::BaseUrl
+            )),
+            vec![
+                "https://open.bigmodel.cn/api/coding/paas/v4/models",
+                "https://open.bigmodel.cn/api/coding/paas/v4/v1/models",
+            ]
+        );
+        assert_eq!(
+            urls(&provider(
+                "https://proxy.example.com/chat/completions",
+                EndpointMode::ExactUrl
+            )),
+            vec!["https://proxy.example.com/chat/v1/models"]
+        );
+        assert_eq!(
+            urls(&provider(
+                "https://proxy.example.com/v1/chat/completions",
+                EndpointMode::ExactUrl
+            )),
+            vec!["https://proxy.example.com/v1/models"]
+        );
+    }
+
+    #[test]
+    fn explicit_models_url_is_the_only_candidate() {
+        let mut provider = provider("https://api.example.com/anthropic", EndpointMode::BaseUrl);
+        provider.models_url = Some("https://catalog.example.com/models".into());
+        assert_eq!(urls(&provider), vec!["https://catalog.example.com/models"]);
+    }
+
+    #[test]
+    fn preset_siblings_supply_real_protocol_specific_probe_endpoints() {
+        let mut kimi = provider("https://api.kimi.com/coding/", EndpointMode::BaseUrl);
+        kimi.id = "kimi-for-coding".into();
+        let surfaces = protocol_probe_endpoints(&kimi).unwrap();
+        assert_eq!(
+            surfaces
+                .iter()
+                .find(|surface| surface.protocol == NativeProtocol::AnthropicMessages)
+                .unwrap()
+                .endpoint,
+            "https://api.kimi.com/coding/"
+        );
+        assert_eq!(
+            surfaces
+                .iter()
+                .find(|surface| surface.protocol == NativeProtocol::OpenAiChat)
+                .unwrap()
+                .endpoint,
+            "https://api.kimi.com/coding/v1"
+        );
+
+        let mut deepseek = provider("https://api.deepseek.com", EndpointMode::BaseUrl);
+        deepseek.id = "deepseek".into();
+        deepseek.protocol = Protocol::OpenAiResponses;
+        let surfaces = protocol_probe_endpoints(&deepseek).unwrap();
+        assert_eq!(
+            surfaces
+                .iter()
+                .find(|surface| surface.protocol == NativeProtocol::AnthropicMessages)
+                .unwrap()
+                .endpoint,
+            "https://api.deepseek.com/anthropic"
+        );
+    }
+
+    #[test]
+    fn an_edited_preset_endpoint_is_not_replaced_by_catalog_siblings() {
+        let mut provider = provider("https://proxy.example.com", EndpointMode::BaseUrl);
+        provider.id = "kimi-for-coding".into();
+        let surfaces = protocol_probe_endpoints(&provider).unwrap();
+        assert!(
+            surfaces
+                .iter()
+                .all(|surface| surface.endpoint == "https://proxy.example.com")
+        );
+    }
 }
