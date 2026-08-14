@@ -165,10 +165,14 @@ fn anthropic_to_chat(
         "max_tokens":max_tokens,
         "messages":messages
     });
-    if let Some(effort) =
-        super::request_hints::validate(object, capabilities.reasoning_effort, "reasoning_effort")?
-    {
-        result["reasoning_effort"] = json!(effort);
+    if let Some(effort) = super::request_hints::validate(
+        object,
+        capabilities.reasoning_effort || capabilities.reasoning_content,
+        "reasoning_content or reasoning_effort",
+    )? {
+        if capabilities.reasoning_effort {
+            result["reasoning_effort"] = json!(effort);
+        }
     }
     if let Some(value) = object.get("temperature") {
         result["temperature"] = json!(finite_unit_number(value, "temperature")?);

@@ -510,3 +510,33 @@ async fn chat_accepts_real_claude_hints_only_with_explicit_reasoning_effort_capa
     assert!(request.get("metadata").is_none());
     assert!(request.get("context_management").is_none());
 }
+
+#[tokio::test]
+async fn reasoning_content_models_accept_claude_thinking_without_sending_reasoning_effort() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chat_kimi","model":"kimi-for-coding-highspeed",
+        "choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"Checked it","content":"3"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":2}
+    }))
+    .await;
+
+    let response = OpenAiChatBridge::new(base_url, "chat-secret")
+        .with_capabilities(OpenAiChatCapabilities {
+            reasoning_content: true,
+            reasoning_effort: false,
+        })
+        .complete(json!({
+            "model":"kimi-for-coding-highspeed","max_tokens":32,
+            "output_config":{"effort":"high"},
+            "thinking":{"display":"omitted","type":"adaptive"},
+            "messages":[{"role":"user","content":"Only output 3"}]
+        }))
+        .await
+        .unwrap();
+
+    let request = captured.await.unwrap().body;
+    assert!(request.get("reasoning_effort").is_none());
+    assert_eq!(response["content"][0]["type"], "thinking");
+    assert_eq!(response["content"][0]["thinking"], "Checked it");
+    assert_eq!(response["content"][1]["text"], "3");
+}

@@ -4,6 +4,23 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.10] - 2026-08-14
+
+### Fixed
+
+- Claude Code and Claude Client extension SubAgents can now use Chat providers
+  such as Kimi that return `reasoning_content` but do not accept the separate
+  OpenAI `reasoning_effort` request parameter.
+- The Chat bridge preserves Claude thinking semantics without sending an
+  unsupported upstream field, matching the cc-switch routing boundary.
+
+### Verification
+
+- The installed Claude Code CLI completed a real streamed extension SubAgent
+  request through GrillForge and Kimi `kimi-for-coding-highspeed` in under two
+  seconds.
+- Full Rust tests, strict Clippy, frontend tests, and the production build pass.
+
 ## [0.2.9] - 2026-08-14
 
 ### Fixed
