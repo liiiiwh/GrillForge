@@ -962,6 +962,46 @@ function Badge({
   return <span className={`badge badge--${tone}`}>{children}</span>;
 }
 
+type DashboardClient = {
+  id: string;
+  name: string;
+  detail: string;
+  tone: "neutral" | "good" | "warn";
+  status: string;
+};
+
+export function DashboardClientList({
+  clients,
+  onSelect,
+}: {
+  clients: DashboardClient[];
+  onSelect: (clientId: string) => void;
+}) {
+  return (
+    <div className="dashboard-client-list" data-testid="dashboard-client-list">
+      {clients.map((client) => (
+        <button key={client.id} onClick={() => onSelect(client.id)}>
+          <ClientLogo clientId={client.id} name={client.name} />
+          <div>
+            <strong>{client.name}</strong>
+            <small>{client.detail}</small>
+          </div>
+          <Badge tone={client.tone}>{client.status}</Badge>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function DashboardMascot() {
+  return (
+    <div className="agent-orb" aria-hidden="true">
+      <span>⌁</span>
+      <i>••</i>
+    </div>
+  );
+}
+
 export function ProviderProtocolFacts({
   provider,
   model,
@@ -2171,6 +2211,51 @@ function App() {
   const selectedClientProviders = selectedAdditionalClient
     ? providers.filter((provider) => provider.enabled)
     : [];
+  const dashboardClients: DashboardClient[] = ready
+    ? [
+        {
+          id: "claude_code",
+          name: "Claude Code",
+          detail: `${Object.keys(state.modelSlots).length} 个槽位 · ${(state.clientExtensionSubagentIds.claude_code ?? []).length} 个扩展`,
+          tone: integrationTone,
+          status: takeoverLabel(integration.takeover),
+        },
+        {
+          id: "claude_desktop",
+          name: "Claude Client",
+          detail: `${Object.keys(state.claudeDesktopModelSlots).length} 个对话角色`,
+          tone: desktopTone,
+          status: takeoverLabel(claudeDesktop.takeover),
+        },
+        {
+          id: "codex",
+          name: "Codex",
+          detail: state.codexMainModelId ? "已设默认模型" : "跟随原生",
+          tone: codexTone,
+          status: takeoverLabel(codexStatus.takeover),
+        },
+        {
+          id: "pi",
+          name: "Pi",
+          detail: `${state.piEnabledModelIds.length} 个可用模型`,
+          tone: piTone,
+          status: takeoverLabel(piStatus.takeover),
+        },
+        ...additionalClients.map((client) => {
+          const status = clientStatuses[client.id];
+          const configuration = state.clientConfigurations[client.id];
+          return {
+            id: client.id,
+            name: client.name,
+            detail: configuration.mainModelId
+              ? `${configuration.enabledModelIds.length || 1} 个模型`
+              : "跟随原生",
+            tone: takeoverTone(status.takeover),
+            status: takeoverLabel(status.takeover),
+          };
+        }),
+      ]
+    : [];
 
   return (
     <div className="app-shell">
@@ -2261,68 +2346,15 @@ function App() {
                     <div>
                       <p className="kicker">客户端</p>
                       <h2>客户端配置</h2>
-                      <div className="dashboard-client-list">
-                        <button
-                          onClick={() => {
-                            selectView("clients");
-                            selectClient("claude_code");
-                          }}
-                        >
-                          <ClientLogo clientId="claude_code" name="Claude Code" />
-                          <div>
-                            <strong>Claude Code</strong>
-                            <small>
-                              {Object.keys(state.modelSlots).length} 个槽位 ·{" "}
-                              {(state.clientExtensionSubagentIds.claude_code ?? []).length} 个扩展
-                            </small>
-                          </div>
-                          <Badge tone={integrationTone}>
-                            {takeoverLabel(integration.takeover)}
-                          </Badge>
-                        </button>
-                        <button
-                          onClick={() => {
-                            selectView("clients");
-                            selectClient("claude_desktop");
-                          }}
-                        >
-                          <ClientLogo clientId="claude_desktop" name="Claude Client" />
-                          <div>
-                            <strong>Claude Client</strong>
-                            <small>
-                              {
-                                Object.keys(state.claudeDesktopModelSlots)
-                                  .length
-                              }{" "}
-                              个对话角色
-                            </small>
-                          </div>
-                          <Badge tone={desktopTone}>
-                            {takeoverLabel(claudeDesktop.takeover)}
-                          </Badge>
-                        </button>
-                        <button
-                          onClick={() => {
-                            selectView("clients");
-                            selectClient("pi");
-                          }}
-                        >
-                          <ClientLogo clientId="pi" name="Pi" />
-                          <div>
-                            <strong>Pi</strong>
-                            <small>
-                              {state.piEnabledModelIds.length} 个可用模型
-                            </small>
-                          </div>
-                          <Badge tone={piTone}>
-                            {takeoverLabel(piStatus.takeover)}
-                          </Badge>
-                        </button>
-                      </div>
+                      <DashboardClientList
+                        clients={dashboardClients}
+                        onSelect={(clientId) => {
+                          selectView("clients");
+                          selectClient(clientId);
+                        }}
+                      />
                     </div>
-                    <div className="agent-orb">
-                      <AppLogo />
-                    </div>
+                    <DashboardMascot />
                   </article>
                   <article className="quick-action-card">
                     <p className="kicker">快速操作</p>

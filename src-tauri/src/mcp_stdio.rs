@@ -1,5 +1,5 @@
 use reqwest::blocking::Client;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use std::io::{self, BufRead, Read, Write};
 use std::time::Duration;
@@ -48,6 +48,7 @@ fn forward_with_timeout(
         let response = client
             .post(url)
             .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(ACCEPT, "application/json, text/event-stream")
             .header(CONTENT_TYPE, "application/json")
             .json(&request)
             .send()
@@ -61,6 +62,15 @@ fn forward_with_timeout(
         if !expects_response {
             continue;
         }
+        if response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"))
+        {
+            relay_event_stream(response, &mut output)?;
+            continue;
+        }
         let mut bytes = Vec::new();
         response
             .take((MAX_MESSAGE_BYTES + 1) as u64)
@@ -71,14 +81,58 @@ fn forward_with_timeout(
         }
         let response: Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("invalid JSON from GrillForge MCP service: {error}"))?;
-        serde_json::to_writer(&mut output, &response)
-            .map_err(|error| format!("could not write MCP stdout: {error}"))?;
-        output
-            .write_all(b"\n")
-            .and_then(|()| output.flush())
-            .map_err(|error| format!("could not write MCP stdout: {error}"))?;
+        write_message(&mut output, &response)?;
     }
     Ok(())
+}
+
+fn relay_event_stream(response: impl Read, output: &mut impl Write) -> Result<(), String> {
+    let mut reader = io::BufReader::new(response);
+    let mut data = String::new();
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|error| format!("could not read GrillForge MCP event stream: {error}"))?;
+        if read == 0 {
+            if !data.is_empty() {
+                write_event_data(output, &data)?;
+            }
+            return Ok(());
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            if !data.is_empty() {
+                write_event_data(output, &data)?;
+                data.clear();
+            }
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.strip_prefix(' ').unwrap_or(value));
+            if data.len() > MAX_MESSAGE_BYTES {
+                return Err("MCP event exceeds 4 MiB".into());
+            }
+        }
+    }
+}
+
+fn write_event_data(output: &mut impl Write, data: &str) -> Result<(), String> {
+    let message: Value = serde_json::from_str(data)
+        .map_err(|error| format!("invalid JSON from GrillForge MCP event stream: {error}"))?;
+    write_message(output, &message)
+}
+
+fn write_message(output: &mut impl Write, message: &Value) -> Result<(), String> {
+    serde_json::to_writer(&mut *output, message)
+        .map_err(|error| format!("could not write MCP stdout: {error}"))?;
+    output
+        .write_all(b"\n")
+        .and_then(|()| output.flush())
+        .map_err(|error| format!("could not write MCP stdout: {error}"))
 }
 
 #[cfg(test)]

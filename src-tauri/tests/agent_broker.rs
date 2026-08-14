@@ -10,6 +10,87 @@ use std::os::unix::fs::PermissionsExt;
 use tokio::net::TcpListener;
 
 #[tokio::test]
+async fn run_agent_streams_coarse_progress_then_one_final_result() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    fs::write(
+        &runtime,
+        "#!/bin/sh\nsleep 0.1\nprintf '%s' '{\"type\":\"result\",\"result\":\"final-only-result\"}'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    gateway
+        .status(format!("http://{address}"))
+        .activate_client_agent_broker(
+            "codex",
+            &service.state().unwrap(),
+            "progress-token",
+            &runtime,
+            directory.path(),
+            vec![AgentRuntimeRoute {
+                extension_id: "reviewer".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/mcp/codex"))
+        .bearer_auth("progress-token")
+        .header("accept", "application/json, text/event-stream")
+        .json(&json!({
+            "jsonrpc":"2.0","id":7,"method":"tools/call",
+            "params":{
+                "name":"run_agent",
+                "arguments":{
+                    "extensionId":"reviewer",
+                    "cwd":directory.path(),
+                    "prompt":"SECRET PROMPT MUST NOT ENTER PROGRESS"
+                },
+                "_meta":{"progressToken":"task-7"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let body = response.text().await.unwrap();
+    let events = body
+        .split("\n\n")
+        .filter_map(|event| event.strip_prefix("data: "))
+        .map(|data| serde_json::from_str::<Value>(data.trim()).unwrap())
+        .collect::<Vec<_>>();
+    assert!(events.len() >= 2, "{body}");
+    assert_eq!(events[0]["method"], "notifications/progress");
+    assert_eq!(events[0]["params"]["progressToken"], "task-7");
+    assert_eq!(events[0]["params"]["progress"], 1);
+    assert!(!body.contains("SECRET PROMPT"), "{body}");
+    let final_response = events.last().unwrap();
+    assert_eq!(final_response["id"], 7);
+    assert_eq!(
+        final_response["result"]["content"][0]["text"],
+        "final-only-result"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.get("id").is_some())
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn client_scoped_mcp_broker_resolves_the_extension_and_launches_child_only_routing() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let service = ControlPlaneService::new(directory.path());

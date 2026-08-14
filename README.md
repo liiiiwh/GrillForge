@@ -121,7 +121,7 @@ pnpm tauri dev
 1. 在“扩展 SubAgent”页面同步并选择本机 Agent。
 2. 可选择跟随来源 Agent 原生模型，或绑定一个 GrillForge 模型。
 3. 在目标客户端页面挂载客户端专属 MCP，再开启允许该客户端使用的扩展 SubAgent。绑定变化会实时更新已挂载 MCP 的 Agent 列表；关闭全部绑定不会自动卸载 MCP。
-4. `run_agent` 等待本机 Agent 完成后只返回最终结果，不轮询或回传中间内容；工作流可并发调用多个扩展 SubAgent，单次任务上限为三小时。
+4. `run_agent` 等待本机 Agent 完成，支持时在工具卡显示不含任务内容的简短 MCP 进度，结束后只返回一次最终结果；无需轮询，工作流可并发调用多个扩展 SubAgent，单次任务上限为三小时。
 5. Pi 通过社区 `pi-mcp-extension` 接入；GrillForge 可在用户确认后安装固定版本。
 
 模型配置、MCP 挂载和扩展 SubAgent 绑定彼此独立。MCP 只暴露固定的 Agent 列表与调用入口；实际 Agent Loop 和工具始终由来源客户端的本机 Runtime 执行。

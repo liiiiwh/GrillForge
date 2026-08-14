@@ -4,6 +4,30 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.4] - 2026-08-13
+
+### Added
+
+- `run_agent` now emits standard MCP progress notifications during long native
+  Agent calls while keeping prompts, tool output, and intermediate Agent text
+  out of the primary conversation. The final result is still returned once.
+- Claude Client's stdio MCP bridge relays streaming progress notifications and
+  retains the three-hour runtime boundary.
+
+### Changed
+
+- The control-center client card now lists every supported client in a compact
+  scrollable region and restores the original robot illustration.
+- HTTP MCP clients share the same progress implementation, so clients that
+  support MCP Progress gain status updates without client-specific state or
+  polling APIs.
+
+### Verification
+
+- Added public HTTP/SSE and stdio bridge regressions for progress delivery,
+  final-result uniqueness, prompt isolation, and JSON-only compatibility.
+- Full Rust tests, strict Clippy, frontend tests, and production build pass.
+
 ## [0.2.3] - 2026-08-13
 
 ### Changed

@@ -18,8 +18,10 @@ use axum::extract::{OriginalUri, Path as AxumPath, State};
 use axum::http::{HeaderMap, HeaderName, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use bytes::Bytes;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -2027,6 +2029,20 @@ async fn agent_broker_mcp_for_client(
         Some(method) => method,
         None => return mcp_error(id, -32600, "JSON-RPC method must be a string"),
     };
+    if method == "tools/call"
+        && request.pointer("/params/name").and_then(Value::as_str) == Some("run_agent")
+        && accepts_event_stream(&headers)
+    {
+        if let Some(progress_token) = request.pointer("/params/_meta/progressToken").cloned() {
+            if !progress_token.is_string() && !progress_token.is_number() {
+                return mcp_error(id, -32602, "progressToken must be a string or number");
+            }
+            let Some(arguments) = request.pointer("/params/arguments").cloned() else {
+                return mcp_error(id, -32602, "run_agent arguments are required");
+            };
+            return run_agent_progress_response(id, progress_token, active, arguments);
+        }
+    }
     let result = match method {
         "initialize" => json!({
             "protocolVersion": request
@@ -2035,7 +2051,7 @@ async fn agent_broker_mcp_for_client(
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。run_agent 会等待本机原生 Agent 完成，并只返回最终结果；不要轮询中间输出。并行任务可并发调用多个 run_agent。不要先启动客户端内置 Agent。仅当列表为空、没有匹配项，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
+            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。run_agent 会等待本机原生 Agent 完成；运行期间只通过 MCP progress 展示简短状态，不会把中间输出写入主会话，结束后只返回一次最终结果。不要轮询中间输出。并行任务可并发调用多个 run_agent。不要先启动客户端内置 Agent。仅当列表为空、没有匹配项，或用户明确要求使用原生 Agent 时，才使用客户端内置 Agent。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -2059,7 +2075,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
-                    "description": "Runs one delegated task and returns only its final result. The local source Coding Agent owns the Agent loop and tools. Calls may run for up to three hours; do not poll intermediate output. Workflow clients may invoke multiple run_agent calls concurrently. Provide cwd and a complete prompt; set webAccess=true only when explicitly needed. Never submit runtime, model, or Provider parameters or silently switch Agent. 使用 extensionId 委派任务并等待最终结果。",
+                    "description": "Runs one delegated task and returns only its final result. When the MCP client supports progress notifications, it shows coarse runtime status without adding Agent output to the main conversation. The local source Coding Agent owns the Agent loop and tools. Calls may run for up to three hours; do not poll intermediate output. Workflow clients may invoke multiple run_agent calls concurrently. Provide cwd and a complete prompt; set webAccess=true only when explicitly needed. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务并等待最终结果。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": false,
@@ -2107,6 +2123,81 @@ async fn agent_broker_mcp_for_client(
         Json(json!({"jsonrpc": "2.0", "id": id, "result": result})),
     )
         .into_response()
+}
+
+fn accepts_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|item| item.trim() == "text/event-stream")
+        })
+}
+
+fn run_agent_progress_response(
+    id: Value,
+    progress_token: Value,
+    active: ActiveAgentBroker,
+    arguments: Value,
+) -> Response {
+    let stream = async_stream::stream! {
+        yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": {
+                "progressToken": progress_token,
+                "progress": 1,
+                "message": "正在启动扩展 SubAgent"
+            }
+        })));
+
+        let task = run_agent(active, arguments);
+        tokio::pin!(task);
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        heartbeat.tick().await;
+        let mut progress = 1_u64;
+        let result = loop {
+            tokio::select! {
+                result = &mut task => break result,
+                _ = heartbeat.tick() => {
+                    progress += 1;
+                    yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {
+                            "progressToken": progress_token,
+                            "progress": progress,
+                            "message": "扩展 SubAgent 正在运行"
+                        }
+                    })));
+                }
+            }
+        };
+        let result = match result {
+            Ok(text) => mcp_tool_result(text, false),
+            Err(message) => mcp_tool_result(message, true),
+        };
+        yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        })));
+    };
+    let mut response = Response::new(Body::from_stream(stream));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "text/event-stream".parse().expect("static content type"),
+    );
+    response
+}
+
+fn mcp_sse_event(message: Value) -> Bytes {
+    Bytes::from(format!(
+        "data: {}\n\n",
+        serde_json::to_string(&message).expect("JSON-RPC message is serializable")
+    ))
 }
 
 fn mcp_tool_result(text: String, is_error: bool) -> Value {
