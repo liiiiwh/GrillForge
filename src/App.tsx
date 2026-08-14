@@ -1002,6 +1002,80 @@ export function DashboardMascot() {
   );
 }
 
+export function SidebarServiceStatus({
+  ready,
+  mountedClientCount,
+}: {
+  ready: boolean;
+  mountedClientCount: number;
+}) {
+  return (
+    <div className="sidebar-foot">
+      <span
+        className={`status-dot ${ready ? "status-dot--good" : "status-dot--error"}`}
+      />
+      <div>
+        <strong>{ready ? "GrillForge 已就绪" : "服务不可用"}</strong>
+        <small>
+          {ready
+            ? `${mountedClientCount} 个客户端已挂载 MCP`
+            : "请重新启动应用"}
+        </small>
+      </div>
+    </div>
+  );
+}
+
+export function DashboardQuickActions({
+  onClients,
+  onNewProvider,
+  onProviders,
+  onNewExtension,
+}: {
+  onClients: () => void;
+  onNewProvider: () => void;
+  onProviders: () => void;
+  onNewExtension: () => void;
+}) {
+  return (
+    <article className="quick-action-card">
+      <p className="kicker">快速操作</p>
+      <button onClick={onClients}>
+        <span>◇</span>
+        <div>
+          <strong>配置客户端</strong>
+          <small>选择模型和模型池</small>
+        </div>
+        <i>›</i>
+      </button>
+      <button onClick={onNewProvider}>
+        <span>◎</span>
+        <div>
+          <strong>添加供应商</strong>
+          <small>从供应商预设开始</small>
+        </div>
+        <i>›</i>
+      </button>
+      <button onClick={onProviders}>
+        <span>◉</span>
+        <div>
+          <strong>同步供应商模型</strong>
+          <small>自动同步或手动添加</small>
+        </div>
+        <i>›</i>
+      </button>
+      <button onClick={onNewExtension}>
+        <span>✦</span>
+        <div>
+          <strong>添加扩展 SubAgent</strong>
+          <small>复用本机 Coding Agent</small>
+        </div>
+        <i>›</i>
+      </button>
+    </article>
+  );
+}
+
 export function ProviderProtocolFacts({
   provider,
   model,
@@ -2256,6 +2330,9 @@ function App() {
         }),
       ]
     : [];
+  const mountedClientCount = Object.values(mcpStatuses).filter(
+    (status) => status.mounted,
+  ).length;
 
   return (
     <div className="app-shell">
@@ -2279,19 +2356,10 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-foot">
-          <span
-            className={`status-dot ${ready ? "status-dot--good" : "status-dot--error"}`}
-          />
-          <div>
-            <strong>{ready ? "GrillForge 已就绪" : "服务不可用"}</strong>
-            <small>
-              {ready
-                ? `Claude Code ${takeoverLabel(integration.takeover)}`
-                : "请重新启动应用"}
-            </small>
-          </div>
-        </div>
+        <SidebarServiceStatus
+          ready={Boolean(ready)}
+          mountedClientCount={mountedClientCount}
+        />
       </aside>
 
       <main className={`workspace workspace--${view}`}>
@@ -2356,33 +2424,15 @@ function App() {
                     </div>
                     <DashboardMascot />
                   </article>
-                  <article className="quick-action-card">
-                    <p className="kicker">快速操作</p>
-                    <button onClick={() => selectView("clients")}>
-                      <span>◇</span>
-                      <div>
-                        <strong>配置客户端</strong>
-                        <small>选择模型和模型池</small>
-                      </div>
-                      <i>›</i>
-                    </button>
-                    <button onClick={openNewProvider}>
-                      <span>◎</span>
-                      <div>
-                        <strong>添加供应商</strong>
-                        <small>从供应商预设开始</small>
-                      </div>
-                      <i>›</i>
-                    </button>
-                    <button onClick={() => selectView("providers")}>
-                      <span>◉</span>
-                      <div>
-                        <strong>同步供应商模型</strong>
-                        <small>自动同步或手动添加</small>
-                      </div>
-                      <i>›</i>
-                    </button>
-                  </article>
+                  <DashboardQuickActions
+                    onClients={() => selectView("clients")}
+                    onNewProvider={openNewProvider}
+                    onProviders={() => selectView("providers")}
+                    onNewExtension={() => {
+                      selectView("extension_subagents");
+                      openNewExtension();
+                    }}
+                  />
                 </section>
                 <section className="metric-grid metric-grid--four">
                   <article className="metric-card">

@@ -4,6 +4,19 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.5] - 2026-08-13
+
+### Changed
+
+- The sidebar now summarizes the number of clients with GrillForge MCP mounted
+  instead of showing one Claude Code integration state.
+- Quick actions now open the extension SubAgent creation flow directly.
+
+### Verification
+
+- Added frontend regressions for the MCP mount summary and extension SubAgent
+  quick action; all frontend tests and the production build pass.
+
 ## [0.2.4] - 2026-08-13
 
 ### Added

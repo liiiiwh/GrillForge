@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-import { DashboardClientList, DashboardMascot } from "./App";
+import {
+  DashboardClientList,
+  DashboardMascot,
+  DashboardQuickActions,
+  SidebarServiceStatus,
+} from "./App";
 
 describe("control center clients", () => {
   it("renders every supported client in one scrollable list", () => {
@@ -44,5 +49,30 @@ describe("control center clients", () => {
 
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector(".agent-orb")).toBeTruthy();
+  });
+
+  it("summarizes platform MCP mounts in the sidebar", () => {
+    render(<SidebarServiceStatus ready mountedClientCount={3} />);
+
+    expect(screen.getByText("GrillForge 已就绪")).toBeTruthy();
+    expect(screen.getByText("3 个客户端已挂载 MCP")).toBeTruthy();
+  });
+
+  it("opens the new extension SubAgent flow from quick actions", () => {
+    const onNewExtension = vi.fn();
+    render(
+      <DashboardQuickActions
+        onClients={() => {}}
+        onNewProvider={() => {}}
+        onProviders={() => {}}
+        onNewExtension={onNewExtension}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /添加扩展 SubAgent/ }),
+    );
+
+    expect(onNewExtension).toHaveBeenCalledOnce();
   });
 });
