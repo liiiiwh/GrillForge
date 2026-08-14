@@ -305,7 +305,14 @@ fn convert_message(
                 content_parts.push(json!({"type":"text","text":text}));
             }
             "thinking" if capabilities.reasoning_content => {
-                reject_unknown(block, &["type", "thinking"], Some(&block_field))?;
+                reject_unknown(
+                    block,
+                    &["type", "thinking", "signature"],
+                    Some(&block_field),
+                )?;
+                if let Some(signature) = block.get("signature") {
+                    non_empty_string(Some(signature), &format!("{block_field}.signature"))?;
+                }
                 reasoning.push(non_empty_string(
                     block.get("thinking"),
                     &format!("{block_field}.thinking"),
@@ -314,6 +321,16 @@ fn convert_message(
             "thinking" => {
                 return Err(invalid_request(
                     "thinking blocks require the provider reasoning_content capability",
+                ));
+            }
+            "redacted_thinking" if capabilities.reasoning_content => {
+                reject_unknown(block, &["type", "data"], Some(&block_field))?;
+                non_empty_string(block.get("data"), &format!("{block_field}.data"))?;
+                reasoning.push("[redacted thinking]");
+            }
+            "redacted_thinking" => {
+                return Err(invalid_request(
+                    "redacted_thinking blocks require the provider reasoning_content capability",
                 ));
             }
             "image" => {
@@ -403,11 +420,16 @@ fn convert_message(
         Value::Array(content_parts)
     };
     let mut message = json!({"role":role,"content":content});
-    if !tool_calls.is_empty() {
+    let has_tool_calls = !tool_calls.is_empty();
+    if has_tool_calls {
         message["tool_calls"] = Value::Array(tool_calls);
     }
-    if !reasoning.is_empty() {
-        message["reasoning_content"] = json!(reasoning.join("\n"));
+    if has_tool_calls && capabilities.reasoning_content {
+        message["reasoning_content"] = json!(if reasoning.is_empty() {
+            "tool call".to_owned()
+        } else {
+            reasoning.join("\n")
+        });
     }
     output.push(message);
     Ok(())
@@ -523,7 +545,7 @@ fn convert_tool_choice(value: &Value) -> Result<Value, BridgeError> {
 
 fn chat_to_anthropic(
     body: Value,
-    capabilities: OpenAiChatCapabilities,
+    _capabilities: OpenAiChatCapabilities,
 ) -> Result<Value, BridgeError> {
     let object = body
         .as_object()
@@ -554,16 +576,10 @@ fn chat_to_anthropic(
         ));
     }
     let mut content = Vec::new();
-    if let Some(reasoning) = message.get("reasoning_content") {
-        if !capabilities.reasoning_content {
-            return Err(invalid_response(
-                "reasoning_content requires the provider capability",
-            ));
-        }
-        let reasoning = response_string(Some(reasoning), "choices[0].message.reasoning_content")?;
-        if !reasoning.is_empty() {
-            content.push(json!({"type":"thinking","thinking":reasoning}));
-        }
+    if let Some(reasoning) =
+        super::chat_reasoning::extract_reasoning_field_text(&Value::Object(message.clone()))
+    {
+        content.push(json!({"type":"thinking","thinking":reasoning}));
     }
     match message.get("content") {
         Some(Value::String(text)) if !text.is_empty() => {

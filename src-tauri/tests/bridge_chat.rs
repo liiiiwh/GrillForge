@@ -307,6 +307,89 @@ async fn explicit_reasoning_capability_preserves_request_and_response_fields() {
 }
 
 #[tokio::test]
+async fn reasoning_content_tool_history_uses_cc_switch_compatible_placeholders() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chat_tool_history","model":"kimi-for-coding",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":1}
+    }))
+    .await;
+
+    OpenAiChatBridge::new(base_url, "chat-secret")
+        .with_capabilities(OpenAiChatCapabilities {
+            reasoning_content: true,
+            reasoning_effort: false,
+        })
+        .complete(json!({
+            "model":"kimi-for-coding","max_tokens":32,
+            "messages":[
+                {"role":"assistant","content":[
+                    {"type":"tool_use","id":"call_1","name":"read_file","input":{"path":"a.rs"}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"call_1","content":"one"}
+                ]},
+                {"role":"assistant","content":[
+                    {"type":"redacted_thinking","data":"opaque"},
+                    {"type":"tool_use","id":"call_2","name":"read_file","input":{"path":"b.rs"}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"call_2","content":"two"}
+                ]}
+            ]
+        }))
+        .await
+        .unwrap();
+
+    let request = captured.await.unwrap().body;
+    assert_eq!(request["messages"][0]["reasoning_content"], "tool call");
+    assert_eq!(
+        request["messages"][2]["reasoning_content"],
+        "[redacted thinking]"
+    );
+}
+
+#[tokio::test]
+async fn chat_response_accepts_provider_reasoning_dialects_without_model_guessing() {
+    for (reasoning_field, expected) in [
+        (
+            json!({"reasoning":{"summary":"object summary"}}),
+            "object summary",
+        ),
+        (
+            json!({"reasoning_details":[
+                {"type":"reasoning.text","text":"part one"},
+                {"parts":[{"content":"part two"}]}
+            ]}),
+            "part one\n\npart two",
+        ),
+    ] {
+        let mut message = json!({"role":"assistant","content":"done"});
+        message
+            .as_object_mut()
+            .unwrap()
+            .extend(reasoning_field.as_object().unwrap().clone());
+        let (base_url, _) = serve_once(json!({
+            "id":"chat_reasoning_dialect","model":"provider-model",
+            "choices":[{"index":0,"message":message,"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":4,"completion_tokens":2}
+        }))
+        .await;
+
+        let response = OpenAiChatBridge::new(base_url, "chat-secret")
+            .complete(json!({
+                "model":"provider-model","max_tokens":32,
+                "messages":[{"role":"user","content":"inspect"}]
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(response["content"][0]["type"], "thinking");
+        assert_eq!(response["content"][0]["thinking"], expected);
+    }
+}
+
+#[tokio::test]
 async fn chat_http_error_is_returned_without_retry_or_false_success() {
     let (base_url, captured) = serve_once_status(
         429,

@@ -440,6 +440,13 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
     let argv = fs::read_to_string(&argv_log).unwrap();
     assert!(!argv.contains("WebSearch"), "{argv}");
     assert!(!argv.contains("WebFetch"), "{argv}");
+    assert!(
+        argv.contains(&format!(
+            "Working directory: {}",
+            directory.path().display()
+        )),
+        "{argv}"
+    );
 
     let invalid: Value = reqwest::Client::new()
         .post(format!("{base_url}/mcp/codex"))

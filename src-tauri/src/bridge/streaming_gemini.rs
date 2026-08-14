@@ -3,20 +3,23 @@
 // Copyright (c) 2025 Jason Young. Licensed under the MIT License.
 
 use super::BridgeError;
-use super::gemini::{anthropic_usage, map_finish_reason};
+use super::gemini::{GeminiThoughtStore, anthropic_usage, map_finish_reason};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct ToolCall {
     id: String,
     name: String,
     input: Value,
+    thought_signature: Option<String>,
 }
 
 pub(crate) fn gemini_sse_to_anthropic<S, E>(
     upstream: S,
+    thought_store: Option<(Arc<GeminiThoughtStore>, String)>,
 ) -> impl Stream<Item = Result<Bytes, BridgeError>> + Send
 where
     S: Stream<Item = Result<Bytes, E>> + Send + 'static,
@@ -121,6 +124,11 @@ where
                             id,
                             name: name.to_string(),
                             input,
+                            thought_signature: part
+                                .get("thoughtSignature")
+                                .and_then(Value::as_str)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_owned),
                         });
                     } else {
                         yield Err(invalid_response(format!("SSE candidate part {index} is unsupported")));
@@ -128,6 +136,13 @@ where
                     }
                 }
                 if !current_tool_calls.is_empty() {
+                    if let Some((store, scope)) = &thought_store {
+                        for call in &current_tool_calls {
+                            if let Some(signature) = &call.thought_signature {
+                                store.record(scope, &call.id, signature);
+                            }
+                        }
+                    }
                     tool_calls = current_tool_calls;
                 }
                 let delta = if visible.starts_with(&accumulated_text) {

@@ -23,7 +23,7 @@ where
 
 pub fn responses_sse_to_anthropic_with_capabilities<S, E>(
     upstream: S,
-    capabilities: OpenAiResponsesCapabilities,
+    _capabilities: OpenAiResponsesCapabilities,
 ) -> impl Stream<Item = Result<Bytes, BridgeError>>
 where
     S: Stream<Item = Result<Bytes, E>> + Send + 'static,
@@ -31,7 +31,7 @@ where
 {
     stream! {
         futures::pin_mut!(upstream);
-        let mut state = State::new(capabilities);
+        let mut state = State::new();
         let mut buffer = String::new();
         let mut utf8_remainder = Vec::new();
 
@@ -99,7 +99,6 @@ where
 }
 
 struct State {
-    capabilities: OpenAiResponsesCapabilities,
     started: bool,
     terminated: bool,
     next_index: u64,
@@ -135,9 +134,8 @@ struct Reasoning {
 }
 
 impl State {
-    fn new(capabilities: OpenAiResponsesCapabilities) -> Self {
+    fn new() -> Self {
         Self {
-            capabilities,
             started: false,
             terminated: false,
             next_index: 0,
@@ -226,7 +224,6 @@ impl State {
             "output_text" => self.text_added(data),
             "reasoning_text" => {
                 self.require_started()?;
-                self.require_reasoning_capability()?;
                 if part.get("text").and_then(Value::as_str) != Some("") {
                     return Err(invalid(
                         "response.content_part.added reasoning_text must be empty",
@@ -290,7 +287,6 @@ impl State {
             "output_text" => self.text_done(data),
             "reasoning_text" => {
                 self.require_started()?;
-                self.require_reasoning_capability()?;
                 let item_id = string(data.get("item_id"), "response.content_part.done.item_id")?;
                 let text = string(part.get("text"), "response.content_part.done.part.text")?;
                 let state = self.reasoning.get_mut(item_id).ok_or_else(|| {
@@ -382,7 +378,6 @@ impl State {
     }
 
     fn reasoning_added(&mut self, item: &Map<String, Value>) -> Result<Vec<Bytes>, BridgeError> {
-        self.require_reasoning_capability()?;
         let normalized = reasoning::normalize_reasoning_item(
             &Value::Object(item.clone()),
             "response.output_item.added.item",
@@ -415,7 +410,6 @@ impl State {
         data: &Map<String, Value>,
     ) -> Result<Vec<Bytes>, BridgeError> {
         self.require_started()?;
-        self.require_reasoning_capability()?;
         let item_id = string(data.get("item_id"), "response.reasoning_text.delta.item_id")?;
         let delta = string(data.get("delta"), "response.reasoning_text.delta.delta")?;
         let state = self
@@ -434,7 +428,6 @@ impl State {
         data: &Map<String, Value>,
     ) -> Result<Vec<Bytes>, BridgeError> {
         self.require_started()?;
-        self.require_reasoning_capability()?;
         let item_id = string(data.get("item_id"), "response.reasoning_text.done.item_id")?;
         let text = string(data.get("text"), "response.reasoning_text.done.text")?;
         let state = self
@@ -458,7 +451,6 @@ impl State {
         data: &Map<String, Value>,
     ) -> Result<Vec<Bytes>, BridgeError> {
         self.require_started()?;
-        self.require_reasoning_capability()?;
         let item_id = string(
             data.get("item_id"),
             "response.reasoning_summary_part.added.item_id",
@@ -505,7 +497,6 @@ impl State {
         data: &Map<String, Value>,
     ) -> Result<Vec<Bytes>, BridgeError> {
         self.require_started()?;
-        self.require_reasoning_capability()?;
         let item_id = string(
             data.get("item_id"),
             "response.reasoning_summary_text.delta.item_id",
@@ -549,7 +540,6 @@ impl State {
         data: &Map<String, Value>,
     ) -> Result<Vec<Bytes>, BridgeError> {
         self.require_started()?;
-        self.require_reasoning_capability()?;
         let item_id = string(
             data.get("item_id"),
             "response.reasoning_summary_text.done.item_id",
@@ -585,7 +575,6 @@ impl State {
         data: &Map<String, Value>,
     ) -> Result<Vec<Bytes>, BridgeError> {
         self.require_started()?;
-        self.require_reasoning_capability()?;
         let item_id = string(
             data.get("item_id"),
             "response.reasoning_summary_part.done.item_id",
@@ -695,7 +684,6 @@ impl State {
     }
 
     fn reasoning_done(&mut self, item: &Map<String, Value>) -> Result<Vec<Bytes>, BridgeError> {
-        self.require_reasoning_capability()?;
         let normalized = reasoning::normalize_reasoning_item(
             &Value::Object(item.clone()),
             "response.output_item.done.item",
@@ -844,14 +832,6 @@ impl State {
             Ok(())
         } else {
             Err(invalid("response.created must be the first event"))
-        }
-    }
-
-    fn require_reasoning_capability(&self) -> Result<(), BridgeError> {
-        if self.capabilities.reasoning_items {
-            Ok(())
-        } else {
-            Err(invalid("reasoning items require the provider capability"))
         }
     }
 

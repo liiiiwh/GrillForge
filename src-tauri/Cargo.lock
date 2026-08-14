@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "grillforge"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "async-stream",
  "axum",
@@ -1257,6 +1257,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tauri",
  "tauri-build",
  "tempfile",

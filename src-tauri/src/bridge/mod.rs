@@ -13,10 +13,14 @@ use std::pin::Pin;
 use url::Url;
 
 mod chat;
+mod chat_client;
+mod chat_reasoning;
 mod codex_anthropic;
 mod codex_anthropic_streaming;
 mod codex_chat;
 mod codex_chat_streaming;
+mod codex_history;
+mod codex_namespace;
 mod gemini;
 mod media;
 mod reasoning;
@@ -25,8 +29,12 @@ mod sse;
 mod streaming_chat;
 mod streaming_gemini;
 mod streaming_responses;
+mod xai_responses;
 
 pub use chat::{OpenAiChatBridge, OpenAiChatCapabilities};
+pub use chat_client::{
+    anthropic_response_to_chat, anthropic_sse_to_chat, chat_request_to_anthropic,
+};
 pub use codex_anthropic::{
     CodexAnthropicCapabilities, CodexAnthropicContext, anthropic_to_codex_response,
     anthropic_to_codex_response_with_context, codex_response_to_anthropic,
@@ -35,16 +43,27 @@ pub use codex_anthropic::{
 pub use codex_anthropic_streaming::{
     anthropic_sse_to_codex_responses, anthropic_sse_to_codex_responses_with_context,
 };
-pub use codex_chat::{chat_to_codex_response, codex_response_to_chat};
-pub use codex_chat_streaming::chat_sse_to_codex_responses;
+pub use codex_chat::{
+    CodexChatContext, chat_to_codex_response, chat_to_codex_response_with_context,
+    codex_response_to_chat, codex_response_to_chat_with_context,
+};
+pub use codex_chat_streaming::{
+    chat_sse_to_codex_responses, chat_sse_to_codex_responses_with_context,
+};
+pub use codex_history::{CodexHistoryStore, record_codex_sse};
+pub use codex_namespace::{
+    CodexNamespaceMap, flatten_codex_namespaces, restore_codex_namespace_sse,
+    restore_codex_namespaces,
+};
 pub use gemini::{
-    GeminiNativeBridge, anthropic_response_to_gemini, anthropic_sse_to_gemini,
+    GeminiNativeBridge, GeminiThoughtStore, anthropic_response_to_gemini, anthropic_sse_to_gemini,
     gemini_request_to_anthropic,
 };
 pub use streaming_chat::chat_sse_to_anthropic;
 pub use streaming_responses::{
     responses_sse_to_anthropic, responses_sse_to_anthropic_with_capabilities,
 };
+pub use xai_responses::sanitize_xai_responses_request;
 
 pub struct OpenAiResponsesBridge {
     client: Client,
@@ -87,6 +106,7 @@ pub enum BridgeError {
         message: String,
     },
     InvalidChatResponse(String),
+    InvalidChatRequest(String),
     InvalidCodexRequest(String),
     InvalidCodexResponse(String),
     InvalidGeminiRequest(String),
@@ -137,6 +157,9 @@ impl Display for BridgeError {
             }
             Self::InvalidChatResponse(message) => {
                 write!(formatter, "invalid Chat Completions response: {message}")
+            }
+            Self::InvalidChatRequest(message) => {
+                write!(formatter, "invalid Chat Completions request: {message}")
             }
             Self::InvalidCodexRequest(message) => {
                 write!(formatter, "invalid Codex Responses request: {message}")
@@ -825,7 +848,7 @@ fn reject_unknown_fields(
 
 fn responses_to_anthropic(
     body: Value,
-    capabilities: OpenAiResponsesCapabilities,
+    _capabilities: OpenAiResponsesCapabilities,
 ) -> Result<Value, BridgeError> {
     let object = body
         .as_object()
@@ -901,11 +924,6 @@ fn responses_to_anthropic(
                 has_tool_use = true;
             }
             "reasoning" => {
-                if !capabilities.reasoning_items {
-                    return Err(BridgeError::InvalidResponse(
-                        "reasoning items require the provider capability".into(),
-                    ));
-                }
                 content.push(
                     reasoning::reasoning_item_to_anthropic_block(&Value::Object(item.clone()))
                         .map_err(BridgeError::InvalidResponse)?,

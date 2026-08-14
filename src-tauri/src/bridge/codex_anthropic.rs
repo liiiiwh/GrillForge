@@ -26,6 +26,7 @@ pub struct CodexAnthropicCapabilities {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodexAnthropicContext {
     pub(crate) custom_tools: BTreeSet<String>,
+    pub(crate) tool_search: bool,
 }
 
 pub fn codex_response_to_anthropic(
@@ -267,6 +268,11 @@ pub fn anthropic_to_codex_response_with_context(
                     let input = input.get("input").and_then(Value::as_str).filter(|value| !value.is_empty())
                         .ok_or_else(|| invalid_response(format!("content[{index}].input.input must be a non-empty string for custom tool {name}")))?;
                     output.push(json!({"id":format!("ct_{id}_{index}"),"type":"custom_tool_call","status":"completed","call_id":call_id,"name":name,"input":input}));
+                } else if context.tool_search && name == "tool_search" {
+                    output.push(json!({
+                        "type":"tool_search_call","status":"completed","execution":"client",
+                        "call_id":call_id,"arguments":input
+                    }));
                 } else {
                     output.push(json!({
                         "id":format!("fc_{id}_{index}"),"type":"function_call","status":"completed",
@@ -833,6 +839,23 @@ fn normalize_custom_tools(body: &mut Value) -> Result<CodexAnthropicContext, Bri
             let definition = tool
                 .as_object()
                 .ok_or_else(|| invalid_request(format!("{field} must be an object")))?;
+            if definition.get("type").and_then(Value::as_str) == Some("tool_search") {
+                reject_unknown(definition, &["type"], &field)?;
+                if context.tool_search {
+                    return Err(invalid_request("duplicate tool name: tool_search"));
+                }
+                context.tool_search = true;
+                *tool = json!({
+                    "type":"function","name":"tool_search",
+                    "description":"Search for additional client tools.",
+                    "parameters":{
+                        "type":"object",
+                        "properties":{"query":{"type":"string"}},
+                        "required":["query"],"additionalProperties":false
+                    }
+                });
+                continue;
+            }
             if definition.get("type").and_then(Value::as_str) != Some("custom") {
                 continue;
             }
@@ -889,6 +912,15 @@ fn normalize_custom_tools(body: &mut Value) -> Result<CodexAnthropicContext, Bri
                 )));
             }
             *choice = json!({"type":"function","name":name});
+        } else if choice.get("type").and_then(Value::as_str) == Some("tool_search") {
+            let choice_object = choice.as_object().expect("object checked by field access");
+            reject_unknown(choice_object, &["type"], "tool_choice")?;
+            if !context.tool_search {
+                return Err(invalid_request(
+                    "tool_choice references undeclared tool_search",
+                ));
+            }
+            *choice = json!({"type":"function","name":"tool_search"});
         }
     }
     if let Some(input) = object.get_mut("input").and_then(Value::as_array_mut) {
@@ -924,6 +956,40 @@ fn normalize_custom_tools(body: &mut Value) -> Result<CodexAnthropicContext, Bri
                 }
                 Some("custom_tool_call_output") => {
                     item_object.insert("type".into(), json!("function_call_output"));
+                }
+                Some("tool_search_call") => {
+                    if !context.tool_search {
+                        return Err(invalid_request(format!(
+                            "input[{index}] references undeclared tool_search"
+                        )));
+                    }
+                    reject_unknown(
+                        item_object,
+                        &["type", "id", "call_id", "arguments", "status", "execution"],
+                        &format!("input[{index}]"),
+                    )?;
+                    let arguments = item_object
+                        .get("arguments")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| {
+                            invalid_request(format!("input[{index}].arguments must be an object"))
+                        })?;
+                    let arguments = serde_json::to_string(arguments).map_err(|_| {
+                        invalid_request(format!("input[{index}].arguments could not be serialized"))
+                    })?;
+                    item_object.insert("type".into(), json!("function_call"));
+                    item_object.insert("name".into(), json!("tool_search"));
+                    item_object.insert("arguments".into(), json!(arguments));
+                    item_object.remove("execution");
+                }
+                Some("tool_search_output") => {
+                    if !context.tool_search {
+                        return Err(invalid_request(format!(
+                            "input[{index}] references undeclared tool_search"
+                        )));
+                    }
+                    item_object.insert("type".into(), json!("function_call_output"));
+                    item_object.remove("tools");
                 }
                 _ => {}
             }

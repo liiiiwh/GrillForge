@@ -444,6 +444,117 @@ async fn codex_route_converts_responses_to_chat_and_back() {
 }
 
 #[tokio::test]
+async fn codex_chat_route_restores_the_previous_tool_call_for_the_tool_result_turn() {
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let upstream = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(
+                |State(calls): State<Arc<Mutex<Vec<Value>>>>,
+                 Json(body): Json<Value>| async move {
+                    let turn = {
+                        let mut calls = calls.lock().unwrap();
+                        calls.push(body);
+                        calls.len()
+                    };
+                    if turn == 1 {
+                        Json(json!({
+                            "id":"chatcmpl_tool","model":"kimi-code","created":1,
+                            "choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"read it","tool_calls":[{"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":"tool_calls"}],
+                            "usage":{"prompt_tokens":2,"completion_tokens":2}
+                        }))
+                    } else {
+                        Json(json!({
+                            "id":"chatcmpl_final","model":"kimi-code","created":2,
+                            "choices":[{"message":{"role":"assistant","content":"tool-ok"},"finish_reason":"stop"}],
+                            "usage":{"prompt_tokens":4,"completion_tokens":1}
+                        }))
+                    }
+                },
+            ),
+        )
+        .with_state(calls.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+
+    let temp = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(temp.path());
+    service
+        .save_provider(ProviderInput {
+            id: "chat".into(),
+            name: "Chat".into(),
+            protocol: Protocol::OpenAiChatCompletions,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "kimi-code".into(),
+            name: "Kimi Code".into(),
+            upstream_id: "kimi-code".into(),
+            provider_id: "chat".into(),
+            capabilities: vec![],
+            protocol_capabilities: vec![],
+        })
+        .unwrap();
+    service
+        .set_model_native_protocols("kimi-code", vec![NativeProtocol::OpenAiChat])
+        .unwrap();
+    let gateway = Gateway::new(temp.path());
+    gateway
+        .status("http://127.0.0.1:1".into())
+        .activate_codex(vec!["kimi-code".into()], "token")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+    let client = reqwest::Client::new();
+    let first: Value = client
+        .post(format!("http://{address}/codex/v1/responses"))
+        .bearer_auth("token")
+        .json(&json!({
+            "model":"grillforge/kimi-code","input":"read","stream":false,
+            "tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["output"][0]["type"], "function_call");
+    let second: Value = client
+        .post(format!("http://{address}/codex/v1/responses"))
+        .bearer_auth("token")
+        .json(&json!({
+            "model":"grillforge/kimi-code","previous_response_id":first["id"],
+            "input":[{"type":"function_call_output","call_id":"call_read","output":"contents"}],
+            "stream":false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["output"][0]["content"][0]["text"], "tool-ok");
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls[1]["messages"][0]["role"], "assistant");
+    assert_eq!(calls[1]["messages"][0]["tool_calls"][0]["id"], "call_read");
+    assert_eq!(calls[1]["messages"][1]["role"], "tool");
+}
+
+#[tokio::test]
 async fn codex_chat_route_streams_responses_events() {
     let upstream = Router::new().route(
         "/v1/chat/completions",

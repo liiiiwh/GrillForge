@@ -58,10 +58,10 @@ GrillForge 是一个轻量、本地优先的多客户端模型与 SubAgent 控�
 | Anthropic Messages | 原生请求、流式响应、工具调用、图片与 Thinking |
 | OpenAI Responses | 请求/响应转换、SSE、工具调用、Reasoning、图片和文档 |
 | OpenAI Chat Compatible | 请求/响应转换、SSE、工具调用、显式 Reasoning 字段与图片 |
-| Gemini Native | Gemini CLI 直接配置，以及 Claude / Pi 入站请求到 Gemini 的流式与工具桥接 |
+| Gemini Native | Gemini CLI 直接配置，以及四类入站协议到 Gemini 的文本、流式与工具桥接 |
 | 本地模型 | 支持无认证的 Loopback Endpoint，例如 Ollama 或本地兼容网关 |
 
-Provider 页面提供协议预设、自定义 Endpoint、API Key、自动/手动模型同步与连接测试。模型同步会探测模型实际支持的协议；网关优先直连匹配协议，否则执行已测试的协议转换。支持的 Provider 可查询实时余额或 Coding Plan，GrillForge 不保存本地流量账本。
+Provider 页面提供协议预设、自定义 Endpoint、API Key、自动/手动模型同步与连接测试。模型同步会探测模型实际支持的协议；模型只要原生支持 Anthropic、Responses、Chat 或 Gemini 中任一种，四类客户端入口都可使用：协议一致时直连，否则桥接文本、流式响应与工具调用。支持的 Provider 可查询实时余额或 Coding Plan，GrillForge 不保存本地流量账本。
 
 ## 工作方式
 

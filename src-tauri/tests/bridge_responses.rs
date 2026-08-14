@@ -1020,7 +1020,7 @@ async fn deepseek_reasoning_content_is_kept_opaque_and_replayable() {
 }
 
 #[tokio::test]
-async fn responses_reasoning_requires_explicit_capability_instead_of_model_guessing() {
+async fn observed_responses_reasoning_is_preserved_without_catalog_metadata() {
     let (base_url, captured) = serve_once(200, json!({
         "id":"resp_reasoning","status":"completed","model":"gpt-5",
         "output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"summary"}],"encrypted_content":"opaque"}],
@@ -1028,15 +1028,18 @@ async fn responses_reasoning_requires_explicit_capability_instead_of_model_guess
     }))
     .await;
 
-    let error = OpenAiResponsesBridge::new(base_url, "test-secret")
+    let response = OpenAiResponsesBridge::new(base_url, "test-secret")
         .complete(valid_request())
         .await
-        .unwrap_err();
+        .unwrap();
     captured.await.unwrap();
 
-    assert_eq!(
-        error.to_string(),
-        "invalid Responses response: reasoning items require the provider capability"
+    assert_eq!(response["content"][0]["type"], "thinking");
+    assert!(
+        response["content"][0]["signature"]
+            .as_str()
+            .unwrap()
+            .starts_with("grillforge-openai-reasoning-v1:")
     );
 }
 

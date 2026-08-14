@@ -8,13 +8,63 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use url::Url;
+
+type ThoughtKey = (String, String);
+type ThoughtEntries = (HashMap<ThoughtKey, String>, VecDeque<ThoughtKey>);
+
+#[derive(Debug)]
+pub struct GeminiThoughtStore {
+    max_entries: usize,
+    inner: Mutex<ThoughtEntries>,
+}
+
+impl Default for GeminiThoughtStore {
+    fn default() -> Self {
+        Self {
+            max_entries: 4096,
+            inner: Mutex::new((HashMap::new(), VecDeque::new())),
+        }
+    }
+}
+
+impl GeminiThoughtStore {
+    fn get(&self, scope: &str, call_id: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()?
+            .0
+            .get(&(scope.to_owned(), call_id.to_owned()))
+            .cloned()
+    }
+
+    pub(crate) fn record(&self, scope: &str, call_id: &str, signature: &str) {
+        if call_id.is_empty() || signature.is_empty() {
+            return;
+        }
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let key = (scope.to_owned(), call_id.to_owned());
+        if !inner.0.contains_key(&key) {
+            inner.1.push_back(key.clone());
+        }
+        inner.0.insert(key, signature.to_owned());
+        while inner.0.len() > self.max_entries {
+            if let Some(oldest) = inner.1.pop_front() {
+                inner.0.remove(&oldest);
+            }
+        }
+    }
+}
 
 pub struct GeminiNativeBridge {
     client: Client,
     endpoint: Url,
     api_key: String,
+    thought_store: Option<(Arc<GeminiThoughtStore>, String)>,
 }
 
 impl GeminiNativeBridge {
@@ -23,11 +73,21 @@ impl GeminiNativeBridge {
             client: Client::new(),
             endpoint,
             api_key: api_key.into(),
+            thought_store: None,
         }
     }
 
+    pub fn with_thought_store(
+        mut self,
+        store: Arc<GeminiThoughtStore>,
+        scope: impl Into<String>,
+    ) -> Self {
+        self.thought_store = Some((store, scope.into()));
+        self
+    }
+
     pub async fn complete(&self, request: Value) -> Result<Value, BridgeError> {
-        let upstream_request = anthropic_to_gemini(request, false)?;
+        let upstream_request = anthropic_to_gemini(request, false, self.thought_store.as_ref())?;
         let response = self
             .client
             .post(self.endpoint.clone())
@@ -43,11 +103,11 @@ impl GeminiNativeBridge {
             .json::<Value>()
             .await
             .map_err(|error| invalid_response(error.to_string()))?;
-        gemini_to_anthropic(body)
+        gemini_to_anthropic(body, self.thought_store.as_ref())
     }
 
     pub async fn stream(&self, request: Value) -> Result<AnthropicSseStream, BridgeError> {
-        let upstream_request = anthropic_to_gemini(request, true)?;
+        let upstream_request = anthropic_to_gemini(request, true, self.thought_store.as_ref())?;
         let response = self
             .client
             .post(self.endpoint.clone())
@@ -59,7 +119,10 @@ impl GeminiNativeBridge {
         if !response.status().is_success() {
             return Err(gemini_http_error(response, &self.api_key).await);
         }
-        Ok(Box::pin(gemini_sse_to_anthropic(response.bytes_stream())))
+        Ok(Box::pin(gemini_sse_to_anthropic(
+            response.bytes_stream(),
+            self.thought_store.clone(),
+        )))
     }
 }
 
@@ -852,7 +915,11 @@ fn required_response_string<'a>(
         .ok_or_else(|| invalid_response(format!("{field} must be a non-empty string")))
 }
 
-fn anthropic_to_gemini(body: Value, streaming: bool) -> Result<Value, BridgeError> {
+fn anthropic_to_gemini(
+    body: Value,
+    streaming: bool,
+    thought_store: Option<&(Arc<GeminiThoughtStore>, String)>,
+) -> Result<Value, BridgeError> {
     let object = body
         .as_object()
         .ok_or_else(|| invalid_request("body must be an object"))?;
@@ -902,7 +969,12 @@ fn anthropic_to_gemini(body: Value, streaming: bool) -> Result<Value, BridgeErro
     let mut contents = Vec::with_capacity(source_messages.len());
     let mut tool_names = HashMap::new();
     for (index, message) in source_messages.iter().enumerate() {
-        contents.push(convert_message(message, index, &mut tool_names)?);
+        contents.push(convert_message(
+            message,
+            index,
+            &mut tool_names,
+            thought_store,
+        )?);
     }
     let mut result = json!({
         "contents": contents,
@@ -951,6 +1023,7 @@ fn convert_message(
     message: &Value,
     index: usize,
     tool_names: &mut HashMap<String, String>,
+    thought_store: Option<&(Arc<GeminiThoughtStore>, String)>,
 ) -> Result<Value, BridgeError> {
     let message = message
         .as_object()
@@ -973,6 +1046,7 @@ fn convert_message(
         &format!("messages[{index}].content"),
         anthropic_role,
         tool_names,
+        thought_store,
     )?;
     Ok(json!({"role":role,"parts":parts}))
 }
@@ -982,6 +1056,7 @@ fn convert_message_content(
     field: &str,
     role: &str,
     tool_names: &mut HashMap<String, String>,
+    thought_store: Option<&(Arc<GeminiThoughtStore>, String)>,
 ) -> Result<Vec<Value>, BridgeError> {
     if let Some(text) = value.as_str() {
         return Ok(vec![json!({"text":text})]);
@@ -1044,9 +1119,15 @@ fn convert_message_content(
                         invalid_request(format!("{field}[{index}].input must be an object"))
                     })?;
                 tool_names.insert(id.to_string(), name.to_string());
-                parts.push(json!({
+                let mut part = json!({
                     "functionCall":{"id":id,"name":name,"args":input}
-                }));
+                });
+                if let Some((store, scope)) = thought_store {
+                    if let Some(signature) = store.get(scope, id) {
+                        part["thoughtSignature"] = json!(signature);
+                    }
+                }
+                parts.push(part);
             }
             Some("tool_result") if role == "user" => {
                 let id = required_string(
@@ -1185,7 +1266,10 @@ fn convert_text_content(value: &Value, field: &str) -> Result<Vec<Value>, Bridge
         .collect()
 }
 
-fn gemini_to_anthropic(body: Value) -> Result<Value, BridgeError> {
+fn gemini_to_anthropic(
+    body: Value,
+    thought_store: Option<&(Arc<GeminiThoughtStore>, String)>,
+) -> Result<Value, BridgeError> {
     let candidate = body
         .get("candidates")
         .and_then(Value::as_array)
@@ -1211,6 +1295,19 @@ fn gemini_to_anthropic(body: Value) -> Result<Value, BridgeError> {
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("gemini_call_{index}"));
             let input = call.get("args").cloned().unwrap_or_else(|| json!({}));
+            if let Some(signature) = part.get("thoughtSignature") {
+                let signature = signature
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        invalid_response(format!(
+                            "functionCall {index} thoughtSignature must be a non-empty string"
+                        ))
+                    })?;
+                if let Some((store, scope)) = thought_store {
+                    store.record(scope, &id, signature);
+                }
+            }
             content.push(json!({"type":"tool_use","id":id,"name":name,"input":input}));
         } else {
             return Err(invalid_response(format!(

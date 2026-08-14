@@ -41,6 +41,7 @@ enum StreamBlock {
         name: String,
         arguments: String,
         custom: bool,
+        tool_search: bool,
     },
     Reasoning {
         output_index: u64,
@@ -242,9 +243,16 @@ impl State {
                 let name =
                     string(block.get("name"), "content_block_start.content_block.name")?.to_owned();
                 let custom = self.context.custom_tools.contains(&name);
+                let tool_search = self.context.tool_search && name == "tool_search";
                 let item_id = format!(
                     "{}_{}_{}",
-                    if custom { "ct" } else { "fc" },
+                    if custom {
+                        "ct"
+                    } else if tool_search {
+                        "ts"
+                    } else {
+                        "fc"
+                    },
                     self.response_id,
                     output_index
                 );
@@ -257,12 +265,15 @@ impl State {
                         name: name.clone(),
                         arguments: String::new(),
                         custom,
+                        tool_search,
                     },
                 );
                 Ok(vec![event(
                     "response.output_item.added",
                     if custom {
                         json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":item_id,"type":"custom_tool_call","status":"in_progress","call_id":call_id,"name":name,"input":""}})
+                    } else if tool_search {
+                        json!({"type":"response.output_item.added","output_index":output_index,"item":{"type":"tool_search_call","status":"in_progress","execution":"client","call_id":call_id,"arguments":{}}})
                     } else {
                         json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":item_id,"type":"function_call","status":"in_progress","call_id":call_id,"name":name,"arguments":""}})
                     },
@@ -425,6 +436,7 @@ impl State {
                 name,
                 arguments,
                 custom,
+                tool_search,
             } => {
                 let parsed: Value = serde_json::from_str(&arguments)
                     .map_err(|_| invalid("completed tool arguments must be valid JSON"))?;
@@ -450,6 +462,14 @@ impl State {
                         event(
                             "response.custom_tool_call_input.done",
                             json!({"type":"response.custom_tool_call_input.done","item_id":item_id,"output_index":output_index,"input":input}),
+                        ),
+                    )
+                } else if tool_search {
+                    (
+                        json!({"type":"tool_search_call","status":"completed","execution":"client","call_id":call_id,"arguments":parsed}),
+                        event(
+                            "response.tool_search_call.completed",
+                            json!({"type":"response.tool_search_call.completed","output_index":output_index,"item":{"type":"tool_search_call","status":"completed","execution":"client","call_id":call_id,"arguments":parsed}}),
                         ),
                     )
                 } else {

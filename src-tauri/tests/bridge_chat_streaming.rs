@@ -221,23 +221,30 @@ async fn clean_eof_without_finish_reason_is_an_error() {
 }
 
 #[tokio::test]
-async fn reasoning_content_requires_explicit_capability() {
+async fn reasoning_dialects_are_preserved_even_when_catalog_metadata_is_incomplete() {
     let input = vec![chunk(
         json!({"id":"chat_1","model":"qwen","choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":"stop"}]}),
     )];
-    let disabled = translate(input.clone(), OpenAiChatCapabilities::default()).await;
-    assert!(disabled.contains("event: error"));
-    let enabled = translate(
-        input,
-        OpenAiChatCapabilities {
-            reasoning_content: true,
-            reasoning_effort: false,
-        },
-    )
-    .await;
-    assert!(enabled.contains("\"type\":\"thinking_delta\""));
-    assert!(enabled.contains("\"thinking\":\"think\""));
-    assert!(!enabled.contains("event: error"));
+    let output = translate(input, OpenAiChatCapabilities::default()).await;
+    assert!(output.contains("\"type\":\"thinking_delta\""));
+    assert!(output.contains("\"thinking\":\"think\""));
+    assert!(!output.contains("event: error"));
+
+    for delta in [
+        json!({"reasoning":{"summary":"object summary"}}),
+        json!({"reasoning_details":[{"text":"part one"},{"parts":[{"content":"part two"}]}]}),
+    ] {
+        let output = translate(
+            vec![chunk(json!({
+                "id":"chat_2","model":"provider-model",
+                "choices":[{"index":0,"delta":delta,"finish_reason":"stop"}]
+            }))],
+            OpenAiChatCapabilities::default(),
+        )
+        .await;
+        assert!(output.contains("\"type\":\"thinking_delta\""));
+        assert!(!output.contains("event: error"));
+    }
 }
 
 #[tokio::test]

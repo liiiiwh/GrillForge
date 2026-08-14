@@ -736,6 +736,109 @@ async fn installed_claude_runtime_completes_through_the_real_kimi_chat_stream() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "set GRILLFORGE_LIVE_KIMI_KEY; uses the installed Claude Code CLI and the real Kimi Coding API"]
+async fn installed_claude_runtime_executes_a_real_read_tool_through_kimi_chat() {
+    let api_key =
+        std::env::var("GRILLFORGE_LIVE_KIMI_KEY").expect("GRILLFORGE_LIVE_KIMI_KEY must be set");
+    let directory = tempdir().unwrap();
+    let grillforge_root = directory.path().join(".grillforge");
+    let claude_root = directory.path().join(".claude");
+    std::fs::create_dir_all(claude_root.join("agents")).unwrap();
+    std::fs::write(
+        claude_root.join("agents/tool-reader.md"),
+        "---\nname: tool-reader\ndescription: Reads one local JSON file\nmodel: inherit\ntools: Read\n---\nAlways read the requested file with Read before answering.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("package.json"),
+        r#"{"version":"9.8.7","workspaces":["a","b","c"]}"#,
+    )
+    .unwrap();
+
+    let control = ControlPlaneService::new(&grillforge_root);
+    control
+        .save_provider(ProviderInput {
+            id: "kimi-live".into(),
+            name: "Kimi Live".into(),
+            protocol: Protocol::OpenAiChatCompletions,
+            endpoint: "https://api.kimi.com/coding/v1".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::Bearer,
+            api_key: Some(api_key),
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    control
+        .save_model(ModelInput {
+            id: "kimi-worker".into(),
+            name: "Kimi Worker".into(),
+            upstream_id: "kimi-for-coding-highspeed".into(),
+            provider_id: "kimi-live".into(),
+            capabilities: vec!["coding".into()],
+            protocol_capabilities: vec![ProtocolCapability::ReasoningContent],
+        })
+        .unwrap();
+
+    let gateway = Gateway::new(&grillforge_root);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let gateway_status = gateway.status(format!("http://{address}"));
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+    let runtime = std::process::Command::new("/bin/zsh")
+        .args(["-lc", "command -v claude"])
+        .output()
+        .unwrap();
+    assert!(runtime.status.success(), "Claude Code CLI is not installed");
+    let runtime = std::path::PathBuf::from(
+        String::from_utf8(runtime.stdout)
+            .unwrap()
+            .trim()
+            .to_string(),
+    );
+    gateway_status
+        .activate_client_agent_broker(
+            "claude_desktop",
+            &control.state().unwrap(),
+            "kimi-live-tool-token",
+            &runtime,
+            &claude_root,
+            vec![AgentRuntimeRoute {
+                extension_id: "kimi-live-tool-reader".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "tool-reader".into(),
+                model_id: Some("kimi-worker".into()),
+            }],
+        )
+        .unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        reqwest::Client::new()
+            .post(format!("http://{address}/mcp/claude_desktop"))
+            .bearer_auth("kimi-live-tool-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"run_agent","arguments":{
+                    "extensionId":"kimi-live-tool-reader","cwd":directory.path(),
+                    "prompt":"Read package.json with Read. Output exactly version=9.8.7 workspaces=3"
+                }}
+            }))
+            .send(),
+    )
+    .await
+    .expect("Claude Code tool loop did not complete through real Kimi Chat")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["content"][0]["text"],
+        "version=9.8.7 workspaces=3"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "set GRILLFORGE_LIVE_OPENCODE_CLI to the current official OpenCode executable; traffic is loopback-only"]
 async fn current_opencode_cli_runs_an_exact_custom_subagent_through_the_broker() {
     let requests = Arc::new(Mutex::new(Vec::<Value>::new()));

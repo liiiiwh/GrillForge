@@ -58,10 +58,10 @@ Client discovery covers PATH, standard installation locations, and common Node v
 | Anthropic Messages | Native requests, streaming, tool calls, images, and Thinking |
 | OpenAI Responses | Request/response translation, SSE, tools, Reasoning, images, and documents |
 | OpenAI Chat Compatible | Request/response translation, SSE, tools, explicit reasoning fields, and images |
-| Gemini Native | Direct Gemini CLI configuration plus streaming/tool translation from Claude and Pi inbound requests |
+| Gemini Native | Direct Gemini CLI configuration plus text, streaming, and tool translation from all four inbound protocols |
 | Local models | Unauthenticated loopback endpoints such as Ollama or a local compatible gateway |
 
-Providers support protocol presets, custom endpoints, API keys, automatic/manual model sync, and connection tests. Sync probes the protocols each model actually supports; the gateway connects directly when protocols match and otherwise uses a tested bridge. Supported Providers can query live balances or Coding Plan quotas; GrillForge keeps no local traffic ledger.
+Providers support protocol presets, custom endpoints, API keys, automatic/manual model sync, and connection tests. Sync probes the protocols each model actually supports. A model that natively supports any one of Anthropic, Responses, Chat, or Gemini remains usable from all four client ingress protocols: matching protocols connect directly, while the others bridge text, streaming responses, and tool calls. Supported Providers can query live balances or Coding Plan quotas; GrillForge keeps no local traffic ledger.
 
 ## How It Works
 

@@ -2,7 +2,7 @@
 // cc-switch, commit 413c09e0790c304506888ae24b9be72820aca126.
 // Copyright (c) 2025 Jason Young. Licensed under the MIT License.
 
-use super::{AnthropicSseStream, BridgeError, sse};
+use super::{AnthropicSseStream, BridgeError, CodexChatContext, sse};
 use async_stream::stream;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -31,9 +31,21 @@ struct State {
     tools: BTreeMap<usize, ToolState>,
     usage: Value,
     completed: bool,
+    tool_context: CodexChatContext,
 }
 
 pub fn chat_sse_to_codex_responses<S, E>(source: S) -> AnthropicSseStream
+where
+    S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    chat_sse_to_codex_responses_with_context(source, CodexChatContext::default())
+}
+
+pub fn chat_sse_to_codex_responses_with_context<S, E>(
+    source: S,
+    tool_context: CodexChatContext,
+) -> AnthropicSseStream
 where
     S: Stream<Item = Result<Bytes, E>> + Send + 'static,
     E: std::fmt::Display + Send + 'static,
@@ -42,7 +54,7 @@ where
         let mut source = Box::pin(source);
         let mut buffer = String::new();
         let mut remainder = Vec::new();
-        let mut state = State::default();
+        let mut state = State { tool_context, ..State::default() };
         while let Some(chunk) = source.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
@@ -76,8 +88,16 @@ where
                         return;
                     }
                 };
-                for event in state.consume(&chunk) {
-                    yield Ok(event);
+                match state.consume(&chunk) {
+                    Ok(events) => {
+                        for event in events {
+                            yield Ok(event);
+                        }
+                    }
+                    Err(error) => {
+                        yield Err(error);
+                        return;
+                    }
                 }
                 if state.completed {
                     return;
@@ -93,7 +113,7 @@ where
 }
 
 impl State {
-    fn consume(&mut self, chunk: &Value) -> Vec<Bytes> {
+    fn consume(&mut self, chunk: &Value) -> Result<Vec<Bytes>, BridgeError> {
         if let Some(id) = chunk.get("id").and_then(Value::as_str) {
             self.response_id = id.replacen("chatcmpl", "resp", 1);
         }
@@ -125,7 +145,7 @@ impl State {
             .and_then(Value::as_array)
             .and_then(|items| items.first())
         else {
-            return events;
+            return Ok(events);
         };
         if let Some(delta) = choice.get("delta") {
             if let Some(content) = delta
@@ -137,7 +157,7 @@ impl State {
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
-                    events.extend(self.tool_delta(call));
+                    events.extend(self.tool_delta(call)?);
                 }
             }
         }
@@ -146,9 +166,9 @@ impl State {
             .and_then(Value::as_str)
             .is_some()
         {
-            events.extend(self.finish());
+            events.extend(self.finish()?);
         }
-        events
+        Ok(events)
     }
 
     fn start_events(&mut self) -> Vec<Bytes> {
@@ -184,7 +204,7 @@ impl State {
         events
     }
 
-    fn tool_delta(&mut self, call: &Value) -> Vec<Bytes> {
+    fn tool_delta(&mut self, call: &Value) -> Result<Vec<Bytes>, BridgeError> {
         let key = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         let tool = self.tools.entry(key).or_insert_with(|| {
             let index = self.next_output_index;
@@ -209,19 +229,28 @@ impl State {
         let mut events = Vec::new();
         if !tool.added && !tool.name.is_empty() {
             tool.added = true;
-            events.push(event("response.output_item.added", json!({"type":"response.output_item.added","output_index":tool.output_index,"item":{"id":tool.item_id,"type":"function_call","status":"in_progress","call_id":tool.call_id,"name":tool.name,"arguments":""}})));
+            let item = self.tool_context.response_item(
+                tool.item_id.clone(),
+                &tool.call_id,
+                &tool.name,
+                "",
+                "in_progress",
+            )?;
+            events.push(event("response.output_item.added", json!({"type":"response.output_item.added","output_index":tool.output_index,"item":item})));
         }
-        if let Some(arguments) = call
-            .pointer("/function/arguments")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
-            events.push(event("response.function_call_arguments.delta", json!({"type":"response.function_call_arguments.delta","item_id":tool.item_id,"output_index":tool.output_index,"delta":arguments})));
+        if !self.tool_context.is_custom(&tool.name) {
+            if let Some(arguments) = call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                events.push(event("response.function_call_arguments.delta", json!({"type":"response.function_call_arguments.delta","item_id":tool.item_id,"output_index":tool.output_index,"delta":arguments})));
+            }
         }
-        events
+        Ok(events)
     }
 
-    fn finish(&mut self) -> Vec<Bytes> {
+    fn finish(&mut self) -> Result<Vec<Bytes>, BridgeError> {
         let mut events = Vec::new();
         let mut output = Vec::new();
         if self.text_added {
@@ -239,8 +268,22 @@ impl State {
             if !tool.added {
                 continue;
             }
-            events.push(event("response.function_call_arguments.done", json!({"type":"response.function_call_arguments.done","item_id":tool.item_id,"output_index":tool.output_index,"arguments":tool.arguments})));
-            let item = json!({"id":tool.item_id,"type":"function_call","status":"completed","call_id":tool.call_id,"name":tool.name,"arguments":tool.arguments});
+            let item = self.tool_context.response_item(
+                tool.item_id.clone(),
+                &tool.call_id,
+                &tool.name,
+                &tool.arguments,
+                "completed",
+            )?;
+            if self.tool_context.is_custom(&tool.name) {
+                let input = item.get("input").and_then(Value::as_str).unwrap_or("");
+                if !input.is_empty() {
+                    events.push(event("response.custom_tool_call_input.delta", json!({"type":"response.custom_tool_call_input.delta","item_id":tool.item_id,"output_index":tool.output_index,"delta":input})));
+                }
+                events.push(event("response.custom_tool_call_input.done", json!({"type":"response.custom_tool_call_input.done","item_id":tool.item_id,"output_index":tool.output_index,"input":input})));
+            } else {
+                events.push(event("response.function_call_arguments.done", json!({"type":"response.function_call_arguments.done","item_id":tool.item_id,"output_index":tool.output_index,"arguments":tool.arguments})));
+            }
             events.push(event("response.output_item.done", json!({"type":"response.output_item.done","output_index":tool.output_index,"item":item})));
             output.push(item);
         }
@@ -250,7 +293,7 @@ impl State {
             "response.completed",
             json!({"type":"response.completed","response":response}),
         ));
-        events
+        Ok(events)
     }
 
     fn response(&self, status: &str, output: Vec<Value>) -> Value {

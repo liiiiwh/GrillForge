@@ -6,7 +6,8 @@ use axum::{
     routing::post,
 };
 use grillforge_lib::bridge::{
-    GeminiNativeBridge, anthropic_response_to_gemini, gemini_request_to_anthropic,
+    GeminiNativeBridge, GeminiThoughtStore, anthropic_response_to_gemini,
+    gemini_request_to_anthropic,
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,76 @@ use url::Url;
 
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<(HeaderMap, Value)>>>);
+
+#[tokio::test]
+async fn gemini_thought_signature_is_replayed_with_the_matching_tool_call() {
+    let capture = Capture::default();
+    let upstream = Router::new()
+        .route(
+            "/v1beta/models/gemini-2.5-pro:generateContent",
+            post(
+                |State(capture): State<Capture>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                    let turn = capture.0.lock().unwrap().len();
+                    capture.0.lock().unwrap().push((headers, body));
+                    Json(if turn == 0 {
+                        json!({
+                            "responseId":"gemini-signed-tool","modelVersion":"gemini-2.5-pro",
+                            "candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{
+                                "functionCall":{"id":"call_signed","name":"lookup","args":{"query":"x"}},
+                                "thoughtSignature":"signed-provider-state"
+                            }]}}],
+                            "usageMetadata":{"promptTokenCount":3,"totalTokenCount":5}
+                        })
+                    } else {
+                        json!({
+                            "responseId":"gemini-final","modelVersion":"gemini-2.5-pro",
+                            "candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"done"}]}}],
+                            "usageMetadata":{"promptTokenCount":5,"totalTokenCount":6}
+                        })
+                    })
+                },
+            ),
+        )
+        .with_state(capture.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let endpoint = Url::parse(&format!(
+        "http://{address}/v1beta/models/gemini-2.5-pro:generateContent"
+    ))
+    .unwrap();
+    let bridge = GeminiNativeBridge::from_endpoint(endpoint, "gemini-secret")
+        .with_thought_store(Arc::new(GeminiThoughtStore::default()), "provider:model");
+
+    let first = bridge
+        .complete(json!({
+            "model":"gemini-2.5-pro","max_tokens":64,
+            "messages":[{"role":"user","content":"lookup"}],
+            "tools":[{"name":"lookup","input_schema":{"type":"object","properties":{}}}]
+        }))
+        .await
+        .unwrap();
+    assert_eq!(first["content"][0]["id"], "call_signed");
+
+    bridge
+        .complete(json!({
+            "model":"gemini-2.5-pro","max_tokens":64,
+            "messages":[
+                {"role":"user","content":"lookup"},
+                {"role":"assistant","content":first["content"].clone()},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_signed","content":"ok"}]}
+            ],
+            "tools":[{"name":"lookup","input_schema":{"type":"object","properties":{}}}]
+        }))
+        .await
+        .unwrap();
+
+    let calls = capture.0.lock().unwrap();
+    assert_eq!(
+        calls[1].1["contents"][1]["parts"][0]["thoughtSignature"],
+        "signed-provider-state"
+    );
+}
 
 #[tokio::test]
 async fn empty_claude_tool_list_is_omitted_from_gemini_request() {

@@ -428,11 +428,73 @@ async fn declared_custom_tool_stream_emits_custom_input_events() {
 fn unsupported_hosted_and_structured_features_fail_before_conversion() {
     for unsupported in [
         json!({"model":"claude","input":"x","tools":[{"type":"web_search"}]}),
-        json!({"model":"claude","input":"x","tools":[{"type":"tool_search"}]}),
         json!({"model":"claude","input":"x","tools":[{"type":"namespace","name":"mcp"}]}),
         json!({"model":"claude","input":"x","text":{"format":{"type":"json_schema","name":"out","strict":true,"schema":{"type":"object"}}}}),
     ] {
         codex_response_to_anthropic(unsupported, CodexAnthropicCapabilities::default())
             .expect_err("unsupported Codex feature must fail before an upstream request exists");
     }
+}
+
+#[test]
+fn tool_search_round_trips_through_anthropic() {
+    let (request, context) = codex_response_to_anthropic_with_context(
+        json!({
+            "model":"claude-sonnet","store":false,
+            "tools":[{"type":"tool_search"}],
+            "tool_choice":{"type":"tool_search"},
+            "input":[
+                {"role":"user","content":"find a tool"},
+                {"type":"tool_search_call","call_id":"search_old","arguments":{"query":"calendar"},"status":"completed"},
+                {"type":"tool_search_output","call_id":"search_old","output":"loaded"}
+            ]
+        }),
+        CodexAnthropicCapabilities::default(),
+    )
+    .unwrap();
+    assert_eq!(request["tools"][0]["name"], "tool_search");
+    assert_eq!(
+        request["tool_choice"],
+        json!({"type":"tool","name":"tool_search"})
+    );
+    assert_eq!(request["messages"][1]["content"][0]["name"], "tool_search");
+    assert_eq!(request["messages"][2]["content"][0]["type"], "tool_result");
+
+    let response = anthropic_to_codex_response_with_context(
+        json!({
+            "id":"msg_search","model":"claude-sonnet",
+            "content":[{"type":"tool_use","id":"search_new","name":"tool_search","input":{"query":"mail"}}],
+            "stop_reason":"tool_use","usage":{"input_tokens":2,"output_tokens":3}
+        }),
+        CodexAnthropicCapabilities::default(),
+        &context,
+    )
+    .unwrap();
+    assert_eq!(response["output"][0]["type"], "tool_search_call");
+    assert_eq!(response["output"][0]["arguments"], json!({"query":"mail"}));
+}
+
+#[tokio::test]
+async fn streamed_tool_search_restores_codex_events() {
+    let (_, context) = codex_response_to_anthropic_with_context(
+        json!({"model":"claude-sonnet","store":false,"input":"find","tools":[{"type":"tool_search"}]}),
+        CodexAnthropicCapabilities::default(),
+    )
+    .unwrap();
+    let chunks = [Ok::<_, Infallible>(Bytes::from_static(
+        b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"tool_search\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"mail\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    ))];
+    let output = anthropic_sse_to_codex_responses_with_context(
+        stream::iter(chunks),
+        CodexAnthropicCapabilities::default(),
+        context,
+    )
+    .collect::<Vec<_>>()
+    .await
+    .into_iter()
+    .flat_map(Result::unwrap)
+    .collect::<Vec<_>>();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("response.tool_search_call.completed"));
+    assert!(output.contains("\"type\":\"tool_search_call\""));
 }

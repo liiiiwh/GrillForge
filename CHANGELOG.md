@@ -4,6 +4,31 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.11] - 2026-08-14
+
+### Fixed
+
+- A model that natively supports any one of Anthropic Messages, OpenAI
+  Responses, OpenAI Chat Completions, or Gemini Native can now serve all four
+  client ingress protocols. Matching protocols remain direct; mismatches use
+  the cc-switch-derived bridge.
+- Text, streaming text, function calls, tool-result continuation, custom tools,
+  Codex tool search, dynamically loaded namespace tools, reasoning dialects,
+  and provider-specific Responses fields retain their protocol state across
+  bridged turns.
+- Stateless Codex tool-result turns restore the previous response history, and
+  Gemini thought signatures are replayed only to the matching conversation.
+
+### Verification
+
+- The complete 4 x 4 ingress/native protocol matrix passed both non-streaming
+  text/tool-result tests and streaming text/tool tests.
+- Real DeepSeek V4 Flash and V4 Pro synchronization and connection tests passed.
+- Every model returned by the configured Kimi account passed live protocol
+  synchronization; the installed Claude Code CLI then completed both a real
+  Kimi completion and a real `Read` tool loop through GrillForge.
+- Full Rust tests, strict Clippy, frontend tests, and the production build pass.
+
 ## [0.2.10] - 2026-08-14
 
 ### Fixed

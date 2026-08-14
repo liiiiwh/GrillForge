@@ -4,6 +4,7 @@
 
 use super::BridgeError;
 use super::chat::{OpenAiChatCapabilities, chat_usage, invalid_response, safe_kind, safe_message};
+use super::reasoning;
 use super::sse::{append_utf8, parse_data_sse_block, take_sse_block};
 use async_stream::stream;
 use bytes::Bytes;
@@ -85,7 +86,6 @@ where
 }
 
 struct State {
-    capabilities: OpenAiChatCapabilities,
     id: Option<String>,
     model: Option<String>,
     started: bool,
@@ -106,6 +106,7 @@ enum BlockKind {
 struct OpenBlock {
     kind: BlockKind,
     index: u64,
+    text: String,
 }
 
 struct Tool {
@@ -118,9 +119,8 @@ struct Tool {
 }
 
 impl State {
-    fn new(capabilities: OpenAiChatCapabilities) -> Self {
+    fn new(_capabilities: OpenAiChatCapabilities) -> Self {
         Self {
-            capabilities,
             id: None,
             model: None,
             started: false,
@@ -199,12 +199,12 @@ impl State {
             .and_then(Value::as_object)
             .ok_or_else(|| invalid_response("SSE choices[0].delta must be an object"))?;
         reject_delta_unknown(delta)?;
+        let reasoning =
+            super::chat_reasoning::extract_reasoning_field_text(&Value::Object(delta.clone()));
         let has_payload = delta
             .get("content")
             .is_some_and(|v| v.as_str().is_some_and(|v| !v.is_empty()))
-            || delta
-                .get("reasoning_content")
-                .is_some_and(|v| v.as_str().is_some_and(|v| !v.is_empty()))
+            || reasoning.is_some()
             || delta
                 .get("tool_calls")
                 .is_some_and(|v| v.as_array().is_some_and(|v| !v.is_empty()));
@@ -220,28 +220,15 @@ impl State {
                 return Err(invalid_response("SSE delta.role must be assistant"));
             }
         }
-        if let Some(reasoning) = delta
-            .get("reasoning_content")
-            .filter(|value| !value.is_null())
-        {
-            if !self.capabilities.reasoning_content {
-                return Err(invalid_response(
-                    "reasoning_content requires the provider capability",
-                ));
-            }
-            let reasoning = reasoning
-                .as_str()
-                .ok_or_else(|| invalid_response("SSE reasoning_content must be a string"))?;
-            if !reasoning.is_empty() {
-                self.push_non_tool(BlockKind::Thinking, reasoning, &mut events);
-            }
+        if let Some(reasoning) = reasoning {
+            self.push_non_tool(BlockKind::Thinking, &reasoning, &mut events)?;
         }
         if let Some(content) = delta.get("content").filter(|value| !value.is_null()) {
             let content = content
                 .as_str()
                 .ok_or_else(|| invalid_response("SSE content must be a string"))?;
             if !content.is_empty() {
-                self.push_non_tool(BlockKind::Text, content, &mut events);
+                self.push_non_tool(BlockKind::Text, content, &mut events)?;
             }
         }
         if let Some(tool_calls) = delta.get("tool_calls") {
@@ -249,7 +236,7 @@ impl State {
                 .as_array()
                 .filter(|calls| !calls.is_empty())
                 .ok_or_else(|| invalid_response("SSE tool_calls must be a non-empty array"))?;
-            self.close_non_tool(&mut events);
+            self.close_non_tool(&mut events)?;
             for call in tool_calls {
                 self.push_tool(call, &mut events)?;
             }
@@ -292,13 +279,18 @@ impl State {
         Ok(())
     }
 
-    fn push_non_tool(&mut self, kind: BlockKind, text: &str, events: &mut Vec<Bytes>) {
+    fn push_non_tool(
+        &mut self,
+        kind: BlockKind,
+        text: &str,
+        events: &mut Vec<Bytes>,
+    ) -> Result<(), BridgeError> {
         if self
             .open_block
             .as_ref()
             .is_none_or(|block| block.kind != kind)
         {
-            self.close_non_tool(events);
+            self.close_non_tool(events)?;
             let index = self.take_index();
             let content = match kind {
                 BlockKind::Text => json!({"type":"text","text":""}),
@@ -308,9 +300,14 @@ impl State {
                 "content_block_start",
                 json!({"type":"content_block_start","index":index,"content_block":content}),
             ));
-            self.open_block = Some(OpenBlock { kind, index });
+            self.open_block = Some(OpenBlock {
+                kind,
+                index,
+                text: String::new(),
+            });
         }
-        let block = self.open_block.as_ref().expect("opened above");
+        let block = self.open_block.as_mut().expect("opened above");
+        block.text.push_str(text);
         let delta = match kind {
             BlockKind::Text => json!({"type":"text_delta","text":text}),
             BlockKind::Thinking => json!({"type":"thinking_delta","thinking":text}),
@@ -319,15 +316,33 @@ impl State {
             "content_block_delta",
             json!({"type":"content_block_delta","index":block.index,"delta":delta}),
         ));
+        Ok(())
     }
 
-    fn close_non_tool(&mut self, events: &mut Vec<Bytes>) {
+    fn close_non_tool(&mut self, events: &mut Vec<Bytes>) -> Result<(), BridgeError> {
         if let Some(block) = self.open_block.take() {
+            if block.kind == BlockKind::Thinking {
+                let signature = reasoning::encode(&json!({
+                    "id": format!("chat_reasoning_{}", block.index),
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type":"summary_text","text":block.text}],
+                }))
+                .map_err(|message| invalid_response(&message))?;
+                events.push(sse(
+                    "content_block_delta",
+                    json!({
+                        "type":"content_block_delta","index":block.index,
+                        "delta":{"type":"signature_delta","signature":signature}
+                    }),
+                ));
+            }
             events.push(sse(
                 "content_block_stop",
                 json!({"type":"content_block_stop","index":block.index}),
             ));
         }
+        Ok(())
     }
 
     fn push_tool(&mut self, value: &Value, events: &mut Vec<Bytes>) -> Result<(), BridgeError> {
@@ -408,7 +423,7 @@ impl State {
                 )));
             }
         };
-        self.close_non_tool(events);
+        self.close_non_tool(events)?;
         let mut indices: Vec<u64> = self.tools.keys().copied().collect();
         indices.sort_unstable();
         for index in indices {
@@ -472,7 +487,14 @@ impl State {
 }
 
 fn reject_delta_unknown(delta: &Map<String, Value>) -> Result<(), BridgeError> {
-    let allowed = ["role", "content", "reasoning_content", "tool_calls"];
+    let allowed = [
+        "role",
+        "content",
+        "reasoning_content",
+        "reasoning",
+        "reasoning_details",
+        "tool_calls",
+    ];
     if let Some(field) = delta
         .keys()
         .find(|field| !allowed.contains(&field.as_str()))

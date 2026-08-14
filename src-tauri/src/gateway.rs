@@ -1,10 +1,14 @@
 use crate::application::ControlPlaneState;
 use crate::bridge::{
-    BridgeError, CodexAnthropicCapabilities, GeminiNativeBridge, OpenAiChatBridge,
-    OpenAiChatCapabilities, OpenAiResponsesBridge, OpenAiResponsesCapabilities,
-    anthropic_response_to_gemini, anthropic_sse_to_codex_responses_with_context,
-    anthropic_sse_to_gemini, anthropic_to_codex_response_with_context, chat_sse_to_codex_responses,
-    chat_to_codex_response, codex_response_to_anthropic_with_context, codex_response_to_chat,
+    BridgeError, CodexAnthropicCapabilities, CodexHistoryStore, GeminiNativeBridge,
+    GeminiThoughtStore, OpenAiChatBridge, OpenAiChatCapabilities, OpenAiResponsesBridge,
+    OpenAiResponsesCapabilities, anthropic_response_to_chat, anthropic_response_to_gemini,
+    anthropic_sse_to_chat, anthropic_sse_to_codex_responses_with_context, anthropic_sse_to_gemini,
+    anthropic_to_codex_response_with_context, chat_request_to_anthropic,
+    chat_sse_to_codex_responses_with_context, chat_to_codex_response_with_context,
+    codex_response_to_anthropic_with_context, codex_response_to_chat_with_context,
+    flatten_codex_namespaces, record_codex_sse, restore_codex_namespace_sse,
+    restore_codex_namespaces, sanitize_xai_responses_request,
 };
 use crate::configuration::{
     ConfigurationDocuments, ConfigurationFiles, ProviderProtocolEndpoint, ProviderRecord,
@@ -706,6 +710,8 @@ pub struct Gateway {
     active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
     active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
     connection_tests: Arc<Mutex<HashSet<String>>>,
+    codex_history: Arc<CodexHistoryStore>,
+    gemini_thoughts: Arc<GeminiThoughtStore>,
 }
 
 impl Gateway {
@@ -728,6 +734,8 @@ impl Gateway {
             active_agent_brokers: Arc::new(RwLock::new(HashMap::new())),
             active_agent_runtime_routes: Arc::new(Mutex::new(HashMap::new())),
             connection_tests: Arc::new(Mutex::new(HashSet::new())),
+            codex_history: Arc::new(CodexHistoryStore::default()),
+            gemini_thoughts: Arc::new(GeminiThoughtStore::default()),
         }
     }
 
@@ -752,6 +760,10 @@ impl Gateway {
                 post(response_client_responses),
             )
             .route(
+                "/chat/{client}/v1/chat/completions",
+                post(chat_client_completions),
+            )
+            .route(
                 "/gemini/v1beta/models/{*operation}",
                 post(gemini_model_operation),
             )
@@ -763,6 +775,10 @@ impl Gateway {
             .route("/mcp/{client}", post(agent_broker_mcp))
             .route("/agent-runtime/v1/messages", post(agent_runtime_messages))
             .route("/agent-runtime/v1/responses", post(agent_runtime_responses))
+            .route(
+                "/agent-runtime/v1/chat/completions",
+                post(agent_runtime_chat_completions),
+            )
             .with_state(self.clone())
     }
 
@@ -934,9 +950,27 @@ impl Gateway {
     async fn complete_configured_model(
         &self,
         headers: HeaderMap,
+        request: Value,
+        documents: ConfigurationDocuments,
+        model_id: &str,
+    ) -> Result<Response, GatewayError> {
+        self.complete_configured_model_for_inbound(
+            headers,
+            request,
+            documents,
+            model_id,
+            NativeProtocol::AnthropicMessages,
+        )
+        .await
+    }
+
+    async fn complete_configured_model_for_inbound(
+        &self,
+        headers: HeaderMap,
         mut request: Value,
         documents: ConfigurationDocuments,
         model_id: &str,
+        inbound: NativeProtocol,
     ) -> Result<Response, GatewayError> {
         let model = documents
             .models
@@ -965,8 +999,7 @@ impl Gateway {
         }
 
         request["model"] = Value::String(model.upstream_id.clone());
-        let protocol =
-            select_model_protocol(&documents, model_id, NativeProtocol::AnthropicMessages)?;
+        let protocol = select_model_protocol(&documents, model_id, inbound)?;
         let surface = provider_protocol_endpoint(provider, protocol)?;
         match protocol {
             Protocol::OpenAiResponses => {
@@ -1089,7 +1122,11 @@ impl Gateway {
                 }
                 let streaming = request.get("stream").and_then(Value::as_bool) == Some(true);
                 let endpoint = gemini_endpoint(&surface.endpoint, &model.upstream_id, streaming)?;
-                let bridge = GeminiNativeBridge::from_endpoint(endpoint, &provider.api_key);
+                let bridge = GeminiNativeBridge::from_endpoint(endpoint, &provider.api_key)
+                    .with_thought_store(
+                        Arc::clone(&self.gemini_thoughts),
+                        format!("{}:{}", provider.id, model.id),
+                    );
                 if streaming {
                     let stream = bridge.stream(request).await.map_err(GatewayError::Bridge)?;
                     let mut response = Response::new(Body::from_stream(stream));
@@ -1107,6 +1144,113 @@ impl Gateway {
                 }
             }
         }
+    }
+
+    async fn complete_chat_model(
+        &self,
+        headers: HeaderMap,
+        mut request: Value,
+        documents: ConfigurationDocuments,
+        model_id: &str,
+    ) -> Result<Response, GatewayError> {
+        if select_model_protocol(&documents, model_id, NativeProtocol::OpenAiChat)?
+            == Protocol::OpenAiChatCompletions
+        {
+            let model = documents
+                .models
+                .models
+                .iter()
+                .find(|model| model.id == model_id)
+                .ok_or_else(|| {
+                    GatewayError::InvalidRequest(format!("unknown GrillForge model: {model_id}"))
+                })?;
+            let provider = documents
+                .config
+                .providers
+                .iter()
+                .find(|provider| provider.id == model.provider_id)
+                .ok_or_else(|| {
+                    GatewayError::Configuration(format!(
+                        "model {} references unknown provider {}",
+                        model.id, model.provider_id
+                    ))
+                })?;
+            if !provider.enabled {
+                return Err(GatewayError::Configuration(format!(
+                    "model {} uses disabled provider {}",
+                    model.id, provider.id
+                )));
+            }
+            request["model"] = Value::String(model.upstream_id.clone());
+            let surface = provider_protocol_endpoint(provider, Protocol::OpenAiChatCompletions)?;
+            let base = Url::parse(&surface.endpoint).map_err(|_| {
+                GatewayError::Configuration(format!(
+                    "invalid provider endpoint: {}",
+                    surface.endpoint
+                ))
+            })?;
+            let endpoint =
+                build_request_endpoint(&base, surface.endpoint_mode, "/v1/chat/completions")
+                    .map_err(|_| {
+                        GatewayError::Configuration(format!(
+                            "invalid provider endpoint: {}",
+                            surface.endpoint
+                        ))
+                    })?;
+            let mut upstream = self.client.post(endpoint).json(&request);
+            upstream = match surface.api_key_placement {
+                ApiKeyPlacement::None => upstream,
+                ApiKeyPlacement::Bearer => upstream.bearer_auth(&provider.api_key),
+                ApiKeyPlacement::XApiKey => {
+                    return Err(GatewayError::Configuration(format!(
+                        "Chat Completions provider {} has incompatible authentication",
+                        provider.id
+                    )));
+                }
+            };
+            let response = upstream
+                .send()
+                .await
+                .map_err(|error| GatewayError::Native(error.to_string()))?;
+            return Ok(response_to_axum(response));
+        }
+        let streaming = request.get("stream").and_then(Value::as_bool) == Some(true);
+        let request = chat_request_to_anthropic(request).map_err(GatewayError::Bridge)?;
+        let response = self
+            .complete_configured_model_for_inbound(
+                headers,
+                request,
+                documents,
+                model_id,
+                NativeProtocol::OpenAiChat,
+            )
+            .await?;
+        if !response.status().is_success() {
+            return Ok(response);
+        }
+        if streaming {
+            let stream = anthropic_sse_to_chat(response.into_body().into_data_stream());
+            let mut response = Response::new(Body::from_stream(stream));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                "text/event-stream".parse().expect("static content type"),
+            );
+            return Ok(response);
+        }
+        let bytes = to_bytes(response.into_body(), 64 * 1024 * 1024)
+            .await
+            .map_err(|_| {
+                GatewayError::Bridge(BridgeError::InvalidChatResponse(
+                    "Anthropic response body could not be read".into(),
+                ))
+            })?;
+        let anthropic = serde_json::from_slice::<Value>(&bytes).map_err(|_| {
+            GatewayError::Bridge(BridgeError::InvalidChatResponse(
+                "Anthropic response body must be valid JSON".into(),
+            ))
+        })?;
+        let response = anthropic_response_to_chat(anthropic).map_err(GatewayError::Bridge)?;
+        Ok((StatusCode::OK, Json(response)).into_response())
     }
 
     async fn complete_codex_model(
@@ -1143,12 +1287,23 @@ impl Gateway {
         request["model"] = Value::String(model.upstream_id.clone());
         let protocol =
             select_model_protocol(&documents, model_id, NativeProtocol::OpenAiResponses)?;
+        if protocol != Protocol::OpenAiResponses {
+            self.codex_history.enrich_request(&mut request).await;
+        }
+        let namespace_map = flatten_codex_namespaces(&mut request).map_err(GatewayError::Bridge)?;
         let surface = provider_protocol_endpoint(provider, protocol)?;
         let base = Url::parse(&surface.endpoint).map_err(|_| {
             GatewayError::Configuration(format!("invalid provider endpoint: {}", surface.endpoint))
         })?;
         match protocol {
             Protocol::OpenAiResponses => {
+                if base
+                    .host_str()
+                    .is_some_and(|host| host.eq_ignore_ascii_case("api.x.ai"))
+                {
+                    sanitize_xai_responses_request(&mut request);
+                }
+                let streaming = request.get("stream").and_then(Value::as_bool) == Some(true);
                 let endpoint =
                     build_request_endpoint(&base, surface.endpoint_mode, "/v1/responses").map_err(
                         |_| {
@@ -1173,7 +1328,28 @@ impl Gateway {
                     .send()
                     .await
                     .map_err(|error| GatewayError::Native(error.to_string()))?;
-                Ok(response_to_axum(response))
+                if !response.status().is_success() || namespace_map.is_empty() {
+                    return Ok(response_to_axum(response));
+                }
+                if streaming {
+                    let stream = record_codex_sse(
+                        restore_codex_namespace_sse(response.bytes_stream(), namespace_map),
+                        Arc::clone(&self.codex_history),
+                    );
+                    let mut response = Response::new(Body::from_stream(stream));
+                    response.headers_mut().insert(
+                        HeaderName::from_static("content-type"),
+                        "text/event-stream".parse().expect("static content type"),
+                    );
+                    return Ok(response);
+                }
+                let mut response = response
+                    .json::<Value>()
+                    .await
+                    .map_err(|error| GatewayError::Native(error.to_string()))?;
+                restore_codex_namespaces(&mut response, &namespace_map);
+                self.codex_history.record_response(&response).await;
+                Ok((StatusCode::OK, Json(response)).into_response())
             }
             Protocol::OpenAiChatCompletions => {
                 let streaming = request.get("stream").and_then(Value::as_bool) == Some(true);
@@ -1185,8 +1361,8 @@ impl Gateway {
                                 surface.endpoint
                             ))
                         })?;
-                let upstream_request =
-                    codex_response_to_chat(request).map_err(GatewayError::Bridge)?;
+                let (upstream_request, tool_context) =
+                    codex_response_to_chat_with_context(request).map_err(GatewayError::Bridge)?;
                 let mut upstream = self.client.post(endpoint).json(&upstream_request);
                 upstream = match surface.api_key_placement {
                     ApiKeyPlacement::None => upstream,
@@ -1206,7 +1382,16 @@ impl Gateway {
                     return Ok(response_to_axum(response));
                 }
                 if streaming {
-                    let stream = chat_sse_to_codex_responses(response.bytes_stream());
+                    let stream = record_codex_sse(
+                        restore_codex_namespace_sse(
+                            chat_sse_to_codex_responses_with_context(
+                                response.bytes_stream(),
+                                tool_context,
+                            ),
+                            namespace_map,
+                        ),
+                        Arc::clone(&self.codex_history),
+                    );
                     let mut response = Response::new(Body::from_stream(stream));
                     response.headers_mut().insert(
                         HeaderName::from_static("content-type"),
@@ -1218,7 +1403,10 @@ impl Gateway {
                     .json::<Value>()
                     .await
                     .map_err(|error| GatewayError::Native(error.to_string()))?;
-                let response = chat_to_codex_response(response).map_err(GatewayError::Bridge)?;
+                let mut response = chat_to_codex_response_with_context(response, &tool_context)
+                    .map_err(GatewayError::Bridge)?;
+                restore_codex_namespaces(&mut response, &namespace_map);
+                self.codex_history.record_response(&response).await;
                 Ok((StatusCode::OK, Json(response)).into_response())
             }
             Protocol::AnthropicMessages => {
@@ -1257,10 +1445,16 @@ impl Gateway {
                     return Ok(response_to_axum(response));
                 }
                 if streaming {
-                    let stream = anthropic_sse_to_codex_responses_with_context(
-                        response.bytes_stream(),
-                        capabilities,
-                        context,
+                    let stream = record_codex_sse(
+                        restore_codex_namespace_sse(
+                            anthropic_sse_to_codex_responses_with_context(
+                                response.bytes_stream(),
+                                capabilities,
+                                context,
+                            ),
+                            namespace_map,
+                        ),
+                        Arc::clone(&self.codex_history),
                     );
                     let mut response = Response::new(Body::from_stream(stream));
                     response.headers_mut().insert(
@@ -1273,9 +1467,11 @@ impl Gateway {
                     .json::<Value>()
                     .await
                     .map_err(|error| GatewayError::Native(error.to_string()))?;
-                let response =
+                let mut response =
                     anthropic_to_codex_response_with_context(response, capabilities, &context)
                         .map_err(GatewayError::Bridge)?;
+                restore_codex_namespaces(&mut response, &namespace_map);
+                self.codex_history.record_response(&response).await;
                 Ok((StatusCode::OK, Json(response)).into_response())
             }
             Protocol::GeminiNative => {
@@ -1298,13 +1494,23 @@ impl Gateway {
                     codex_response_to_anthropic_with_context(request, capabilities)
                         .map_err(GatewayError::Bridge)?;
                 let endpoint = gemini_endpoint(&surface.endpoint, &model.upstream_id, streaming)?;
-                let bridge = GeminiNativeBridge::from_endpoint(endpoint, &provider.api_key);
+                let bridge = GeminiNativeBridge::from_endpoint(endpoint, &provider.api_key)
+                    .with_thought_store(
+                        Arc::clone(&self.gemini_thoughts),
+                        format!("{}:{}", provider.id, model.id),
+                    );
                 if streaming {
                     let stream = bridge.stream(request).await.map_err(GatewayError::Bridge)?;
-                    let stream = anthropic_sse_to_codex_responses_with_context(
-                        stream,
-                        capabilities,
-                        context,
+                    let stream = record_codex_sse(
+                        restore_codex_namespace_sse(
+                            anthropic_sse_to_codex_responses_with_context(
+                                stream,
+                                capabilities,
+                                context,
+                            ),
+                            namespace_map,
+                        ),
+                        Arc::clone(&self.codex_history),
                     );
                     let mut response = Response::new(Body::from_stream(stream));
                     response.headers_mut().insert(
@@ -1317,9 +1523,11 @@ impl Gateway {
                     .complete(request)
                     .await
                     .map_err(GatewayError::Bridge)?;
-                let response =
+                let mut response =
                     anthropic_to_codex_response_with_context(response, capabilities, &context)
                         .map_err(GatewayError::Bridge)?;
+                restore_codex_namespaces(&mut response, &namespace_map);
+                self.codex_history.record_response(&response).await;
                 Ok((StatusCode::OK, Json(response)).into_response())
             }
         }
@@ -1799,6 +2007,59 @@ async fn response_client_responses(
     }
 }
 
+async fn chat_client_completions(
+    State(gateway): State<Gateway>,
+    AxumPath(client): AxumPath<String>,
+    request: Request<Body>,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let active = match gateway.authorized_client(&client, &parts.headers) {
+        Ok(active) => active,
+        Err(error) => return error_response(error),
+    };
+    let bytes = match to_bytes(body, 64 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body could not be read".into(),
+            ));
+        }
+    };
+    let request: Value = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body must be valid JSON".into(),
+            ));
+        }
+    };
+    let alias = match request.get("model").and_then(Value::as_str) {
+        Some(alias) => alias.to_string(),
+        None => {
+            return error_response(GatewayError::InvalidRequest(
+                "model must be a string".into(),
+            ));
+        }
+    };
+    let Some(model_id) = alias.strip_prefix("grillforge/").map(str::to_string) else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unknown GrillForge route alias: {alias}"
+        )));
+    };
+    if !active.allowed_model_ids.contains(&model_id) {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "inactive {client} route alias: {alias}"
+        )));
+    }
+    match gateway
+        .complete_chat_model(parts.headers, request, active.documents, &model_id)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => error_response(error),
+    }
+}
+
 async fn client_messages(
     State(gateway): State<Gateway>,
     AxumPath(client): AxumPath<String>,
@@ -1956,6 +2217,68 @@ async fn gemini_configured_request(
             ));
         }
     };
+    let direct_gemini =
+        match select_model_protocol(&documents, &model_id, NativeProtocol::GeminiNative) {
+            Ok(protocol) => protocol == Protocol::GeminiNative,
+            Err(error) => return error_response(error),
+        };
+    if direct_gemini {
+        let Some(model) = documents
+            .models
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+        else {
+            return error_response(GatewayError::InvalidRequest(format!(
+                "unknown GrillForge model: {model_id}"
+            )));
+        };
+        let Some(provider) = documents
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.id == model.provider_id)
+        else {
+            return error_response(GatewayError::Configuration(format!(
+                "model {} references unknown provider {}",
+                model.id, model.provider_id
+            )));
+        };
+        if !provider.enabled {
+            return error_response(GatewayError::Configuration(format!(
+                "model {} uses disabled provider {}",
+                model.id, provider.id
+            )));
+        }
+        let surface = match provider_protocol_endpoint(provider, Protocol::GeminiNative) {
+            Ok(surface) => surface,
+            Err(error) => return error_response(error),
+        };
+        if surface.endpoint_mode != EndpointMode::BaseUrl
+            || surface.api_key_placement != ApiKeyPlacement::XApiKey
+        {
+            return error_response(GatewayError::Configuration(format!(
+                "Gemini Native provider {} requires an API-key Base URL",
+                provider.id
+            )));
+        }
+        let endpoint = match gemini_endpoint(&surface.endpoint, &model.upstream_id, streaming) {
+            Ok(endpoint) => endpoint,
+            Err(error) => return error_response(error),
+        };
+        let response = match gateway
+            .client
+            .post(endpoint)
+            .header("x-goog-api-key", &provider.api_key)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return error_response(GatewayError::Native(error.to_string())),
+        };
+        return response_to_axum(response);
+    }
     let request = match crate::bridge::gemini_request_to_anthropic(
         &format!("grillforge/{model_id}"),
         body,
@@ -1965,7 +2288,13 @@ async fn gemini_configured_request(
         Err(error) => return error_response(GatewayError::Bridge(error)),
     };
     let response = match gateway
-        .complete_configured_model(parts.headers, request, documents, &model_id)
+        .complete_configured_model_for_inbound(
+            parts.headers,
+            request,
+            documents,
+            &model_id,
+            NativeProtocol::GeminiNative,
+        )
         .await
     {
         Ok(response) => response,
@@ -2533,6 +2862,7 @@ async fn run_claude_agent_runtime(
     base_url: &str,
     web_access: bool,
 ) -> Result<std::process::Output, String> {
+    let prompt = format!("Working directory: {}\n\n{prompt}", cwd.display());
     let mut command = tokio::process::Command::new(&source.runtime);
     command.current_dir(cwd).args(["--agent", agent_id]);
     if web_access {
@@ -2546,7 +2876,7 @@ async fn run_claude_agent_runtime(
         "--output-format",
         "json",
         "--no-session-persistence",
-        prompt,
+        &prompt,
     ]);
     for key in [
         "CLAUDE_CODE_OAUTH_TOKEN",
@@ -3561,6 +3891,69 @@ async fn agent_runtime_responses(
     }
     match gateway
         .complete_codex_model(request, active.documents, model_id)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => error_response(error),
+    }
+}
+
+async fn agent_runtime_chat_completions(
+    State(gateway): State<Gateway>,
+    request: Request<Body>,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let token = match local_runtime_token(&parts.headers) {
+        Some(token) => token,
+        None => return error_response(GatewayError::Unauthorized("Agent broker".into())),
+    };
+    let active = match gateway.active_agent_runtime_routes.lock() {
+        Ok(routes) => routes.get(token).cloned(),
+        Err(_) => {
+            return error_response(GatewayError::Configuration(
+                "active Agent runtime route lock is poisoned".into(),
+            ));
+        }
+    };
+    let Some(active) = active else {
+        return error_response(GatewayError::Unauthorized("Agent broker".into()));
+    };
+    let bytes = match to_bytes(body, 64 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body could not be read".into(),
+            ));
+        }
+    };
+    let request: Value = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(GatewayError::InvalidRequest(
+                "request body must be valid JSON".into(),
+            ));
+        }
+    };
+    let alias = match request.get("model").and_then(Value::as_str) {
+        Some(alias) => alias.to_string(),
+        None => {
+            return error_response(GatewayError::InvalidRequest(
+                "model must be a string".into(),
+            ));
+        }
+    };
+    let Some(model_id) = alias.strip_prefix("grillforge/").map(str::to_string) else {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "unknown GrillForge route alias: {alias}"
+        )));
+    };
+    if active.model_id != model_id {
+        return error_response(GatewayError::InvalidRequest(format!(
+            "inactive Agent runtime route alias: {alias}"
+        )));
+    }
+    match gateway
+        .complete_chat_model(parts.headers, request, active.documents, &model_id)
         .await
     {
         Ok(response) => response,

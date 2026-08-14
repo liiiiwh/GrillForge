@@ -511,7 +511,7 @@ async fn deepseek_reasoning_text_stream_is_buffered_into_an_opaque_block() {
 }
 
 #[tokio::test]
-async fn rejects_reasoning_before_exposing_summary_without_explicit_capability() {
+async fn preserves_observed_reasoning_without_catalog_metadata() {
     let output = translate(vec![
         created(),
         upstream_event(
@@ -519,15 +519,30 @@ async fn rejects_reasoning_before_exposing_summary_without_explicit_capability()
             json!({"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","status":"in_progress","summary":[]}}),
         ),
         upstream_event(
+            "response.reasoning_summary_part.added",
+            json!({"type":"response.reasoning_summary_part.added","item_id":"rs_1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}),
+        ),
+        upstream_event(
             "response.reasoning_summary_text.delta",
             json!({"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"summary_index":0,"delta":"private thought"}),
+        ),
+        upstream_event(
+            "response.reasoning_summary_text.done",
+            json!({"type":"response.reasoning_summary_text.done","item_id":"rs_1","output_index":0,"summary_index":0,"text":"private thought"}),
+        ),
+        upstream_event(
+            "response.reasoning_summary_part.done",
+            json!({"type":"response.reasoning_summary_part.done","item_id":"rs_1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"private thought"}}),
+        ),
+        upstream_event(
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","status":"completed","summary":[{"type":"summary_text","text":"private thought"}]}}),
         ),
         completed(),
     ])
     .await;
 
-    assert_eq!(occurrences(&output, "event: error"), 1);
-    assert!(output.contains("reasoning items require the provider capability"));
-    assert!(!output.contains("private thought"));
-    assert!(!output.contains("event: message_stop"));
+    assert_eq!(occurrences(&output, "event: error"), 0);
+    assert!(output.contains("private thought"));
+    assert!(output.contains("event: message_stop"));
 }
