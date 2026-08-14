@@ -65,6 +65,33 @@ fn unsupported_or_unknown_slot_selection_fails_without_mutation() {
 }
 
 #[test]
+fn managed_slot_rejects_a_model_without_a_verified_route() {
+    let root = tempfile::tempdir().expect("config root");
+    let service = ControlPlaneService::new(root.path());
+    service.save_provider(provider()).expect("provider");
+    service.save_model(model()).expect("model");
+    service
+        .update_provider(provider())
+        .expect("editing a provider invalidates its protocol probes");
+
+    let error = service
+        .set_model_slot("sonnet".into(), Some("reviewer".into()))
+        .expect_err("an untested model must not be assigned to a slot");
+
+    assert_eq!(
+        error,
+        "Claude Code model slot sonnet model reviewer has not been protocol-tested; synchronize provider local models first"
+    );
+    assert!(
+        service
+            .state()
+            .expect("unchanged state")
+            .model_slots
+            .is_empty()
+    );
+}
+
+#[test]
 fn native_claude_models_are_persisted_without_a_provider() {
     let root = tempfile::tempdir().expect("config root");
     let service = ControlPlaneService::new(root.path());

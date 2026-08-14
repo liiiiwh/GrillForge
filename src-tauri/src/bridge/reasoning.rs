@@ -122,12 +122,15 @@ pub(crate) fn normalize_reasoning_item(item: &Value, field: &str) -> Result<Valu
             .ok_or_else(|| format!("{field}.status is unsupported"))?;
         normalized["status"] = json!(status);
     }
-    if let Some(encrypted) = object.get("encrypted_content") {
-        let encrypted = encrypted
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("{field}.encrypted_content must be a non-empty string"))?;
-        normalized["encrypted_content"] = json!(encrypted);
+    match object.get("encrypted_content") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(encrypted)) if encrypted.is_empty() => {}
+        Some(Value::String(encrypted)) => normalized["encrypted_content"] = json!(encrypted),
+        Some(_) => {
+            return Err(format!(
+                "{field}.encrypted_content must be a string or null"
+            ));
+        }
     }
     if let Some(content) = object.get("content") {
         let content = content

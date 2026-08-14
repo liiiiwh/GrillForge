@@ -4,6 +4,30 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.9] - 2026-08-14
+
+### Fixed
+
+- Claude Code, Claude Client, Codex, Pi, and the other managed clients now
+  accept a selected model only after its Provider synchronization has recorded
+  at least one verified protocol route.
+- Extension SubAgents validate the selected model route when they are created
+  or edited. At runtime GrillForge forwards matching protocols directly and
+  bridges mismatched client protocols through the verified Provider endpoint.
+- Kimi Responses reasoning accepts absent, empty, or null encrypted content
+  while preserving non-empty opaque signatures and rejecting invalid types.
+- The global Extension SubAgent library no longer presents per-client bindings
+  as a source compatibility restriction. Each supported client can authorize
+  any extension independently.
+
+### Verification
+
+- Every model discovered from the configured Kimi For Coding account passed a
+  fresh live synchronization and Gateway connection test.
+- The installed Claude Code CLI completed a real Agent tool loop through an
+  OpenAI Chat-only upstream via the GrillForge Anthropic bridge.
+- Full Rust tests, strict Clippy, frontend tests, and the production build pass.
+
 ## [0.2.8] - 2026-08-14
 
 ### Fixed

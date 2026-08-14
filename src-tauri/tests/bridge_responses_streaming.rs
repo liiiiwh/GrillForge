@@ -432,6 +432,45 @@ async fn streams_reasoning_summary_and_opaque_replay_signature_when_enabled() {
 }
 
 #[tokio::test]
+async fn streams_null_encrypted_reasoning_as_summary_without_a_signature() {
+    let output = translate_with_reasoning(vec![
+        created(),
+        upstream_event(
+            "response.output_item.added",
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"rs_k3","type":"reasoning","status":"in_progress","summary":[]}}),
+        ),
+        upstream_event(
+            "response.reasoning_summary_part.added",
+            json!({"type":"response.reasoning_summary_part.added","item_id":"rs_k3","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}),
+        ),
+        upstream_event(
+            "response.reasoning_summary_text.delta",
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"rs_k3","output_index":0,"summary_index":0,"delta":"Checked the request."}),
+        ),
+        upstream_event(
+            "response.reasoning_summary_text.done",
+            json!({"type":"response.reasoning_summary_text.done","item_id":"rs_k3","output_index":0,"summary_index":0,"text":"Checked the request."}),
+        ),
+        upstream_event(
+            "response.reasoning_summary_part.done",
+            json!({"type":"response.reasoning_summary_part.done","item_id":"rs_k3","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"Checked the request."}}),
+        ),
+        upstream_event(
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","output_index":0,"item":{"id":"rs_k3","type":"reasoning","status":"completed","summary":[{"type":"summary_text","text":"Checked the request."}],"encrypted_content":null}}),
+        ),
+        completed(),
+    ])
+    .await;
+
+    assert!(output.contains("\"type\":\"thinking\""));
+    assert!(output.contains("\"thinking\":\"Checked the request.\""));
+    assert!(!output.contains("signature_delta"));
+    assert!(!output.contains("event: error"));
+    assert_eq!(occurrences(&output, "event: message_stop"), 1);
+}
+
+#[tokio::test]
 async fn deepseek_reasoning_text_stream_is_buffered_into_an_opaque_block() {
     let output = translate_with_reasoning(vec![
         created(),

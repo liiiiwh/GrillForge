@@ -669,6 +669,14 @@ impl ControlPlaneService {
 
     pub fn set_main_model(&self, id: Option<String>) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
+        if let Some(id) = &id {
+            validate_managed_model_route(
+                &documents,
+                id,
+                "Claude Code main model",
+                format!("Claude Code references unknown model: {id}"),
+            )?;
+        }
         let agent = claude_agent_mut(&mut documents)?;
         agent.main = match id {
             Some(id) => MainRecord::Managed(id),
@@ -722,6 +730,14 @@ impl ControlPlaneService {
             return Err(format!("unsupported Claude Code model slot: {slot}"));
         }
         let mut documents = self.documents()?;
+        if let Some(id) = &id {
+            validate_managed_model_route(
+                &documents,
+                id,
+                &format!("Claude Code model slot {slot} model"),
+                format!("unknown model slot selection: {id}"),
+            )?;
+        }
         let agent = claude_agent_mut(&mut documents)?;
         match id {
             Some(id) => {
@@ -744,6 +760,14 @@ impl ControlPlaneService {
             return Err(format!("unsupported Claude Client model slot: {slot}"));
         }
         let mut documents = self.documents()?;
+        if let Some(id) = &id {
+            validate_managed_model_route(
+                &documents,
+                id,
+                &format!("Claude Client model slot {slot} model"),
+                format!("Claude Client references unknown model: {id}"),
+            )?;
+        }
         let agent = match documents
             .agents
             .agents
@@ -784,6 +808,14 @@ impl ControlPlaneService {
 
     pub fn set_pi_main_model(&self, id: Option<String>) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
+        if let Some(id) = &id {
+            validate_managed_model_route(
+                &documents,
+                id,
+                "Pi main model",
+                format!("Pi references unknown model: {id}"),
+            )?;
+        }
         let agent = pi_agent_mut(&mut documents);
         agent.main = match id {
             Some(id) => {
@@ -804,6 +836,12 @@ impl ControlPlaneService {
         enabled: bool,
     ) -> Result<ControlPlaneState, String> {
         let mut documents = self.documents()?;
+        validate_managed_model_route(
+            &documents,
+            &id,
+            "Pi model",
+            format!("Pi references unknown model: {id}"),
+        )?;
         let agent = pi_agent_mut(&mut documents);
         let is_default = matches!(&agent.main, MainRecord::Managed(model) if model == &id);
         if !enabled && is_default {
@@ -1711,12 +1749,11 @@ fn validate_extension_subagent_input(
             .iter()
             .find(|provider| provider.id == model.provider_id)
             .ok_or_else(|| format!("model {model_id} references unknown provider"))?;
-        if !provider.enabled {
-            return Err(format!(
-                "extension SubAgent {} model uses disabled provider: {}",
-                input.id, provider.id
-            ));
-        }
+        validate_verified_model_route(
+            model,
+            provider,
+            &format!("extension SubAgent {} model", input.id),
+        )?;
     }
     let mut capabilities = HashSet::new();
     for capability in &input.capabilities {
@@ -1833,25 +1870,12 @@ fn validate_codex_registry_model(
     documents: &ConfigurationDocuments,
     id: &str,
 ) -> Result<(), String> {
-    let model = documents
-        .models
-        .models
-        .iter()
-        .find(|model| model.id == id)
-        .ok_or_else(|| format!("Codex references unknown model: {id}"))?;
-    let provider = documents
-        .config
-        .providers
-        .iter()
-        .find(|provider| provider.id == model.provider_id)
-        .ok_or_else(|| format!("model {id} references unknown provider"))?;
-    if !provider.enabled {
-        return Err(format!(
-            "Codex model uses disabled provider: {}",
-            provider.id
-        ));
-    }
-    Ok(())
+    validate_managed_model_route(
+        documents,
+        id,
+        "Codex model",
+        format!("Codex references unknown model: {id}"),
+    )
 }
 
 fn codex_routed_selection(
@@ -1906,39 +1930,72 @@ fn validate_client_model(
     client_id: &str,
     model_id: &str,
 ) -> Result<(), String> {
+    validate_managed_model_route(
+        documents,
+        model_id,
+        &format!("{client_id} model"),
+        format!("{client_id} references unknown model: {model_id}"),
+    )
+}
+
+fn validate_managed_model_route(
+    documents: &ConfigurationDocuments,
+    model_id: &str,
+    subject: &str,
+    unknown_model_error: String,
+) -> Result<(), String> {
     let model = documents
         .models
         .models
         .iter()
         .find(|model| model.id == model_id)
-        .ok_or_else(|| format!("{client_id} references unknown model: {model_id}"))?;
+        .ok_or(unknown_model_error)?;
     let provider = documents
         .config
         .providers
         .iter()
         .find(|provider| provider.id == model.provider_id)
-        .ok_or_else(|| format!("model {model_id} references unknown provider"))?;
+        .ok_or_else(|| {
+            format!(
+                "{subject} {model_id} references unknown provider {}",
+                model.provider_id
+            )
+        })?;
+    validate_verified_model_route(model, provider, subject)
+}
+
+fn validate_verified_model_route(
+    model: &ModelRecord,
+    provider: &ProviderRecord,
+    subject: &str,
+) -> Result<(), String> {
     if !provider.enabled {
+        return Err(format!("{subject} uses disabled provider: {}", provider.id));
+    }
+    let Some(protocols) = model.native_protocols.as_ref() else {
         return Err(format!(
-            "model {model_id} uses disabled provider {}",
-            provider.id
+            "{subject} {} has not been protocol-tested; synchronize provider {} models first",
+            model.id, provider.id
+        ));
+    };
+    if protocols.is_empty() {
+        return Err(format!(
+            "{subject} {} has no verified native protocol; check provider {} and synchronize its models again",
+            model.id, provider.id
         ));
     }
-    // Every managed client is pointed at GrillForge's protocol-specific local
-    // ingress. Provider protocol compatibility is therefore resolved per
-    // model by the gateway, not by rejecting the selection here.
-    let compatible = matches!(
-        client_id,
-        GEMINI_AGENT | GROK_BUILD_AGENT | OPENCODE_AGENT | HERMES_AGENT | KIMI_CODE_AGENT
-    );
-    if compatible {
-        Ok(())
-    } else {
-        Err(format!(
-            "provider {} is incompatible with {client_id}",
-            provider.id
-        ))
+    if !protocols.iter().any(|protocol| {
+        provider
+            .protocol_endpoints
+            .iter()
+            .any(|endpoint| endpoint.protocol == *protocol)
+    }) {
+        return Err(format!(
+            "{subject} {} has no verified provider endpoint; synchronize provider {} models again",
+            model.id, provider.id
+        ));
     }
+    Ok(())
 }
 
 fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState, String> {

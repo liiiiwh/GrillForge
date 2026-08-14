@@ -897,6 +897,75 @@ async fn encrypted_responses_reasoning_round_trips_through_an_opaque_signature()
 }
 
 #[tokio::test]
+async fn null_encrypted_reasoning_keeps_its_summary_without_a_signature() {
+    let (base_url, captured) = serve_once(
+        200,
+        json!({
+            "id":"resp_k3","status":"completed","model":"k3",
+            "output":[
+                {
+                    "id":"rs_k3","type":"reasoning","status":"completed",
+                    "summary":[{"type":"summary_text","text":"Checked the request."}],
+                    "encrypted_content":null
+                },
+                {
+                    "type":"message","role":"assistant","status":"completed",
+                    "content":[{"type":"output_text","text":"OK","annotations":[]}]
+                }
+            ],
+            "usage":{"input_tokens":2,"output_tokens":1}
+        }),
+    )
+    .await;
+
+    let response = OpenAiResponsesBridge::new(base_url, "test-secret")
+        .with_capabilities(OpenAiResponsesCapabilities {
+            reasoning_items: true,
+        })
+        .complete(valid_request())
+        .await
+        .expect("null encrypted_content is an absent optional value");
+    captured.await.unwrap();
+
+    assert_eq!(response["content"][0]["type"], "thinking");
+    assert_eq!(response["content"][0]["thinking"], "Checked the request.");
+    assert!(response["content"][0].get("signature").is_none());
+    assert_eq!(response["content"][1]["text"], "OK");
+}
+
+#[tokio::test]
+async fn non_string_encrypted_reasoning_is_rejected() {
+    let (base_url, captured) = serve_once(
+        200,
+        json!({
+            "id":"resp_bad","status":"completed","model":"k3",
+            "output":[{
+                "id":"rs_bad","type":"reasoning","status":"completed",
+                "summary":[{"type":"summary_text","text":"Checked."}],
+                "encrypted_content":{"unexpected":true}
+            }],
+            "usage":{"input_tokens":2,"output_tokens":1}
+        }),
+    )
+    .await;
+
+    let error = OpenAiResponsesBridge::new(base_url, "test-secret")
+        .with_capabilities(OpenAiResponsesCapabilities {
+            reasoning_items: true,
+        })
+        .complete(valid_request())
+        .await
+        .unwrap_err();
+    captured.await.unwrap();
+
+    assert!(
+        error
+            .to_string()
+            .contains("reasoning item.encrypted_content must be a string or null")
+    );
+}
+
+#[tokio::test]
 async fn deepseek_reasoning_content_is_kept_opaque_and_replayable() {
     let reasoning_item = json!({
         "id":"rs_deepseek","type":"reasoning","status":"completed",

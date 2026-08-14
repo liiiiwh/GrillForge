@@ -401,3 +401,45 @@ fn extension_subagent_rejects_a_model_from_a_disabled_provider() {
         "extension SubAgent reviewer model uses disabled provider: local"
     );
 }
+
+#[test]
+fn extension_subagent_rejects_a_model_without_a_verified_route() {
+    let root = tempfile::tempdir().expect("configuration root");
+    let service = configured_service(root.path());
+    service
+        .update_provider(ProviderInput {
+            id: "local".into(),
+            name: "Local".into(),
+            protocol: Protocol::OpenAiResponses,
+            endpoint: "http://127.0.0.1:18080/v1".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .expect("editing a provider invalidates its protocol probes");
+
+    let error = service
+        .save_extension_subagent(ExtensionSubAgentInput {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            source_client_id: "claude_code".into(),
+            source_agent_id: "reviewer".into(),
+            model_id: Some("coder".into()),
+            capabilities: vec![],
+        })
+        .expect_err("an untested model must not be saved as an extension route");
+
+    assert_eq!(
+        error,
+        "extension SubAgent reviewer model coder has not been protocol-tested; synchronize provider local models first"
+    );
+    assert!(
+        service
+            .state()
+            .expect("unchanged state")
+            .extension_subagents
+            .is_empty()
+    );
+}

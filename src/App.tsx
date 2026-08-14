@@ -2751,11 +2751,10 @@ function App() {
                       const provider = providers.find(
                         (item) => item.id === model?.providerId,
                       );
-                      const boundClients = Object.entries(
+                      const isBound = Object.values(
                         state.clientExtensionSubagentIds,
                       )
-                        .filter(([, ids]) => ids.includes(extension.id))
-                        .map(([clientId]) => clientLabels[clientId] ?? clientId);
+                        .some((ids) => ids.includes(extension.id));
                       return (
                         <article className="subagent-card" key={extension.id}>
                           <AgentLogo sourceClientId={extension.sourceClientId} />
@@ -2776,9 +2775,6 @@ function App() {
                                 ? `${provider.name} / ${model.name}`
                                 : "跟随来源原生"}
                             </p>
-                            {boundClients.length > 0 && (
-                              <p>可用于：{boundClients.join("、")}</p>
-                            )}
                           </div>
                           <div className="row-actions">
                             <button
@@ -2789,9 +2785,9 @@ function App() {
                             </button>
                             <button
                               className="action-button action-button--danger"
-                              disabled={boundClients.length > 0 || Boolean(pending)}
+                              disabled={isBound || Boolean(pending)}
                               title={
-                                boundClients.length > 0
+                                isBound
                                   ? "请先从所有客户端解绑"
                                   : "删除扩展 SubAgent"
                               }
