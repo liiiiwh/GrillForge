@@ -26,6 +26,7 @@ pub struct McpMountTarget {
     pub config_path: PathBuf,
     pub format: McpClientFormat,
     stdio_command: Option<PathBuf>,
+    claude_route_hook_settings: Option<PathBuf>,
 }
 
 pub fn pi_mcp_extension_installed(settings_path: &Path) -> Result<bool, String> {
@@ -65,6 +66,7 @@ impl McpMountTarget {
             config_path: config_path.into(),
             format,
             stdio_command: None,
+            claude_route_hook_settings: None,
         }
     }
 
@@ -72,6 +74,19 @@ impl McpMountTarget {
         self.stdio_command = Some(command.into());
         self
     }
+
+    pub fn with_claude_route_hook(mut self, settings_path: impl Into<PathBuf>) -> Self {
+        self.claude_route_hook_settings = Some(settings_path.into());
+        self
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RouteHookSnapshot {
+    version: u8,
+    file_existed: bool,
+    hooks_existed: bool,
+    pre_tool_use_existed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -133,6 +148,7 @@ impl McpMountManager {
         }
         let snapshot_path = self.snapshot_path(client_id);
         let current = read_optional(&target.config_path)?;
+        let previous_snapshot = read_optional(&snapshot_path)?;
         let snapshot = match read_optional(&snapshot_path)? {
             Some(bytes) => parse_snapshot(&snapshot_path, &bytes)?,
             None => capture_mount_snapshot(target, current.as_deref(), url)?,
@@ -218,6 +234,11 @@ impl McpMountManager {
                 target.config_path.display()
             ));
         }
+        if let Err(error) = self.mount_route_hook(target) {
+            let restore_config = restore_optional(&target.config_path, current.as_deref());
+            let restore_snapshot = restore_optional(&snapshot_path, previous_snapshot.as_deref());
+            return Err(combine_errors(error, restore_config, restore_snapshot));
+        }
         Ok(())
     }
 
@@ -257,38 +278,64 @@ impl McpMountManager {
     fn unmount_inner(&self, client_id: &str, remove_credential: bool) -> Result<(), String> {
         let target = self.target(client_id)?;
         let snapshot_path = self.snapshot_path(client_id);
-        let Some(bytes) = read_optional(&snapshot_path)? else {
-            if remove_credential {
-                remove_optional_file(&self.credential_path(client_id), "MCP credential")?;
-            }
-            return Ok(());
-        };
-        let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
-        let current = read_optional(&target.config_path)?;
-        let expected = remove_mount(
-            target,
-            current.as_deref(),
-            &snapshot.entry,
-            &snapshot.mounted_url,
-        )?;
-        if current != expected {
-            restore_optional(&target.config_path, expected.as_deref())?;
-        }
-        if read_optional(&target.config_path)? != expected {
-            return Err(format!(
-                "MCP unmount verification failed: {}",
-                target.config_path.display()
+        let credential_path = self.credential_path(client_id);
+        let mut backups = vec![
+            (
+                target.config_path.clone(),
+                read_optional(&target.config_path)?,
+            ),
+            (snapshot_path.clone(), read_optional(&snapshot_path)?),
+            (credential_path.clone(), read_optional(&credential_path)?),
+        ];
+        if let Some(settings_path) = target.claude_route_hook_settings.as_deref() {
+            let hook_snapshot_path = self.route_hook_snapshot_path(client_id);
+            backups.push((settings_path.to_path_buf(), read_optional(settings_path)?));
+            backups.push((
+                hook_snapshot_path.clone(),
+                read_optional(&hook_snapshot_path)?,
             ));
         }
-        if remove_credential {
-            remove_optional_file(&self.credential_path(client_id), "MCP credential")?;
+
+        let result = (|| {
+            self.unmount_route_hook(target)?;
+            let Some(bytes) = read_optional(&snapshot_path)? else {
+                if remove_credential {
+                    remove_optional_file(&credential_path, "MCP credential")?;
+                }
+                return Ok(());
+            };
+            let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
+            let current = read_optional(&target.config_path)?;
+            let expected = remove_mount(
+                target,
+                current.as_deref(),
+                &snapshot.entry,
+                &snapshot.mounted_url,
+            )?;
+            if current != expected {
+                restore_optional(&target.config_path, expected.as_deref())?;
+            }
+            if read_optional(&target.config_path)? != expected {
+                return Err(format!(
+                    "MCP unmount verification failed: {}",
+                    target.config_path.display()
+                ));
+            }
+            if remove_credential {
+                remove_optional_file(&credential_path, "MCP credential")?;
+            }
+            fs::remove_file(&snapshot_path).map_err(|error| {
+                format!(
+                    "could not remove MCP mount snapshot {}: {error}",
+                    snapshot_path.display()
+                )
+            })
+        })();
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => Err(rollback_files(error, &backups)),
         }
-        fs::remove_file(&snapshot_path).map_err(|error| {
-            format!(
-                "could not remove MCP mount snapshot {}: {error}",
-                snapshot_path.display()
-            )
-        })
     }
 
     pub fn is_mounted(&self, client_id: &str) -> Result<bool, String> {
@@ -322,6 +369,8 @@ impl McpMountManager {
                 .and_then(|entry| mounted_json_url(target.format, entry))
                 == Some(snapshot.mounted_url.as_str())
         };
+        let hook_mounted = self.route_hook_is_mounted(target)?;
+        let mounted = mounted && hook_mounted;
         Ok(McpMountStatus {
             mounted,
             configuration_changed: !mounted,
@@ -351,6 +400,131 @@ impl McpMountManager {
 
     fn credential_path(&self, client_id: &str) -> PathBuf {
         self.snapshot_root.join(format!("mcp-{client_id}.token"))
+    }
+
+    fn route_hook_snapshot_path(&self, client_id: &str) -> PathBuf {
+        self.snapshot_root
+            .join(format!("mcp-{client_id}-route-hook.json"))
+    }
+
+    fn mount_route_hook(&self, target: &McpMountTarget) -> Result<(), String> {
+        let Some(settings_path) = target.claude_route_hook_settings.as_deref() else {
+            return Ok(());
+        };
+        let executable = resolve_stdio_command(target.stdio_command.as_deref(), "Claude Code")?;
+        let command = route_hook_command(&executable);
+        let current = read_optional(settings_path)?;
+        let snapshot_path = self.route_hook_snapshot_path(&target.client_id);
+        let previous_snapshot = read_optional(&snapshot_path)?;
+        let snapshot = match previous_snapshot.as_deref() {
+            Some(bytes) => parse_route_hook_snapshot(&snapshot_path, bytes)?,
+            None => capture_route_hook_snapshot(current.as_deref(), settings_path)?,
+        };
+        let updated = update_route_hook(current.as_deref(), settings_path, &command)?;
+        let encoded = serde_json::to_vec_pretty(&snapshot)
+            .map_err(|error| format!("could not serialize Claude route hook snapshot: {error}"))?;
+        fs::create_dir_all(&self.snapshot_root).map_err(|error| {
+            format!(
+                "could not create MCP snapshot directory {}: {error}",
+                self.snapshot_root.display()
+            )
+        })?;
+        crate::storage::atomic_replace(&snapshot_path, &encoded).map_err(|error| {
+            format!(
+                "could not write Claude route hook snapshot {}: {error}",
+                snapshot_path.display()
+            )
+        })?;
+        if let Err(error) = crate::storage::atomic_replace(settings_path, &updated)
+            .map_err(|error| format!("could not write {}: {error}", settings_path.display()))
+        {
+            let _ = restore_optional(&snapshot_path, previous_snapshot.as_deref());
+            return Err(error);
+        }
+        if !route_hook_is_present(
+            read_optional(settings_path)?.as_deref(),
+            settings_path,
+            &command,
+        )? {
+            let _ = restore_optional(settings_path, current.as_deref());
+            let _ = restore_optional(&snapshot_path, previous_snapshot.as_deref());
+            return Err(format!(
+                "Claude route hook verification failed: {}",
+                settings_path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn unmount_route_hook(&self, target: &McpMountTarget) -> Result<(), String> {
+        let Some(settings_path) = target.claude_route_hook_settings.as_deref() else {
+            return Ok(());
+        };
+        let snapshot_path = self.route_hook_snapshot_path(&target.client_id);
+        let Some(snapshot_bytes) = read_optional(&snapshot_path)? else {
+            return Ok(());
+        };
+        let snapshot = parse_route_hook_snapshot(&snapshot_path, &snapshot_bytes)?;
+        let executable = resolve_stdio_command(target.stdio_command.as_deref(), "Claude Code")?;
+        let command = route_hook_command(&executable);
+        let current = read_optional(settings_path)?;
+        let expected = remove_route_hook(current.as_deref(), settings_path, &snapshot, &command)?;
+        if current != expected {
+            restore_optional(settings_path, expected.as_deref())?;
+        }
+        if read_optional(settings_path)? != expected {
+            return Err(format!(
+                "Claude route hook removal verification failed: {}",
+                settings_path.display()
+            ));
+        }
+        fs::remove_file(&snapshot_path).map_err(|error| {
+            format!(
+                "could not remove Claude route hook snapshot {}: {error}",
+                snapshot_path.display()
+            )
+        })
+    }
+
+    fn route_hook_is_mounted(&self, target: &McpMountTarget) -> Result<bool, String> {
+        let Some(settings_path) = target.claude_route_hook_settings.as_deref() else {
+            return Ok(true);
+        };
+        let executable = resolve_stdio_command(target.stdio_command.as_deref(), "Claude Code")?;
+        route_hook_is_present(
+            read_optional(settings_path)?.as_deref(),
+            settings_path,
+            &route_hook_command(&executable),
+        )
+    }
+}
+
+fn combine_errors(
+    primary: String,
+    first_restore: Result<(), String>,
+    second_restore: Result<(), String>,
+) -> String {
+    let restores = [first_restore.err(), second_restore.err()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if restores.is_empty() {
+        primary
+    } else {
+        format!("{primary}; rollback failed: {}", restores.join("; "))
+    }
+}
+
+fn rollback_files(primary: String, backups: &[(PathBuf, Option<Vec<u8>>)]) -> String {
+    let failures = backups
+        .iter()
+        .rev()
+        .filter_map(|(path, bytes)| restore_optional(path, bytes.as_deref()).err())
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        primary
+    } else {
+        format!("{primary}; rollback failed: {}", failures.join("; "))
     }
 }
 
@@ -502,6 +676,158 @@ fn resolve_stdio_command(command: Option<&Path>, client: &str) -> Result<PathBuf
         ));
     }
     Ok(command)
+}
+
+fn route_hook_command(executable: &Path) -> String {
+    let path = executable.to_string_lossy();
+    let executable = if path
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'.'))
+    {
+        path.into_owned()
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    };
+    format!("{executable} claude-route-hook")
+}
+
+fn capture_route_hook_snapshot(
+    current: Option<&[u8]>,
+    path: &Path,
+) -> Result<RouteHookSnapshot, String> {
+    let root = parse_json_object(current, path)?;
+    let hooks = root.get("hooks").and_then(Value::as_object);
+    Ok(RouteHookSnapshot {
+        version: 1,
+        file_existed: current.is_some(),
+        hooks_existed: hooks.is_some(),
+        pre_tool_use_existed: hooks.is_some_and(|hooks| hooks.contains_key("PreToolUse")),
+    })
+}
+
+fn parse_route_hook_snapshot(path: &Path, bytes: &[u8]) -> Result<RouteHookSnapshot, String> {
+    let snapshot: RouteHookSnapshot = serde_json::from_slice(bytes).map_err(|error| {
+        format!(
+            "invalid Claude route hook snapshot {}: {error}",
+            path.display()
+        )
+    })?;
+    if snapshot.version != 1 {
+        return Err(format!(
+            "unsupported Claude route hook snapshot version: {}",
+            snapshot.version
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn update_route_hook(
+    current: Option<&[u8]>,
+    path: &Path,
+    command: &str,
+) -> Result<Vec<u8>, String> {
+    let mut root = parse_json_object(current, path)?;
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| format!("hooks must be an object: {}", path.display()))?;
+    let pre_tool_use = hooks
+        .entry("PreToolUse")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| format!("hooks.PreToolUse must be an array: {}", path.display()))?;
+    if !pre_tool_use
+        .iter()
+        .any(|entry| route_hook_entry_contains(entry, command))
+    {
+        pre_tool_use.push(json!({
+            "matcher": "Workflow|Agent",
+            "hooks": [{
+                "type": "command",
+                "command": command,
+                "timeout": 10
+            }]
+        }));
+    }
+    serde_json::to_vec_pretty(&Value::Object(root))
+        .map_err(|error| format!("could not serialize {}: {error}", path.display()))
+}
+
+fn route_hook_entry_contains(entry: &Value, command: &str) -> bool {
+    entry.get("matcher").and_then(Value::as_str) == Some("Workflow|Agent")
+        && entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .is_some_and(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook.get("type").and_then(Value::as_str) == Some("command")
+                        && hook.get("command").and_then(Value::as_str) == Some(command)
+                })
+            })
+}
+
+fn route_hook_is_present(
+    current: Option<&[u8]>,
+    path: &Path,
+    command: &str,
+) -> Result<bool, String> {
+    let root = parse_json_object(current, path)?;
+    Ok(root
+        .get("hooks")
+        .and_then(Value::as_object)
+        .and_then(|hooks| hooks.get("PreToolUse"))
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| route_hook_entry_contains(entry, command))
+        }))
+}
+
+fn remove_route_hook(
+    current: Option<&[u8]>,
+    path: &Path,
+    snapshot: &RouteHookSnapshot,
+    command: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let mut root = parse_json_object(current, path)?;
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(current.map(<[u8]>::to_vec));
+    };
+    let Some(pre_tool_use) = hooks.get_mut("PreToolUse").and_then(Value::as_array_mut) else {
+        return Ok(current.map(<[u8]>::to_vec));
+    };
+    for entry in pre_tool_use.iter_mut() {
+        if entry.get("matcher").and_then(Value::as_str) != Some("Workflow|Agent") {
+            continue;
+        }
+        let Some(commands) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        commands.retain(|hook| {
+            !(hook.get("type").and_then(Value::as_str) == Some("command")
+                && hook.get("command").and_then(Value::as_str) == Some(command))
+        });
+    }
+    pre_tool_use.retain(|entry| {
+        entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .is_none_or(|hooks| !hooks.is_empty())
+    });
+    if !snapshot.pre_tool_use_existed && pre_tool_use.is_empty() {
+        hooks.remove("PreToolUse");
+    }
+    if !snapshot.hooks_existed && hooks.is_empty() {
+        root.remove("hooks");
+    }
+    if !snapshot.file_existed && root.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_vec_pretty(&Value::Object(root))
+        .map(Some)
+        .map_err(|error| format!("could not serialize {}: {error}", path.display()))
 }
 
 fn capture_mount_snapshot(

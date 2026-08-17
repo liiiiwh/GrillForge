@@ -193,7 +193,7 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     assert!(instruction_prefix.contains("workflow 或并行不是原生 Agent 的例外"));
     assert!(instruction_prefix.contains("不要先启动客户端内置 Agent"));
     assert!(instructions.contains("run_agent"));
-    assert!(instructions.contains("用户明确说“使用客户端原生 Agent”或“不要 GrillForge”"));
+    assert!(instructions.contains("关闭对应扩展 SubAgent 或卸载扩展"));
     assert!(instructions.contains("webAccess=true"));
 
     let tools: Value = client

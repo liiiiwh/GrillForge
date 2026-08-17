@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod application;
 pub mod bridge;
 pub mod claude_desktop_integration;
+pub mod claude_route_hook;
 pub mod cli_discovery;
 pub mod client_integrations;
 pub mod codex_integration;
@@ -85,7 +86,8 @@ pub fn run() {
                         home.join(".claude.json"),
                         mcp_mount::McpClientFormat::ClaudeJson,
                     )
-                    .with_stdio_command(&executable),
+                    .with_stdio_command(&executable)
+                    .with_claude_route_hook(home.join(".claude/settings.json")),
                     mcp_mount::McpMountTarget::new(
                         "claude_desktop",
                         claude_desktop_integration::default_claude_desktop_paths(&home)

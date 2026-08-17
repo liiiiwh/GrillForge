@@ -78,6 +78,114 @@ fn claude_mount_is_isolated_updated_and_removed_without_touching_other_servers()
 }
 
 #[test]
+fn claude_mount_adds_and_precisely_removes_the_native_agent_route_hook() {
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join(".claude.json");
+    let settings = root.path().join(".claude/settings.json");
+    fs::create_dir_all(settings.parent().unwrap()).expect("settings parent");
+    fs::write(
+        &settings,
+        r#"{"theme":"dark","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"keep-hook"}]}]}}"#,
+    )
+    .expect("settings fixture");
+    let manager = McpMountManager::new(
+        root.path().join("snapshots"),
+        [
+            McpMountTarget::new("claude_code", &config, McpClientFormat::ClaudeJson)
+                .with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge")
+                .with_claude_route_hook(&settings),
+        ],
+    )
+    .expect("manager");
+
+    manager
+        .mount(
+            "claude_code",
+            "http://127.0.0.1:15721/mcp/claude_code",
+            "token",
+        )
+        .expect("mount");
+    let active: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    let hooks = active["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(hooks.len(), 2);
+    assert_eq!(hooks[0]["matcher"], "Bash");
+    assert_eq!(hooks[1]["matcher"], "Workflow|Agent");
+    assert_eq!(
+        hooks[1]["hooks"][0]["command"],
+        "/Applications/GrillForge.app/Contents/MacOS/grillforge claude-route-hook"
+    );
+
+    let mut changed = active;
+    changed["theme"] = "light".into();
+    changed["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "matcher": "Read",
+            "hooks": [{"type":"command","command":"later-hook"}]
+        }));
+    fs::write(&settings, serde_json::to_vec_pretty(&changed).unwrap()).unwrap();
+
+    manager.unmount("claude_code").expect("unmount");
+    let restored: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    assert_eq!(restored["theme"], "light");
+    let hooks = restored["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(hooks.len(), 2);
+    assert_eq!(hooks[0]["matcher"], "Bash");
+    assert_eq!(hooks[1]["matcher"], "Read");
+}
+
+#[test]
+fn failed_claude_unmount_restores_the_route_hook_and_all_managed_state() {
+    let root = tempfile::tempdir().expect("root");
+    let snapshots = root.path().join("snapshots");
+    let config = root.path().join(".claude.json");
+    let settings = root.path().join(".claude/settings.json");
+    fs::create_dir_all(settings.parent().unwrap()).expect("settings parent");
+    fs::write(&settings, r#"{"theme":"dark"}"#).expect("settings fixture");
+    let manager = McpMountManager::new(
+        &snapshots,
+        [
+            McpMountTarget::new("claude_code", &config, McpClientFormat::ClaudeJson)
+                .with_stdio_command("/Applications/GrillForge.app/Contents/MacOS/grillforge")
+                .with_claude_route_hook(&settings),
+        ],
+    )
+    .expect("manager");
+    let token = manager.credential("claude_code").expect("credential");
+    manager
+        .mount(
+            "claude_code",
+            "http://127.0.0.1:15721/mcp/claude_code",
+            &token,
+        )
+        .expect("mount");
+    let mounted_settings = fs::read(&settings).expect("mounted settings");
+    let hook_snapshot = snapshots.join("mcp-claude_code-route-hook.json");
+    let mounted_hook_snapshot = fs::read(&hook_snapshot).expect("hook snapshot");
+    let mount_snapshot = snapshots.join("mcp-claude_code.json");
+    let mounted_mount_snapshot = fs::read(&mount_snapshot).expect("mount snapshot");
+    let credential = snapshots.join("mcp-claude_code.token");
+    let mounted_credential = fs::read(&credential).expect("credential bytes");
+
+    fs::write(&config, b"{invalid-json").expect("break MCP config after mount");
+    let broken_config = fs::read(&config).expect("broken config");
+    let error = manager
+        .unmount("claude_code")
+        .expect_err("invalid config must fail the transaction");
+    assert!(
+        error.contains("configuration must be a JSON object"),
+        "{error}"
+    );
+
+    assert_eq!(fs::read(&config).unwrap(), broken_config);
+    assert_eq!(fs::read(&settings).unwrap(), mounted_settings);
+    assert_eq!(fs::read(&hook_snapshot).unwrap(), mounted_hook_snapshot);
+    assert_eq!(fs::read(&mount_snapshot).unwrap(), mounted_mount_snapshot);
+    assert_eq!(fs::read(&credential).unwrap(), mounted_credential);
+}
+
+#[test]
 fn claude_desktop_mount_uses_a_local_stdio_server_that_forwards_to_grillforge() {
     let root = tempfile::tempdir().expect("root");
     let config = root.path().join("claude_desktop_config.json");

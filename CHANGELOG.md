@@ -4,6 +4,24 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.13] - 2026-08-17
+
+### Fixed
+
+- Claude Code and Claude Client UltraCode now route native Workflow and Agent
+  attempts through mounted GrillForge extension SubAgents whenever the client
+  has an enabled extension binding.
+- The route guard uses Claude Code's official `PreToolUse` hook and is installed
+  and removed together with the Claude Code extension mount. Unrelated user
+  hooks and settings are preserved.
+- Failed unmounts now restore the MCP entry, route hook, credential, and both
+  snapshots as one transaction.
+
+### Verification
+
+- Full Rust tests and strict Clippy pass with all features and targets.
+- Frontend tests, the production build, and the protocol routing matrix pass.
+
 ## [0.2.12] - 2026-08-16
 
 ### Fixed
