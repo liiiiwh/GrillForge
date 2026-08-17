@@ -139,6 +139,25 @@ type ClientMcpStatus = {
   configurationChanged: boolean;
 };
 
+type ClaudeDesktopIntegrationCommand =
+  | "apply_claude_desktop"
+  | "disable_claude_desktop";
+
+type DesktopRestartClient = "claude_desktop" | "codex";
+
+export function claudeClientRestartRequired(
+  command: ClaudeDesktopIntegrationCommand,
+) {
+  return (
+    command === "apply_claude_desktop" ||
+    command === "disable_claude_desktop"
+  );
+}
+
+export function desktopClientRestartAfterMcpChange(clientId: string) {
+  return clientId === "claude_desktop" || clientId === "codex";
+}
+
 export function extensionMountCopy(status?: ClientMcpStatus) {
   const mounted = Boolean(status?.mounted);
   const needsReapply = Boolean(status?.configurationChanged);
@@ -1341,8 +1360,9 @@ function App() {
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [claudeRestartPrompt, setClaudeRestartPrompt] = useState(false);
-  const [claudeRestartError, setClaudeRestartError] = useState("");
+  const [restartPromptClient, setRestartPromptClient] =
+    useState<DesktopRestartClient | null>(null);
+  const [restartClientError, setRestartClientError] = useState("");
   const [showProviderForm, setShowProviderForm] = useState(false);
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
   const [presetSearch, setPresetSearch] = useState("");
@@ -1550,7 +1570,7 @@ function App() {
   }
 
   async function runDesktopIntegration(
-    command: "apply_claude_desktop" | "disable_claude_desktop",
+    command: ClaudeDesktopIntegrationCommand,
     success: string,
   ) {
     if (!begin(command)) return false;
@@ -1558,9 +1578,9 @@ function App() {
       const persisted = await invoke<ClaudeDesktopStatus>(command);
       setClaudeDesktop(persisted);
       setNotice(success);
-      if (command === "apply_claude_desktop") {
-        setClaudeRestartError("");
-        setClaudeRestartPrompt(true);
+      if (claudeClientRestartRequired(command)) {
+        setRestartClientError("");
+        setRestartPromptClient("claude_desktop");
       }
       return true;
     } catch (cause) {
@@ -2123,9 +2143,9 @@ function App() {
           : current,
       );
       setNotice(`扩展 SubAgent 已${mounted ? "挂载" : "卸载"}。`);
-      if (clientId === "claude_desktop") {
-        setClaudeRestartError("");
-        setClaudeRestartPrompt(true);
+      if (desktopClientRestartAfterMcpChange(clientId)) {
+        setRestartClientError("");
+        setRestartPromptClient(clientId as DesktopRestartClient);
       }
     } catch (cause) {
       reportError(errorMessage(cause));
@@ -2134,14 +2154,20 @@ function App() {
     }
   }
 
-  async function restartClaudeClient() {
-    if (!begin("restart_claude_client")) return;
+  async function restartDesktopClient() {
+    if (!restartPromptClient) return;
+    const clientName = restartPromptClient === "codex" ? "Codex" : "Claude Client";
+    const command =
+      restartPromptClient === "codex"
+        ? "restart_codex_client"
+        : "restart_claude_client";
+    if (!begin(command)) return;
     try {
-      await invoke("restart_claude_client");
-      setClaudeRestartPrompt(false);
-      setNotice("Claude Client 已重新打开，扩展 SubAgent 将在新进程中加载。");
+      await invoke(command);
+      setRestartPromptClient(null);
+      setNotice(`${clientName} 已重新打开，最新配置将在新进程中加载。`);
     } catch (cause) {
-      setClaudeRestartError(errorMessage(cause));
+      setRestartClientError(errorMessage(cause));
     } finally {
       setPending("");
     }
@@ -6010,7 +6036,7 @@ function App() {
           </section>
         </div>
       )}
-      {claudeRestartPrompt && (
+      {restartPromptClient && (
         <div className="modal-backdrop" role="presentation">
           <section
             className="pi-mcp-install-confirm"
@@ -6019,27 +6045,32 @@ function App() {
             aria-labelledby="claude-restart-title"
           >
             <p className="kicker">需要重启</p>
-            <h2 id="claude-restart-title">重新打开 Claude Client</h2>
-            <p>Claude Client 需要重启一次，才能加载刚刚更新的扩展 SubAgent 配置。</p>
-            {claudeRestartError && (
+            <h2 id="claude-restart-title">
+              重新打开 {restartPromptClient === "codex" ? "Codex" : "Claude Client"}
+            </h2>
+            <p>
+              {restartPromptClient === "codex" ? "Codex" : "Claude Client"}
+              需要重启一次，才能加载刚刚更新的配置。
+            </p>
+            {restartClientError && (
               <p className="pi-mcp-install-error" role="alert">
-                {claudeRestartError}
+                {restartClientError}
               </p>
             )}
             <footer>
               <button
                 className="button button--secondary"
-                disabled={pending === "restart_claude_client"}
-                onClick={() => setClaudeRestartPrompt(false)}
+                disabled={pending.startsWith("restart_")}
+                onClick={() => setRestartPromptClient(null)}
               >
                 暂不处理
               </button>
               <button
                 className="button"
-                disabled={pending === "restart_claude_client"}
-                onClick={() => void restartClaudeClient()}
+                disabled={pending.startsWith("restart_")}
+                onClick={() => void restartDesktopClient()}
               >
-                {pending === "restart_claude_client" ? "正在重启…" : "立即重启"}
+                {pending.startsWith("restart_") ? "正在重启…" : "立即重启"}
               </button>
             </footer>
           </section>

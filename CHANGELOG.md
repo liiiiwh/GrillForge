@@ -4,6 +4,22 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.12] - 2026-08-16
+
+### Fixed
+
+- Unmounting the Codex extension now removes its managed broker credential, so
+  a restarted Codex session can no longer retain authorization to an unmounted
+  GrillForge MCP server.
+- Claude Client and Codex now offer the same restart confirmation after an
+  extension mount changes, allowing their cached MCP tool catalogs to refresh
+  immediately.
+
+### Verification
+
+- Full Rust tests and strict Clippy pass with all features and targets.
+- Frontend tests and the production build pass.
+
 ## [0.2.11] - 2026-08-14
 
 ### Fixed

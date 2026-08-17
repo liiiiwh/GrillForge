@@ -247,9 +247,20 @@ impl McpMountManager {
     }
 
     pub fn unmount(&self, client_id: &str) -> Result<(), String> {
+        self.unmount_inner(client_id, true)
+    }
+
+    pub fn unmount_preserving_credential(&self, client_id: &str) -> Result<(), String> {
+        self.unmount_inner(client_id, false)
+    }
+
+    fn unmount_inner(&self, client_id: &str, remove_credential: bool) -> Result<(), String> {
         let target = self.target(client_id)?;
         let snapshot_path = self.snapshot_path(client_id);
         let Some(bytes) = read_optional(&snapshot_path)? else {
+            if remove_credential {
+                remove_optional_file(&self.credential_path(client_id), "MCP credential")?;
+            }
             return Ok(());
         };
         let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
@@ -268,6 +279,9 @@ impl McpMountManager {
                 "MCP unmount verification failed: {}",
                 target.config_path.display()
             ));
+        }
+        if remove_credential {
+            remove_optional_file(&self.credential_path(client_id), "MCP credential")?;
         }
         fs::remove_file(&snapshot_path).map_err(|error| {
             format!(
@@ -337,6 +351,17 @@ impl McpMountManager {
 
     fn credential_path(&self, client_id: &str) -> PathBuf {
         self.snapshot_root.join(format!("mcp-{client_id}.token"))
+    }
+}
+
+fn remove_optional_file(path: &Path, label: &str) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not remove {label} {}: {error}",
+            path.display()
+        )),
     }
 }
 

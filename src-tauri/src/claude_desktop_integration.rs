@@ -334,38 +334,61 @@ pub fn disable_claude_desktop(
 pub async fn restart_claude_client() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let quit = Command::new("/usr/bin/osascript")
-            .args([
-                "-e",
-                "tell application id \"com.anthropic.claudefordesktop\" to quit",
-            ])
-            .status()
-            .map_err(|error| format!("无法请求 Claude Client 正常退出: {error}"))?;
-        if !quit.success() {
-            return Err("Claude Client 未接受正常退出请求，请手动退出后重开".into());
-        }
-        for _ in 0..30 {
-            let running = Command::new("/usr/bin/pgrep")
-                .args(["-x", "Claude"])
-                .status()
-                .map_err(|error| format!("无法确认 Claude Client 是否退出: {error}"))?
-                .success();
-            if !running {
-                let opened = Command::new("/usr/bin/open")
-                    .args(["-b", "com.anthropic.claudefordesktop"])
-                    .status()
-                    .map_err(|error| format!("无法重新打开 Claude Client: {error}"))?;
-                return opened
-                    .success()
-                    .then_some(())
-                    .ok_or_else(|| "系统未能重新打开 Claude Client".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        Err("Claude Client 在 15 秒内没有正常退出；未强制终止，请手动重启".into())
+        restart_macos_application("com.anthropic.claudefordesktop", "Claude", "Claude Client")
     }
     #[cfg(not(target_os = "macos"))]
     {
         Err("当前系统暂不支持自动重启 Claude Client，请手动重启".into())
     }
+}
+
+#[tauri::command]
+pub async fn restart_codex_client() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        restart_macos_application("com.openai.codex", "ChatGPT", "Codex")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("当前系统暂不支持自动重启 Codex，请手动重启".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restart_macos_application(
+    bundle_id: &str,
+    process_name: &str,
+    display_name: &str,
+) -> Result<(), String> {
+    let script = format!("tell application id \"{bundle_id}\" to quit");
+    let quit = Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .status()
+        .map_err(|error| format!("无法请求 {display_name} 正常退出: {error}"))?;
+    if !quit.success() {
+        return Err(format!(
+            "{display_name} 未接受正常退出请求，请手动退出后重开"
+        ));
+    }
+    for _ in 0..30 {
+        let running = Command::new("/usr/bin/pgrep")
+            .args(["-x", process_name])
+            .status()
+            .map_err(|error| format!("无法确认 {display_name} 是否退出: {error}"))?
+            .success();
+        if !running {
+            let opened = Command::new("/usr/bin/open")
+                .args(["-b", bundle_id])
+                .status()
+                .map_err(|error| format!("无法重新打开 {display_name}: {error}"))?;
+            return opened
+                .success()
+                .then_some(())
+                .ok_or_else(|| format!("系统未能重新打开 {display_name}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    Err(format!(
+        "{display_name} 在 15 秒内没有正常退出；未强制终止，请手动重启"
+    ))
 }

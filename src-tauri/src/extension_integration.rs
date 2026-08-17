@@ -301,7 +301,7 @@ impl ExtensionIntegrationService {
             if self.mounts.is_mounted(&client_id)? {
                 self.mounts.credential(&client_id)?;
             }
-            self.mounts.unmount(&client_id)?;
+            self.mounts.unmount_preserving_credential(&client_id)?;
         }
         Ok(())
     }
@@ -349,7 +349,7 @@ impl ExtensionIntegrationService {
             ));
         }
         gateway.deactivate_client_agent_broker(client_id);
-        self.mounts.unmount(client_id)?;
+        self.mounts.unmount_preserving_credential(client_id)?;
         Ok(())
     }
 
@@ -610,7 +610,8 @@ impl ExtensionIntegrationService {
         } else {
             previous
         };
-        if let Err(error) = self.suspend_client(gateway, client_id) {
+        gateway.deactivate_client_agent_broker(client_id);
+        if let Err(error) = self.mounts.unmount(client_id) {
             let rollback = if was_desired {
                 control
                     .set_client_mcp_mounted(client_id, true)

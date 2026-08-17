@@ -203,6 +203,7 @@ pub fn run() {
             claude_desktop_integration::apply_claude_desktop,
             claude_desktop_integration::disable_claude_desktop,
             claude_desktop_integration::restart_claude_client,
+            claude_desktop_integration::restart_codex_client,
             pi_integration::pi_status,
             pi_integration::apply_pi,
             pi_integration::disable_pi,

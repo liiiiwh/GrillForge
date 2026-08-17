@@ -248,6 +248,33 @@ fn codex_mount_uses_the_real_http_mcp_toml_shape() {
 }
 
 #[test]
+fn unmount_removes_the_managed_broker_credential() {
+    let root = tempfile::tempdir().expect("root");
+    let snapshots = root.path().join("snapshots");
+    let config = root.path().join("config.toml");
+    fs::write(&config, "model = \"gpt-5\"\n").expect("fixture");
+    let manager = McpMountManager::new(
+        &snapshots,
+        [McpMountTarget::new(
+            "codex",
+            &config,
+            McpClientFormat::CodexToml,
+        )],
+    )
+    .expect("manager");
+    let token = manager.credential("codex").expect("credential");
+    manager
+        .mount("codex", "http://127.0.0.1:15721/mcp/codex", &token)
+        .expect("mount");
+    let credential = snapshots.join("mcp-codex.token");
+    assert!(credential.exists());
+
+    manager.unmount("codex").expect("unmount");
+
+    assert!(!credential.exists());
+}
+
+#[test]
 fn credential_adopts_an_existing_managed_mount_and_survives_a_restart() {
     let root = tempfile::tempdir().expect("root");
     let config = root.path().join("config.toml");
