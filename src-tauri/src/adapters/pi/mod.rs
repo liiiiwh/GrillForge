@@ -334,8 +334,12 @@ struct ManagedFiles {
 
 impl ManagedFiles {
     fn semantically_matches(&self, expected: &Self) -> bool {
-        json_bytes_match(self.models.as_deref(), expected.models.as_deref())
-            && json_bytes_match(self.settings.as_deref(), expected.settings.as_deref())
+        managed_model_value(self.models.as_deref())
+            .zip(managed_model_value(expected.models.as_deref()))
+            .is_some_and(|(current, expected)| current == expected)
+            && managed_settings_values(self.settings.as_deref())
+                .zip(managed_settings_values(expected.settings.as_deref()))
+                .is_some_and(|(current, expected)| current == expected)
     }
 }
 
@@ -394,11 +398,15 @@ impl PiAdapter {
             });
         };
         let snapshot = parse_snapshot(&snapshot_bytes)?;
-        if !self.capture()?.semantically_matches(&snapshot.expected) {
+        let current = self.capture()?;
+        if !current.semantically_matches(&snapshot.expected) {
             return Err(PiAdapterError::Drifted);
         }
-        self.restore_files(&snapshot.original)?;
-        if self.capture()? != snapshot.original {
+        let restored = restore_managed_files(&current, &snapshot.original)?;
+        if let Err(error) = self.restore_files(&restored) {
+            return Err(combine_rollback(error, self.restore_files(&current)));
+        }
+        if !self.capture()?.semantically_matches(&snapshot.original) {
             return Err(PiAdapterError::Invalid(
                 "Pi restore verification failed; recovery snapshot was retained".into(),
             ));
@@ -453,19 +461,98 @@ impl PiAdapter {
     }
 }
 
-fn json_bytes_match(current: Option<&[u8]>, expected: Option<&[u8]>) -> bool {
-    match (current, expected) {
-        (None, None) => true,
-        (Some(current), Some(expected)) => {
-            match (
-                serde_json::from_slice::<Value>(current),
-                serde_json::from_slice::<Value>(expected),
-            ) {
-                (Ok(current), Ok(expected)) => current == expected,
-                _ => current == expected,
-            }
+const MANAGED_SETTINGS_KEYS: [&str; 3] = ["defaultProvider", "defaultModel", "enabledModels"];
+
+fn managed_model_value(bytes: Option<&[u8]>) -> Option<Option<Value>> {
+    let root = parse_optional_json_value(bytes)?;
+    Some(
+        root.as_ref()
+            .and_then(Value::as_object)
+            .and_then(|root| root.get("providers"))
+            .and_then(Value::as_object)
+            .and_then(|providers| providers.get(PROVIDER_ID))
+            .cloned(),
+    )
+}
+
+fn managed_settings_values(bytes: Option<&[u8]>) -> Option<Vec<Option<Value>>> {
+    let root = parse_optional_json_value(bytes)?;
+    let root = root.as_ref().and_then(Value::as_object);
+    Some(
+        MANAGED_SETTINGS_KEYS
+            .iter()
+            .map(|key| root.and_then(|root| root.get(*key)).cloned())
+            .collect(),
+    )
+}
+
+fn parse_optional_json_value(bytes: Option<&[u8]>) -> Option<Option<Value>> {
+    bytes.map(serde_json::from_slice::<Value>).transpose().ok()
+}
+
+fn restore_managed_files(
+    current: &ManagedFiles,
+    original: &ManagedFiles,
+) -> Result<ManagedFiles, PiAdapterError> {
+    Ok(ManagedFiles {
+        models: restore_managed_models(current.models.as_deref(), original.models.as_deref())?,
+        settings: restore_managed_settings(
+            current.settings.as_deref(),
+            original.settings.as_deref(),
+        )?,
+    })
+}
+
+fn restore_managed_models(
+    current: Option<&[u8]>,
+    original: Option<&[u8]>,
+) -> Result<Option<Vec<u8>>, PiAdapterError> {
+    let mut root = parse_json_object(current, "Pi models.json")?;
+    let original_root = parse_json_object(original, "original Pi models.json")?;
+    let original_provider = original_root
+        .get("providers")
+        .and_then(Value::as_object)
+        .and_then(|providers| providers.get(PROVIDER_ID))
+        .cloned();
+
+    if let Some(provider) = original_provider {
+        object_entry(&mut root, "providers", "Pi models.json providers")?
+            .insert(PROVIDER_ID.into(), provider);
+    } else if let Some(providers) = root.get_mut("providers").and_then(Value::as_object_mut) {
+        providers.remove(PROVIDER_ID);
+        if providers.is_empty() && !original_root.contains_key("providers") {
+            root.remove("providers");
         }
-        _ => false,
+    }
+
+    optional_pretty_json(root, original.is_some(), "Pi models.json")
+}
+
+fn restore_managed_settings(
+    current: Option<&[u8]>,
+    original: Option<&[u8]>,
+) -> Result<Option<Vec<u8>>, PiAdapterError> {
+    let mut root = parse_json_object(current, "Pi settings.json")?;
+    let original_root = parse_json_object(original, "original Pi settings.json")?;
+    for key in MANAGED_SETTINGS_KEYS {
+        if let Some(value) = original_root.get(key) {
+            root.insert(key.into(), value.clone());
+        } else {
+            root.remove(key);
+        }
+    }
+    optional_pretty_json(root, original.is_some(), "Pi settings.json")
+}
+
+fn optional_pretty_json(
+    root: Map<String, Value>,
+    file_existed: bool,
+    label: &str,
+) -> Result<Option<Vec<u8>>, PiAdapterError> {
+    if root.is_empty() && !file_existed {
+        Ok(None)
+    } else {
+        pretty_json(root, label).map(Some)
     }
 }
 

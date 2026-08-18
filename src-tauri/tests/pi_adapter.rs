@@ -142,6 +142,70 @@ fn pi_json_reformatting_does_not_create_false_drift() {
 }
 
 #[test]
+fn unrelated_pi_changes_do_not_create_drift_and_survive_disable() {
+    let temp = tempdir().unwrap();
+    let paths = PiPaths::new(
+        temp.path().join("pi/models.json"),
+        temp.path().join("pi/settings.json"),
+    );
+    fs::create_dir_all(paths.models_path.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.settings_path,
+        serde_json::to_vec_pretty(&json!({"theme": "light"})).unwrap(),
+    )
+    .unwrap();
+    let adapter = PiAdapter::new(paths.clone(), temp.path().join("grillforge"));
+    adapter
+        .apply(
+            PiRequest::new(
+                "http://127.0.0.1:15721/pi",
+                "gateway-secret",
+                vec![model("grillforge/coder")],
+                Some("grillforge/coder".into()),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let mut settings: Value =
+        serde_json::from_slice(&fs::read(&paths.settings_path).unwrap()).unwrap();
+    settings["packages"] = json!([{
+        "source": "npm:pi-mcp-extension@1.5.0",
+        "autoload": false
+    }]);
+    fs::write(
+        &paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+
+    let mut models: Value = serde_json::from_slice(&fs::read(&paths.models_path).unwrap()).unwrap();
+    models["unrelated"] = json!(true);
+    fs::write(
+        &paths.models_path,
+        serde_json::to_vec_pretty(&models).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(adapter.status().unwrap().takeover, PiTakeoverStatus::Active);
+    adapter.disable().unwrap();
+
+    let settings: Value = serde_json::from_slice(&fs::read(&paths.settings_path).unwrap()).unwrap();
+    assert_eq!(settings["theme"], "light");
+    assert_eq!(
+        settings["packages"][0]["source"],
+        "npm:pi-mcp-extension@1.5.0"
+    );
+    assert!(settings.get("defaultProvider").is_none());
+    assert!(settings.get("defaultModel").is_none());
+    assert!(settings.get("enabledModels").is_none());
+
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models_path).unwrap()).unwrap();
+    assert_eq!(models["unrelated"], true);
+    assert!(models["providers"].get("grillforge").is_none());
+}
+
+#[test]
 fn request_rejects_non_loopback_gateway_and_unknown_default() {
     let bad_gateway = PiRequest::new(
         "https://gateway.example.com",
