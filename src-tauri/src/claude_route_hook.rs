@@ -11,13 +11,24 @@ pub enum HookDecision {
     Deny { reason: String },
 }
 
-pub fn decide(documents: &ConfigurationDocuments, input: &Value) -> Result<HookDecision, String> {
+pub fn decide(
+    documents: &ConfigurationDocuments,
+    input: &Value,
+    child: bool,
+) -> Result<HookDecision, String> {
     let tool_name = input
         .get("tool_name")
         .and_then(Value::as_str)
         .ok_or_else(|| "Claude route hook tool_name must be a string".to_string())?;
     if !matches!(tool_name, "Workflow" | "Agent") {
         return Ok(HookDecision::Allow);
+    }
+    // An extension SubAgent is a leaf worker. Letting it open another level would
+    // turn one invocation into an unbounded tree of runtimes.
+    if child {
+        return Ok(HookDecision::Deny {
+            reason: "当前会话是 GrillForge 扩展 SubAgent 的子运行时，不允许再创建下一级 SubAgent。请在本会话内直接完成任务。".into(),
+        });
     }
 
     let mounted = documents
@@ -51,21 +62,15 @@ pub fn run_from_env() -> Result<(), String> {
     }
     let input: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid Claude route hook input: {error}"))?;
-    // A GrillForge-launched child runtime is a leaf: no broker is mounted into it,
-    // so denying its native Agent would leave it unable to delegate at all.
-    let decision = if std::env::var_os("GRILLFORGE_AGENT_CHILD").is_some() {
-        HookDecision::Allow
-    } else {
-        let root = std::env::var_os("GRILLFORGE_CONFIG_ROOT")
-            .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|home| home.join(".grillforge")))
-            .ok_or_else(|| "could not resolve the GrillForge configuration directory".to_string())?;
-        let documents = ConfigurationFiles::new(root)
-            .read()
-            .map_err(|error| format!("could not read GrillForge routing configuration: {error}"))?;
-        decide(&documents, &input)?
-    };
-    let output = match decision {
+    let child = std::env::var_os("GRILLFORGE_AGENT_CHILD").is_some();
+    let root = std::env::var_os("GRILLFORGE_CONFIG_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".grillforge")))
+        .ok_or_else(|| "could not resolve the GrillForge configuration directory".to_string())?;
+    let documents = ConfigurationFiles::new(root)
+        .read()
+        .map_err(|error| format!("could not read GrillForge routing configuration: {error}"))?;
+    let output = match decide(&documents, &input, child)? {
         HookDecision::Allow => json!({}),
         HookDecision::Deny { reason } => json!({
             "hookSpecificOutput": {

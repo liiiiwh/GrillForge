@@ -4,6 +4,29 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.17] - 2026-08-18
+
+### Changed
+
+- An extension SubAgent is now a leaf worker. A GrillForge-launched Claude Code
+  child may no longer open another SubAgent level, because one invocation would
+  otherwise be able to fan out into an unbounded tree of runtimes. This replaces
+  the 0.2.15 behavior, which allowed the child its native Agent and Workflow
+  tools.
+- The denial a child receives now names the actual constraint. It previously
+  pointed at the GrillForge broker, which is never mounted into a child, leaving
+  the Agent with no reachable alternative.
+
+### Verification
+
+- The leaf rule shares the hook's tool-name gate, so a child keeps Bash, Read,
+  Edit, and the rest; a regression test pins that and the fact that a child stays
+  a leaf even when nothing is mounted for its parent client.
+- The tool list a real child receives was captured from the running Claude Code
+  CLI and contains no MCP tools, confirming that the native Agent and Workflow
+  tools were the only route to a second level.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.16] - 2026-08-17
 
 ### Fixed

@@ -45,7 +45,7 @@ fn mounted_extensions_deny_native_workflow_and_agent_tools() {
             "tool_name": tool_name,
             "tool_input": {"description": "Inspect the repository"}
         });
-        let decision = decide(&documents(true, true), &input).expect("decision");
+        let decision = decide(&documents(true, true), &input, false).expect("decision");
         let HookDecision::Deny { reason } = decision else {
             panic!("native agent tool must be denied");
         };
@@ -64,7 +64,7 @@ fn unrelated_tools_and_clients_without_live_extensions_are_allowed() {
         "tool_input": {"command": "pwd"}
     });
     assert_eq!(
-        decide(&documents(true, true), &bash).unwrap(),
+        decide(&documents(true, true), &bash, false).unwrap(),
         HookDecision::Allow
     );
 
@@ -74,18 +74,18 @@ fn unrelated_tools_and_clients_without_live_extensions_are_allowed() {
         "tool_input": {"description": "Inspect"}
     });
     assert_eq!(
-        decide(&documents(false, true), &workflow).unwrap(),
+        decide(&documents(false, true), &workflow, false).unwrap(),
         HookDecision::Allow
     );
     assert_eq!(
-        decide(&documents(true, false), &workflow).unwrap(),
+        decide(&documents(true, false), &workflow, false).unwrap(),
         HookDecision::Allow
     );
 }
 
 #[test]
 fn malformed_hook_payload_fails_fast() {
-    let error = decide(&documents(true, true), &serde_json::json!({"tool_name": 3}))
+    let error = decide(&documents(true, true), &serde_json::json!({"tool_name": 3}), false)
         .expect_err("malformed hook payload");
     assert_eq!(error, "Claude route hook tool_name must be a string");
 }
@@ -140,7 +140,44 @@ fn installed_hook_command_returns_the_official_pre_tool_use_deny_shape() {
 }
 
 #[test]
-fn a_grillforge_launched_child_runtime_keeps_its_native_agent_tools() {
+fn an_extension_subagent_child_may_not_open_another_subagent_level() {
+    let denied = decide(
+        &documents(true, true),
+        &serde_json::json!({"tool_name":"Agent","tool_input":{"description":"delegate"}}),
+        true,
+    )
+    .expect("decision");
+    let HookDecision::Deny { reason } = denied else {
+        panic!("a child must not be allowed to open another SubAgent level");
+    };
+    assert!(reason.contains("不允许再创建下一级 SubAgent"), "{reason}");
+
+    // The leaf rule must not reach past Agent/Workflow and disarm the child.
+    for tool in ["Bash", "Read", "Edit", "WebSearch"] {
+        assert_eq!(
+            decide(
+                &documents(true, true),
+                &serde_json::json!({"tool_name":tool,"tool_input":{}}),
+                true,
+            )
+            .expect("decision"),
+            HookDecision::Allow,
+            "{tool} must stay available inside a child"
+        );
+    }
+
+    // A child is a leaf even when nothing is mounted for the parent client.
+    let unmounted = decide(
+        &documents(false, false),
+        &serde_json::json!({"tool_name":"Workflow","tool_input":{}}),
+        true,
+    )
+    .expect("decision");
+    assert!(matches!(unmounted, HookDecision::Deny { .. }));
+}
+
+#[test]
+fn the_installed_hook_denies_a_child_that_tries_to_delegate() {
     let root = tempfile::tempdir().expect("root");
     let documents = documents(true, true);
     ConfigurationFiles::new(root.path())
@@ -176,5 +213,11 @@ fn a_grillforge_launched_child_runtime_keeps_its_native_agent_tools() {
         String::from_utf8_lossy(&output.stderr)
     );
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).expect("hook JSON");
-    assert_eq!(response, serde_json::json!({}));
+    assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(
+        response["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("不允许再创建下一级 SubAgent")
+    );
 }
