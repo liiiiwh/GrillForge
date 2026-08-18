@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod agent_permissions;
 pub mod application;
 pub mod bridge;
 pub mod claude_desktop_integration;

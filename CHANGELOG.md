@@ -4,6 +4,52 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.19] - 2026-08-18
+
+### Added
+
+- A delegated Agent no longer holds the caller's turn. `run_agent` returns a
+  `runId` immediately; `get_agent_result` collects it, waiting only as long as it
+  is asked to, and `stop_agent` cancels a run and its child process. Passing
+  `waitSeconds` to `run_agent` keeps the one-call shape for a caller that only
+  wants the answer.
+- A permission prompt raised by a delegated Agent is relayed to the Agent that
+  delegated it. `get_agent_result` reports `awaiting_permission` with the tool
+  and its input, and `answer_agent_permission` returns allow or deny to the
+  waiting child. GrillForge carries the question and the answer; it never
+  decides, and an unanswered prompt is denied after ten minutes rather than
+  leaving the child stuck.
+- Every client now publishes the permission modes its CLI actually accepts, read
+  from a real installation of each. `list_agents` reports `permissionModes` and
+  `defaultPermissionMode`, and `run_agent` accepts `permissionMode`. A mode the
+  client does not accept fails before the Agent is launched, naming what is
+  available.
+
+### Changed
+
+- A delegated Agent reaches the network by default. Only a deliberate
+  `webAccess: false` can fail, and only on a runtime with no switch to honour it.
+- A delegated Claude Code Agent starts in its `auto` permission mode, so it can
+  edit and run commands like the same Agent run by hand. Without a mode a
+  headless child cannot answer a prompt and could only read.
+
+### Fixed
+
+- Claude Code and Claude Client share one user settings file, so the route hook
+  they both run now answers for the client whose session invoked it. Unmounting
+  one client's extensions no longer leaves the other unable to use its native
+  Workflow, and the denial names that client's own MCP server rather than one its
+  session does not have.
+
+### Verification
+
+- The permission relay was proven against the installed Claude Code CLI before
+  being built on, and again in a test where the child raises a prompt through the
+  very configuration GrillForge hands it.
+- Permission modes were read from real installations of Claude Code, Codex,
+  Gemini CLI, Kimi Code, OpenCode, Hermes, Grok Build, and Pi.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.18] - 2026-08-18
 
 ### Added

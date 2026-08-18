@@ -11,10 +11,20 @@ pub enum HookDecision {
     Deny { reason: String },
 }
 
+/// Claude Code and Claude Client share one user settings file, so the hook they
+/// both run must answer for the client whose session invoked it.
+pub fn session_client_id(entrypoint: Option<&str>) -> &'static str {
+    match entrypoint {
+        Some("claude-desktop") => "claude_desktop",
+        _ => "claude_code",
+    }
+}
+
 pub fn decide(
     documents: &ConfigurationDocuments,
     input: &Value,
     child: bool,
+    client_id: &str,
 ) -> Result<HookDecision, String> {
     let tool_name = input
         .get("tool_name")
@@ -35,19 +45,27 @@ pub fn decide(
         .agents
         .mcp_mounted_client_ids
         .iter()
-        .any(|client_id| client_id == "claude_code");
+        .any(|mounted| mounted == client_id);
     let has_extensions = documents
         .agents
         .agents
         .iter()
-        .find(|agent| agent.id == "claude_code")
+        .find(|agent| agent.id == client_id)
         .is_some_and(|agent| !agent.extension_subagent_ids.is_empty());
     if !mounted || !has_extensions {
         return Ok(HookDecision::Allow);
     }
 
+    // The MCP server name is per client; naming the wrong one sends the Agent to a
+    // tool its session does not have.
+    let server = match client_id {
+        "claude_desktop" => "grillforge-claude-desktop",
+        _ => "grillforge-claude-code",
+    };
     Ok(HookDecision::Deny {
-        reason: "Claude Code 已挂载 GrillForge 扩展 SubAgent。请先调用 mcp__grillforge-claude-code__list_agents；有匹配项时调用 mcp__grillforge-claude-code__run_agent。需要并行或 Workflow 时，并发调用多个 run_agent。不要改用原生 Workflow 或 Agent；如需原生能力，请先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。".into(),
+        reason: format!(
+            "当前客户端已挂载 GrillForge 扩展 SubAgent。请先调用 mcp__{server}__list_agents；有匹配项时调用 mcp__{server}__run_agent。需要并行或 Workflow 时，并发调用多个 run_agent。不要改用原生 Workflow 或 Agent；如需原生能力，请先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。"
+        ),
     })
 }
 
@@ -70,7 +88,13 @@ pub fn run_from_env() -> Result<(), String> {
     let documents = ConfigurationFiles::new(root)
         .read()
         .map_err(|error| format!("could not read GrillForge routing configuration: {error}"))?;
-    let output = match decide(&documents, &input, child)? {
+    let client_id = session_client_id(
+        std::env::var("CLAUDE_CODE_ENTRYPOINT")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+    );
+    let output = match decide(&documents, &input, child, client_id)? {
         HookDecision::Allow => json!({}),
         HookDecision::Deny { reason } => json!({
             "hookSpecificOutput": {

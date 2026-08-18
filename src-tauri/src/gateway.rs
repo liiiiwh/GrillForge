@@ -22,14 +22,12 @@ use axum::extract::{OriginalUri, Path as AxumPath, State};
 use axum::http::{HeaderMap, HeaderName, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use bytes::Bytes;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc;
 use url::Url;
@@ -88,6 +86,10 @@ pub struct GatewayStatus {
     #[serde(skip)]
     active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
     #[serde(skip)]
+    active_agent_runs: Arc<Mutex<HashMap<String, AgentRun>>>,
+    #[serde(skip)]
+    active_agent_permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
+    #[serde(skip)]
     connection_tests: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -105,6 +107,8 @@ impl GatewayStatus {
             active_client_routes: Arc::clone(&gateway.active_client_routes),
             active_agent_brokers: Arc::clone(&gateway.active_agent_brokers),
             active_agent_runtime_routes: Arc::clone(&gateway.active_agent_runtime_routes),
+            active_agent_runs: Arc::clone(&gateway.active_agent_runs),
+            active_agent_permissions: Arc::clone(&gateway.active_agent_permissions),
             connection_tests: Arc::clone(&gateway.connection_tests),
         }
     }
@@ -280,6 +284,8 @@ impl GatewayStatus {
                     source_runtimes: runtimes,
                     base_url: self.base_url.clone(),
                     runtime_routes: Arc::clone(&self.active_agent_runtime_routes),
+                    runs: Arc::clone(&self.active_agent_runs),
+                    permissions: Arc::clone(&self.active_agent_permissions),
                 },
             );
         Ok(())
@@ -291,6 +297,18 @@ impl GatewayStatus {
         }
         if let Ok(mut routes) = self.active_agent_runtime_routes.lock() {
             routes.retain(|_, route| route.target_client_id != client_id);
+        }
+        // An unmounted client must not leave a child running.
+        if let Ok(mut runs) = self.active_agent_runs.lock() {
+            runs.retain(|_, run| {
+                if run.client_id == client_id {
+                    if let Some(task) = run.task.take() {
+                        task.abort();
+                    }
+                    return false;
+                }
+                true
+            });
         }
     }
 
@@ -690,7 +708,37 @@ struct ActiveAgentBroker {
     source_runtimes: HashMap<String, AgentSourceRuntime>,
     base_url: String,
     runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
+    runs: Arc<Mutex<HashMap<String, AgentRun>>>,
+    permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
 }
+
+/// A tool call the child is holding on, waiting for the parent to decide.
+struct PermissionRequest {
+    run_id: String,
+    tool_name: String,
+    input: Value,
+    decision: Option<Value>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+/// A child that is never answered must not hang forever.
+const AGENT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// One delegated run. It outlives the request that started it, so the child is
+/// owned by a task rather than by the request future.
+struct AgentRun {
+    client_id: String,
+    permission_secret: String,
+    outcome: Option<Result<String, String>>,
+    progress: Option<String>,
+    finished_at: Option<Instant>,
+    task: Option<tokio::task::JoinHandle<()>>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+/// A result nobody collects is dropped rather than retained forever.
+const AGENT_RUN_RETENTION: Duration = Duration::from_secs(3600);
+const AGENT_RUN_MAX_WAIT_SECONDS: u64 = 300;
 
 #[derive(Clone)]
 struct ActiveAgentRuntimeRoute {
@@ -712,6 +760,8 @@ pub struct Gateway {
     active_client_routes: Arc<RwLock<HashMap<String, ActiveClientRoutes>>>,
     active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
     active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
+    active_agent_runs: Arc<Mutex<HashMap<String, AgentRun>>>,
+    active_agent_permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
     connection_tests: Arc<Mutex<HashSet<String>>>,
     codex_history: Arc<CodexHistoryStore>,
     gemini_thoughts: Arc<GeminiThoughtStore>,
@@ -736,6 +786,8 @@ impl Gateway {
             active_client_routes: Arc::new(RwLock::new(HashMap::new())),
             active_agent_brokers: Arc::new(RwLock::new(HashMap::new())),
             active_agent_runtime_routes: Arc::new(Mutex::new(HashMap::new())),
+            active_agent_runs: Arc::new(Mutex::new(HashMap::new())),
+            active_agent_permissions: Arc::new(Mutex::new(HashMap::new())),
             connection_tests: Arc::new(Mutex::new(HashSet::new())),
             codex_history: Arc::new(CodexHistoryStore::default()),
             gemini_thoughts: Arc::new(GeminiThoughtStore::default()),
@@ -776,6 +828,10 @@ impl Gateway {
             )
             .route("/clients/{client}/v1/messages", post(client_messages))
             .route("/mcp/{client}", post(agent_broker_mcp))
+            .route(
+                "/mcp/agent-permission/{run}",
+                post(agent_permission_mcp),
+            )
             .route("/agent-runtime/v1/messages", post(agent_runtime_messages))
             .route("/agent-runtime/v1/responses", post(agent_runtime_responses))
             .route(
@@ -2361,20 +2417,6 @@ async fn agent_broker_mcp_for_client(
         Some(method) => method,
         None => return mcp_error(id, -32600, "JSON-RPC method must be a string"),
     };
-    if method == "tools/call"
-        && request.pointer("/params/name").and_then(Value::as_str) == Some("run_agent")
-        && accepts_event_stream(&headers)
-    {
-        if let Some(progress_token) = request.pointer("/params/_meta/progressToken").cloned() {
-            if !progress_token.is_string() && !progress_token.is_number() {
-                return mcp_error(id, -32602, "progressToken must be a string or number");
-            }
-            let Some(arguments) = request.pointer("/params/arguments").cloned() else {
-                return mcp_error(id, -32602, "run_agent arguments are required");
-            };
-            return run_agent_progress_response(id, progress_token, active, arguments);
-        }
-    }
     let result = match method {
         "initialize" => json!({
             "protocolVersion": request
@@ -2383,7 +2425,7 @@ async fn agent_broker_mcp_for_client(
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。workflow 或并行不是原生 Agent 的例外：有匹配项时，必须并发调用多个 run_agent，不得改用客户端内置 Workflow、Agent 或 SubAgent。run_agent 会等待本机原生 Agent 完成；运行期间只通过 MCP progress 展示简短状态，不会把中间输出写入主会话，结束后只返回一次最终结果。不要轮询中间输出。不要先启动客户端内置 Agent。列表为空时才使用客户端内置 Agent；如用户明确要求原生 Agent，应提示用户先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
+            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。workflow 或并行不是原生 Agent 的例外：有匹配项时，必须并发调用多个 run_agent，不得改用客户端内置 Workflow、Agent 或 SubAgent。run_agent 立即返回 runId 并在后台运行本机原生 Agent，你可以继续做别的事；用 get_agent_result 收取结果（waitSeconds 可在需要时最多等 300 秒），用 stop_agent 取消。若 get_agent_result 返回 awaiting_permission，说明子 Agent 在等你授权，用 answer_agent_permission 下发 allow 或 deny。不要把中间输出写入主会话。不要先启动客户端内置 Agent。列表为空时才使用客户端内置 Agent；如用户明确要求原生 Agent，应提示用户先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -2407,7 +2449,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
-                    "description": "Runs one delegated task and returns only its final result. For workflow or parallel requests, invoke multiple run_agent calls concurrently. Do not use the client's native Workflow, Agent, or SubAgent when list_agents returned a matching extension. When the MCP client supports progress notifications, it shows coarse runtime status without adding Agent output to the main conversation. The local source Coding Agent owns the Agent loop and tools. Calls may run for up to three hours; do not poll intermediate output. Provide cwd and a complete prompt; set webAccess=true only when explicitly needed. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务并等待最终结果。",
+                    "description": "Starts one delegated task and returns a runId immediately; it does not block your turn. For workflow or parallel requests, invoke multiple run_agent calls concurrently. Do not use the client's native Workflow, Agent, or SubAgent when list_agents returned a matching extension. When the MCP client supports progress notifications, it shows coarse runtime status without adding Agent output to the main conversation. The local source Coding Agent owns the Agent loop and tools. run_agent returns a runId immediately and the Agent keeps running in the background, so continue with other work and collect it with get_agent_result; pass waitSeconds only when you actually need to wait. Provide cwd and a complete prompt; webAccess defaults to true; set it to false only to keep an Agent offline. Choose permissionMode from the Agent's published list when the task needs less or more than its default. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务，立即拿到 runId。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": false,
@@ -2423,8 +2465,56 @@ async fn agent_broker_mcp_for_client(
                             "cwd": {"type": "string"},
                             "prompt": {"type": "string"},
                             "description": {"type": "string"},
-                            "webAccess": {"type": "boolean", "default": false}
+                            "webAccess": {"type": "boolean", "default": true},
+                            "permissionMode": {
+                                "type": "string",
+                                "description": "One of the Agent's permissionModes from list_agents. Omit to use its defaultPermissionMode."
+                            }
                         }
+                    }
+                },
+                {
+                    "name": "get_agent_result",
+                    "title": "收取扩展 SubAgent 结果",
+                    "description": "Collects a run started by run_agent. Returns status \"running\" with the latest coarse progress, or \"completed\" with the Agent's final result. waitSeconds waits for completion up to 300 seconds; omit it to check without waiting. 用 runId 收取结果。",
+                    "_meta": {"anthropic/alwaysLoad": true},
+                    "annotations": {"readOnlyHint": true, "destructiveHint": false},
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["runId"],
+                        "properties": {
+                            "runId": {"type": "string"},
+                            "waitSeconds": {"type": "integer", "minimum": 0, "maximum": 300, "default": 0}
+                        }
+                    }
+                },
+                {
+                    "name": "answer_agent_permission",
+                    "title": "答复扩展 SubAgent 的授权请求",
+                    "description": "Answers a permission request raised by a delegated Agent, reported as pendingPermissions by get_agent_result. behavior is allow or deny; deny may carry a message explaining why. 由你决定子 Agent 能否执行该工具调用。",
+                    "_meta": {"anthropic/alwaysLoad": true},
+                    "annotations": {"readOnlyHint": false, "destructiveHint": false},
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["requestId", "behavior"],
+                        "properties": {
+                            "requestId": {"type": "string"},
+                            "behavior": {"type": "string", "enum": ["allow", "deny"]},
+                            "message": {"type": "string"},
+                            "updatedInput": {"type": "object"}
+                        }
+                    }
+                },
+                {
+                    "name": "stop_agent",
+                    "title": "停止扩展 SubAgent",
+                    "description": "Cancels a run started by run_agent and terminates its Agent process. 用 runId 取消。",
+                    "_meta": {"anthropic/alwaysLoad": true},
+                    "annotations": {"readOnlyHint": false, "destructiveHint": true},
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["runId"],
+                        "properties": {"runId": {"type": "string"}}
                     }
                 }
             ]
@@ -2440,7 +2530,37 @@ async fn agent_broker_mcp_for_client(
                     Some(arguments) => arguments.clone(),
                     None => return mcp_error(id, -32602, "run_agent arguments are required"),
                 };
-                match run_agent(active, arguments).await {
+                match start_agent(active, arguments).await {
+                    Ok(text) => mcp_tool_result(text, false),
+                    Err(message) => mcp_tool_result(message, true),
+                }
+            }
+            Some("get_agent_result") => {
+                let arguments = request
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                match get_agent_result(&active, arguments).await {
+                    Ok(text) => mcp_tool_result(text, false),
+                    Err(message) => mcp_tool_result(message, true),
+                }
+            }
+            Some("answer_agent_permission") => {
+                let arguments = request
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                match answer_agent_permission(&active, arguments) {
+                    Ok(text) => mcp_tool_result(text, false),
+                    Err(message) => mcp_tool_result(message, true),
+                }
+            }
+            Some("stop_agent") => {
+                let arguments = request
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                match stop_agent(&active, arguments) {
                     Ok(text) => mcp_tool_result(text, false),
                     Err(message) => mcp_tool_result(message, true),
                 }
@@ -2455,100 +2575,6 @@ async fn agent_broker_mcp_for_client(
         Json(json!({"jsonrpc": "2.0", "id": id, "result": result})),
     )
         .into_response()
-}
-
-fn accepts_event_stream(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|item| item.trim() == "text/event-stream")
-        })
-}
-
-fn run_agent_progress_response(
-    id: Value,
-    progress_token: Value,
-    active: ActiveAgentBroker,
-    arguments: Value,
-) -> Response {
-    let stream = async_stream::stream! {
-        yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/progress",
-            "params": {
-                "progressToken": progress_token,
-                "progress": 1,
-                "message": "正在启动扩展 SubAgent"
-            }
-        })));
-
-        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
-        let task = run_agent_with_progress(active, arguments, progress_tx);
-        tokio::pin!(task);
-        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
-        heartbeat.tick().await;
-        let mut progress = 1_u64;
-        let mut progress_open = true;
-        let result = loop {
-            tokio::select! {
-                result = &mut task => break result,
-                message = progress_rx.recv(), if progress_open => {
-                    match message {
-                        Some(message) => {
-                            progress += 1;
-                            yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
-                                "jsonrpc": "2.0",
-                                "method": "notifications/progress",
-                                "params": {
-                                    "progressToken": progress_token,
-                                    "progress": progress,
-                                    "message": message
-                                }
-                            })));
-                        }
-                        None => progress_open = false,
-                    }
-                }
-                _ = heartbeat.tick() => {
-                    progress += 1;
-                    yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
-                        "jsonrpc": "2.0",
-                        "method": "notifications/progress",
-                        "params": {
-                            "progressToken": progress_token,
-                            "progress": progress,
-                            "message": "扩展 SubAgent 正在运行"
-                        }
-                    })));
-                }
-            }
-        };
-        let result = match result {
-            Ok(text) => mcp_tool_result(text, false),
-            Err(message) => mcp_tool_result(message, true),
-        };
-        yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result
-        })));
-    };
-    let mut response = Response::new(Body::from_stream(stream));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        "text/event-stream".parse().expect("static content type"),
-    );
-    response
-}
-
-fn mcp_sse_event(message: Value) -> Bytes {
-    Bytes::from(format!(
-        "data: {}\n\n",
-        serde_json::to_string(&message).expect("JSON-RPC message is serializable")
-    ))
 }
 
 fn mcp_tool_result(text: String, is_error: bool) -> Value {
@@ -2578,11 +2604,130 @@ fn list_agents(active: &ActiveAgentBroker, arguments: Option<&Value>) -> Result<
                     "sourceAgentId": route.source_agent_id,
                     "modelId": route.model_id,
                     "webAccessSupported": matches!(route.source_client_id.as_str(), "claude_code" | "codex" | "grok_build"),
+                    "permissionModes": crate::agent_permissions::permissions(&route.source_client_id)
+                        .modes
+                        .iter()
+                        .map(|mode| mode.id)
+                        .collect::<Vec<_>>(),
+                    "defaultPermissionMode": crate::agent_permissions::permissions(&route.source_client_id)
+                        .default_mode,
                 })
             })
             .collect::<Vec<_>>(),
     )
     .map_err(|_| "could not serialize extension SubAgent list".to_string())
+}
+
+/// The permission prompt a child raises. It is held here until the parent
+/// decides, so GrillForge relays a decision rather than making one.
+async fn agent_permission_mcp(
+    State(gateway): State<Gateway>,
+    AxumPath(run_id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<Value>,
+) -> Response {
+    let Some(token) = local_runtime_token(&headers) else {
+        return error_response(GatewayError::Unauthorized("Agent permission".into()));
+    };
+    let authorized = gateway
+        .active_agent_runs
+        .lock()
+        .ok()
+        .and_then(|runs| runs.get(&run_id).map(|run| run.permission_secret == token))
+        .unwrap_or(false);
+    if !authorized {
+        return error_response(GatewayError::Unauthorized("Agent permission".into()));
+    }
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    let result = match method {
+        "initialize" => json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "GrillForge Agent Permission", "version": env!("CARGO_PKG_VERSION")}
+        }),
+        "tools/list" => json!({
+            "tools": [{
+                "name": "approve",
+                "description": "Asks the delegating Agent whether this tool call may proceed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {"type": "string"},
+                        "input": {"type": "object"}
+                    }
+                }
+            }]
+        }),
+        "tools/call" => {
+            if request.pointer("/params/name").and_then(Value::as_str) != Some("approve") {
+                return mcp_error(id, -32602, "unknown MCP tool");
+            }
+            let arguments = request
+                .pointer("/params/arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let decision = await_permission_decision(&gateway, &run_id, arguments).await;
+            json!({"content": [{"type": "text", "text": decision.to_string()}]})
+        }
+        "notifications/initialized" => return StatusCode::ACCEPTED.into_response(),
+        _ => return mcp_error(id, -32601, "JSON-RPC method is not supported"),
+    };
+    (
+        StatusCode::OK,
+        Json(json!({"jsonrpc": "2.0", "id": id, "result": result})),
+    )
+        .into_response()
+}
+
+/// Registers the request, waits for the parent, and denies on timeout rather
+/// than leaving the child stuck.
+async fn await_permission_decision(gateway: &Gateway, run_id: &str, arguments: Value) -> Value {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let notify = Arc::new(tokio::sync::Notify::new());
+    {
+        let Ok(mut pending) = gateway.active_agent_permissions.lock() else {
+            return json!({"behavior": "deny", "message": "GrillForge permission registry is unavailable"});
+        };
+        pending.insert(
+            request_id.clone(),
+            PermissionRequest {
+                run_id: run_id.to_string(),
+                tool_name: arguments
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                input: arguments.get("input").cloned().unwrap_or(Value::Null),
+                decision: None,
+                notify: Arc::clone(&notify),
+            },
+        );
+    }
+    let deadline = Instant::now() + AGENT_PERMISSION_TIMEOUT;
+    loop {
+        {
+            let Ok(mut pending) = gateway.active_agent_permissions.lock() else {
+                return json!({"behavior": "deny", "message": "GrillForge permission registry is unavailable"});
+            };
+            let Some(entry) = pending.get(&request_id) else {
+                return json!({"behavior": "deny", "message": "the delegating Agent withdrew this request"});
+            };
+            if entry.decision.is_some() {
+                let entry = pending.remove(&request_id).expect("checked above");
+                return entry.decision.expect("checked above");
+            }
+            if Instant::now() >= deadline {
+                pending.remove(&request_id);
+                return json!({
+                    "behavior": "deny",
+                    "message": "the delegating Agent did not answer this permission request in time"
+                });
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let _ = tokio::time::timeout(remaining, notify.notified()).await;
+    }
 }
 
 fn mcp_error(id: Value, code: i64, message: &str) -> Response {
@@ -2601,6 +2746,7 @@ struct AgentInvocation {
     cwd: PathBuf,
     prompt: String,
     web_access: bool,
+    permission_args: &'static [&'static str],
     route: AgentRuntimeRoute,
     source_runtime: AgentSourceRuntime,
 }
@@ -2617,7 +2763,16 @@ struct ManagedRoute {
 #[derive(Clone)]
 struct AgentRunOptions {
     web_access: bool,
+    permission_args: &'static [&'static str],
+    /// Where the child sends a permission prompt, when its runtime can route one.
+    permission_endpoint: Option<PermissionEndpoint>,
     progress: Option<mpsc::UnboundedSender<String>>,
+}
+
+#[derive(Clone)]
+struct PermissionEndpoint {
+    url: String,
+    token: String,
 }
 
 fn prepare_agent_invocation(
@@ -2627,14 +2782,34 @@ fn prepare_agent_invocation(
     let object = arguments
         .as_object()
         .ok_or_else(|| "run_agent arguments must be an object".to_string())?;
-    let allowed = ["extensionId", "cwd", "prompt", "description", "webAccess"];
+    let allowed = [
+        "extensionId",
+        "cwd",
+        "prompt",
+        "description",
+        "webAccess",
+        "permissionMode",
+        "waitSeconds",
+    ];
     if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
         return Err(format!("run_agent does not accept {key}"));
     }
     let extension_id = required_mcp_string(object, "extensionId")?;
     let cwd = PathBuf::from(required_mcp_string(object, "cwd")?);
     let prompt = required_mcp_string(object, "prompt")?;
-    let web_access = optional_mcp_bool(object, "webAccess")?;
+    // A delegated Agent reaches the network like any other Agent unless the call
+    // deliberately withholds it.
+    let requested_web = optional_mcp_opt_bool(object, "webAccess")?;
+    let web_access = requested_web.unwrap_or(true);
+    let permission_mode = object
+        .get("permissionMode")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "run_agent permissionMode must be a non-empty string".to_string())
+        })
+        .transpose()?;
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err(format!(
             "Agent working directory does not exist: {}",
@@ -2657,49 +2832,278 @@ fn prepare_agent_invocation(
                 route.source_client_id
             )
         })?;
-    if web_access
+    // Only a deliberate refusal can fail: a runtime with no scoped web switch
+    // cannot honour it, and silently granting the network would hide that.
+    if requested_web == Some(false)
         && !matches!(
             route.source_client_id.as_str(),
             "claude_code" | "codex" | "grok_build"
         )
     {
         return Err(format!(
-            "{} does not expose a scoped native web permission for this runtime",
+            "{} cannot withhold native web access for this runtime",
             route.source_client_id
         ));
     }
+    let permission_args =
+        crate::agent_permissions::resolve(&route.source_client_id, permission_mode)?;
     Ok(AgentInvocation {
         cwd,
         prompt,
         web_access,
+        permission_args,
         route,
         source_runtime,
     })
 }
 
-async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+/// Starts the run and hands back a handle, so the caller keeps its turn instead
+/// of waiting on a child that may take minutes.
+async fn start_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+    let wait = match arguments.get("waitSeconds") {
+        None => 0,
+        Some(value) => value
+            .as_u64()
+            .filter(|seconds| *seconds <= AGENT_RUN_MAX_WAIT_SECONDS)
+            .ok_or_else(|| {
+                format!("run_agent waitSeconds must be 0..={AGENT_RUN_MAX_WAIT_SECONDS}")
+            })?,
+    };
     let invocation = prepare_agent_invocation(&active, arguments)?;
-    execute_agent(active, invocation, None).await
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let permission_secret = uuid::Uuid::new_v4().to_string();
+    let client_id = active.target_client_id.clone();
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let runs = Arc::clone(&active.runs);
+    evict_finished_runs(&runs)?;
+
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+    let progress_runs = Arc::clone(&runs);
+    let progress_id = run_id.clone();
+    tokio::spawn(async move {
+        while let Some(message) = progress_rx.recv().await {
+            let Ok(mut runs) = progress_runs.lock() else {
+                return;
+            };
+            let Some(run) = runs.get_mut(&progress_id) else {
+                return;
+            };
+            run.progress = Some(message);
+        }
+    });
+
+    // The child reaches this endpoint to ask; the parent answers through the broker.
+    let endpoint = Some(PermissionEndpoint {
+        url: format!(
+            "{}/mcp/agent-permission/{run_id}",
+            active.base_url.trim_end_matches('/')
+        ),
+        token: permission_secret.clone(),
+    });
+    let active_for_wait = active.clone();
+    let finish_runs = Arc::clone(&runs);
+    let finish_notify = Arc::clone(&notify);
+    let finish_id = run_id.clone();
+    let task = tokio::spawn(async move {
+        let outcome = execute_agent(active, invocation, endpoint, Some(progress_tx)).await;
+        if let Ok(mut runs) = finish_runs.lock() {
+            if let Some(run) = runs.get_mut(&finish_id) {
+                run.outcome = Some(outcome);
+                run.finished_at = Some(Instant::now());
+            }
+        }
+        finish_notify.notify_waiters();
+    });
+
+    runs.lock()
+        .map_err(|_| "Agent run registry lock is poisoned".to_string())?
+        .insert(
+            run_id.clone(),
+            AgentRun {
+                client_id,
+                permission_secret: permission_secret.clone(),
+                outcome: None,
+                progress: None,
+                finished_at: None,
+                task: Some(task),
+                notify,
+            },
+        );
+    if wait == 0 {
+        return serde_json::to_string(&json!({"runId": run_id, "status": "running"}))
+            .map_err(|_| "could not serialize the Agent run handle".to_string());
+    }
+    collect_run(&active_for_wait, &run_id, Instant::now() + Duration::from_secs(wait)).await
 }
 
-async fn run_agent_with_progress(
-    active: ActiveAgentBroker,
-    arguments: Value,
-    progress: mpsc::UnboundedSender<String>,
+/// Collects a run, optionally waiting. The wait is bounded so a caller never
+/// blocks longer than it asked to.
+async fn get_agent_result(active: &ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "get_agent_result arguments must be an object".to_string())?;
+    let allowed = ["runId", "waitSeconds"];
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("get_agent_result does not accept {key}"));
+    }
+    let run_id = required_mcp_string(object, "runId")?;
+    let wait = match object.get("waitSeconds") {
+        None => 0,
+        Some(value) => value
+            .as_u64()
+            .filter(|seconds| *seconds <= AGENT_RUN_MAX_WAIT_SECONDS)
+            .ok_or_else(|| {
+                format!("get_agent_result waitSeconds must be 0..={AGENT_RUN_MAX_WAIT_SECONDS}")
+            })?,
+    };
+    collect_run(active, &run_id, Instant::now() + Duration::from_secs(wait)).await
+}
+
+/// Waits for a run until the deadline, then reports whatever is true at that
+/// moment. A caller never blocks longer than it asked to.
+async fn collect_run(
+    active: &ActiveAgentBroker,
+    run_id: &str,
+    deadline: Instant,
 ) -> Result<String, String> {
-    let invocation = prepare_agent_invocation(&active, arguments)?;
-    execute_agent(active, invocation, Some(progress)).await
+    loop {
+        let notify = {
+            let mut runs = active
+                .runs
+                .lock()
+                .map_err(|_| "Agent run registry lock is poisoned".to_string())?;
+            let run = runs
+                .get_mut(run_id)
+                .ok_or_else(|| format!("unknown Agent run: {run_id}"))?;
+            if run.outcome.is_some() {
+                let run = runs.remove(run_id).expect("run was present");
+                return match run.outcome.expect("outcome was present") {
+                    Ok(result) => serde_json::to_string(
+                        &json!({"runId": run_id, "status": "completed", "result": result}),
+                    )
+                    .map_err(|_| "could not serialize the Agent result".to_string()),
+                    Err(message) => Err(message),
+                };
+            }
+            if Instant::now() >= deadline {
+                let progress = run.progress.clone();
+                let pending = active
+                    .permissions
+                    .lock()
+                    .map_err(|_| "Agent permission registry lock is poisoned".to_string())?
+                    .iter()
+                    .filter(|(_, entry)| entry.run_id == run_id && entry.decision.is_none())
+                    .map(|(request_id, entry)| {
+                        json!({
+                            "requestId": request_id,
+                            "toolName": entry.tool_name,
+                            "input": entry.input,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                return serde_json::to_string(&json!({
+                    "runId": run_id,
+                    "status": if pending.is_empty() { "running" } else { "awaiting_permission" },
+                    "progress": progress,
+                    "pendingPermissions": pending,
+                }))
+                .map_err(|_| "could not serialize the Agent run status".to_string());
+            }
+            Arc::clone(&run.notify)
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let _ = tokio::time::timeout(remaining, notify.notified()).await;
+    }
+}
+
+/// Ends a run the caller no longer wants; dropping the task kills the child.
+fn stop_agent(active: &ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "stop_agent arguments must be an object".to_string())?;
+    if let Some(key) = object.keys().find(|key| key.as_str() != "runId") {
+        return Err(format!("stop_agent does not accept {key}"));
+    }
+    let run_id = required_mcp_string(object, "runId")?;
+    let mut runs = active
+        .runs
+        .lock()
+        .map_err(|_| "Agent run registry lock is poisoned".to_string())?;
+    let mut run = runs
+        .remove(&run_id)
+        .ok_or_else(|| format!("unknown Agent run: {run_id}"))?;
+    if let Some(task) = run.task.take() {
+        task.abort();
+    }
+    Ok(format!("stopped {run_id}"))
+}
+
+/// Relays the delegating Agent's decision to the child that is waiting on it.
+fn answer_agent_permission(
+    active: &ActiveAgentBroker,
+    arguments: Value,
+) -> Result<String, String> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "answer_agent_permission arguments must be an object".to_string())?;
+    let allowed = ["requestId", "behavior", "message", "updatedInput"];
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("answer_agent_permission does not accept {key}"));
+    }
+    let request_id = required_mcp_string(object, "requestId")?;
+    let behavior = required_mcp_string(object, "behavior")?;
+    if behavior != "allow" && behavior != "deny" {
+        return Err("answer_agent_permission behavior must be allow or deny".into());
+    }
+    let mut pending = active
+        .permissions
+        .lock()
+        .map_err(|_| "Agent permission registry lock is poisoned".to_string())?;
+    let entry = pending
+        .get_mut(&request_id)
+        .ok_or_else(|| format!("unknown permission request: {request_id}"))?;
+    if entry.decision.is_some() {
+        return Err(format!("permission request was already answered: {request_id}"));
+    }
+    entry.decision = Some(if behavior == "allow" {
+        json!({
+            "behavior": "allow",
+            "updatedInput": object.get("updatedInput").cloned().unwrap_or(entry.input.clone()),
+        })
+    } else {
+        json!({
+            "behavior": "deny",
+            "message": object
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the delegating Agent denied this tool call"),
+        })
+    });
+    entry.notify.notify_waiters();
+    Ok(format!("answered {request_id} with {behavior}"))
+}
+
+fn evict_finished_runs(runs: &Arc<Mutex<HashMap<String, AgentRun>>>) -> Result<(), String> {
+    runs.lock()
+        .map_err(|_| "Agent run registry lock is poisoned".to_string())?
+        .retain(|_, run| {
+            run.finished_at
+                .is_none_or(|finished| finished.elapsed() < AGENT_RUN_RETENTION)
+        });
+    Ok(())
 }
 
 async fn execute_agent(
     active: ActiveAgentBroker,
     invocation: AgentInvocation,
+    permission_endpoint: Option<PermissionEndpoint>,
     progress: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<String, String> {
     let AgentInvocation {
         cwd,
         prompt,
         web_access,
+        permission_args,
         route,
         source_runtime,
     } = invocation;
@@ -2742,6 +3146,8 @@ async fn execute_agent(
         .map(|route| route.runtime_token.clone());
     let options = AgentRunOptions {
         web_access,
+        permission_args,
+        permission_endpoint,
         progress,
     };
     let output = match route.source_client_id.as_str() {
@@ -2866,11 +3272,6 @@ async fn run_gemini_agent_runtime(
             "Gemini Agent does not exist in the user or project configuration: {agent_id}"
         ));
     }
-    if options.web_access {
-        return Err(
-            "Gemini CLI does not expose a per-Agent scoped web permission for this runtime".into(),
-        );
-    }
     let home = source
         .config_root
         .parent()
@@ -2881,6 +3282,8 @@ async fn run_gemini_agent_runtime(
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
     command
         .current_dir(cwd)
         .env("GEMINI_CLI_HOME", home)
@@ -2914,9 +3317,15 @@ async fn run_claude_agent_runtime(
 ) -> Result<std::process::Output, String> {
     let prompt = format!("Working directory: {}\n\n{prompt}", cwd.display());
     let mut command = tokio::process::Command::new(&source.runtime);
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
     command.current_dir(cwd).args(["--agent", agent_id]);
     if options.web_access {
         command.args(["--allowedTools", "WebSearch,WebFetch"]);
+    } else {
+        // The permission mode approves every tool, so a call that refused the web
+        // must have the web tools withheld explicitly.
+        command.args(["--disallowedTools", "WebSearch,WebFetch"]);
     }
     if let Some(route) = managed_route {
         command.args(["--model", &route.alias]);
@@ -2955,6 +3364,31 @@ async fn run_claude_agent_runtime(
             .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .env("GRILLFORGE_AGENT_CHILD", "1");
     }
+    // A prompt the child raises is relayed to the delegating Agent instead of
+    // being answered here; GrillForge only carries the question and the answer.
+    if let Some(permission) = &options.permission_endpoint {
+        if let Ok(executable) = std::env::current_exe() {
+            let config = json!({
+                "mcpServers": {
+                    "grillforge_permission": {
+                        "type": "stdio",
+                        "command": executable,
+                        "args": ["mcp-stdio"],
+                        "env": {
+                            "GRILLFORGE_MCP_URL": permission.url,
+                            "GRILLFORGE_MCP_TOKEN": permission.token
+                        }
+                    }
+                }
+            });
+            command
+                .args(["--mcp-config", &config.to_string()])
+                .args([
+                    "--permission-prompt-tool",
+                    "mcp__grillforge_permission__approve",
+                ]);
+        }
+    }
     // Claude Code assumes a fixed window for a model it does not recognize.
     if let Some(context_window) = managed_route.and_then(|route| route.context_window) {
         command.env("CLAUDE_CODE_MAX_CONTEXT_TOKENS", context_window.to_string());
@@ -2989,8 +3423,7 @@ async fn run_codex_agent_runtime(
             agent_id,
             prompt,
             custom_agent_file.as_deref(),
-            options.web_access,
-            options.progress.clone(),
+            options,
         )
         .await;
     }
@@ -3000,6 +3433,8 @@ async fn run_codex_agent_runtime(
         ));
     }
     let mut command = tokio::process::Command::new(&source.runtime);
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
     if options.web_access {
         command.arg("--search");
     }
@@ -3047,11 +3482,12 @@ async fn run_native_codex_subagent_runtime(
     agent_id: &str,
     prompt: &str,
     custom_agent_file: Option<&Path>,
-    web_access: bool,
-    progress: Option<mpsc::UnboundedSender<String>>,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
     let mut command = tokio::process::Command::new(&source.runtime);
-    if web_access {
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
+    if options.web_access {
         command.arg("--search");
     }
     command
@@ -3084,7 +3520,7 @@ async fn run_native_codex_subagent_runtime(
     command.arg(format!(
         "Use the Codex collaboration spawn_agent tool exactly once with agent_type {agent_id} and fork_turns none. Do not perform the task in the parent. Send the child this complete task:\n\n{prompt}\n\nWait for that child and return its final answer verbatim. If that exact agent_type cannot be selected, return an error instead of spawning a generic Agent."
     ));
-    run_agent_command(command, "Codex", progress).await
+    run_agent_command(command, "Codex", options.progress.clone()).await
 }
 
 async fn run_pi_agent_runtime(
@@ -3102,12 +3538,6 @@ async fn run_pi_agent_runtime(
                 format!("Pi Agent does not exist in the user or project configuration: {agent_id}")
             })?;
     let agent = crate::local_agents::read_pi_agent_definition(&agent_file)?;
-    if options.web_access {
-        return Err(
-            "Pi CLI does not expose a scoped native web permission; GrillForge will not grant unrestricted shell network access"
-                .into(),
-        );
-    }
     let scratch = PiAgentScratch::new(&agent.system_prompt)?;
     let managed_config = managed_route
         .map(|route| {
@@ -3120,6 +3550,8 @@ async fn run_pi_agent_runtime(
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
     command
         .current_dir(cwd)
         .env(
@@ -3158,12 +3590,6 @@ async fn run_opencode_agent_runtime(
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
-    if options.web_access {
-        return Err(
-            "OpenCode CLI does not expose a scoped native web permission for this Agent runtime"
-                .into(),
-        );
-    }
     let (mode, _) =
         crate::local_agents::resolve_opencode_agent(&source.config_root, cwd, agent_id)?
             .ok_or_else(|| {
@@ -3177,6 +3603,8 @@ async fn run_opencode_agent_runtime(
         ));
     }
     let mut command = tokio::process::Command::new(&source.runtime);
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
     command
         .current_dir(cwd)
         .env("OPENCODE_CONFIG_DIR", &source.config_root)
@@ -3234,12 +3662,6 @@ async fn run_kimi_agent_runtime(
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
-    if options.web_access {
-        return Err(
-            "Kimi Code CLI does not expose a scoped native web permission for this Agent runtime"
-                .into(),
-        );
-    }
     let home = crate::local_agents::kimi_user_home(&source.config_root)?;
     let custom_agent_file =
         crate::local_agents::resolve_kimi_agent_file(&source.config_root, &home, cwd, agent_id)?;
@@ -3259,6 +3681,8 @@ async fn run_kimi_agent_runtime(
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
     command
         .current_dir(cwd)
         .env("KIMI_CODE_HOME", &source.config_root)
@@ -3308,6 +3732,8 @@ async fn run_grok_build_agent_runtime(
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
+    // Applied before any positional argument so the prompt stays last.
+    command.args(options.permission_args);
     command.current_dir(cwd).args(["--agent", agent_id]);
     if !options.web_access {
         command.arg("--disable-web-search");
@@ -3987,11 +4413,17 @@ fn required_mcp_string(
         .ok_or_else(|| format!("run_agent {key} must be a non-empty string"))
 }
 
-fn optional_mcp_bool(object: &serde_json::Map<String, Value>, key: &str) -> Result<bool, String> {
+/// Distinguishes "not asked for" from "explicitly refused", which decide
+/// different things for a runtime that cannot scope the setting.
+fn optional_mcp_opt_bool(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<bool>, String> {
     match object.get(key) {
-        None => Ok(false),
+        None => Ok(None),
         Some(value) => value
             .as_bool()
+            .map(Some)
             .ok_or_else(|| format!("run_agent {key} must be a boolean")),
     }
 }

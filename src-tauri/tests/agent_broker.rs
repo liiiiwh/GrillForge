@@ -9,8 +9,20 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use tokio::net::TcpListener;
 
+
+/// A completed run reports {runId, status, result}; tests assert the result.
+fn agent_result(response: &Value) -> String {
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("agent payload");
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|payload| payload["result"].as_str().map(str::to_string))
+        .unwrap_or_else(|| text.to_string())
+}
+
 #[tokio::test]
-async fn run_agent_streams_coarse_progress_then_one_final_result() {
+async fn a_running_agent_reports_progress_without_leaking_the_prompt() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = directory.path().join("claude");
     fs::write(
@@ -44,58 +56,62 @@ async fn run_agent_streams_coarse_progress_then_one_final_result() {
         .unwrap();
     tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
 
-    let response = reqwest::Client::new()
-        .post(format!("http://{address}/mcp/codex"))
-        .bearer_auth("progress-token")
-        .header("accept", "application/json, text/event-stream")
-        .json(&json!({
-            "jsonrpc":"2.0","id":7,"method":"tools/call",
-            "params":{
-                "name":"run_agent",
-                "arguments":{
-                    "extensionId":"reviewer",
-                    "cwd":directory.path(),
-                    "prompt":"SECRET PROMPT MUST NOT ENTER PROGRESS"
-                },
-                "_meta":{"progressToken":"task-7"}
-            }
-        }))
-        .send()
+    let call = |id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("http://{address}/mcp/codex"))
+            .bearer_auth("progress-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    // Starting returns a handle at once, so the caller keeps its turn.
+    let started: Value = call(
+        7,
+        "run_agent",
+        json!({
+            "extensionId":"reviewer",
+            "cwd":directory.path(),
+            "prompt":"SECRET PROMPT MUST NOT ENTER PROGRESS"
+        }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let handle: Value =
+        serde_json::from_str(started["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(handle["status"], "running");
+    let run_id = handle["runId"].as_str().unwrap().to_string();
+
+    // Collecting waits only as long as it was asked to and returns the one result.
+    let collected: Value = call(
+        8,
+        "get_agent_result",
+        json!({"runId":run_id,"waitSeconds":120}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(collected["result"]["isError"], false, "{collected}");
+    assert_eq!(agent_result(&collected), "final-only-result");
+
+    // The prompt never travels back as progress or result.
+    assert!(!collected.to_string().contains("SECRET PROMPT"), "{collected}");
+
+    // A collected run is gone; collecting twice is an error, not a second result.
+    let again: Value = call(9, "get_agent_result", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json()
         .await
         .unwrap();
-    assert_eq!(response.headers()["content-type"], "text/event-stream");
-    let body = response.text().await.unwrap();
-    let events = body
-        .split("\n\n")
-        .filter_map(|event| event.strip_prefix("data: "))
-        .map(|data| serde_json::from_str::<Value>(data.trim()).unwrap())
-        .collect::<Vec<_>>();
-    assert!(events.len() >= 2, "{body}");
-    assert_eq!(events[0]["method"], "notifications/progress");
-    assert_eq!(events[0]["params"]["progressToken"], "task-7");
-    assert_eq!(events[0]["params"]["progress"], 1);
-    assert!(
-        events.iter().any(|event| {
-            event["params"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("checked one file"))
-        }),
-        "{body}"
-    );
-    assert!(!body.contains("SECRET PROMPT"), "{body}");
-    let final_response = events.last().unwrap();
-    assert_eq!(final_response["id"], 7);
-    assert_eq!(
-        final_response["result"]["content"][0]["text"],
-        "final-only-result"
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.get("id").is_some())
-            .count(),
-        1
-    );
+    assert_eq!(again["result"]["isError"], true, "{again}");
 }
 
 #[tokio::test]
@@ -236,7 +252,8 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
         tools["result"]["tools"][1]["inputSchema"]["properties"]["webAccess"]["type"],
         "boolean"
     );
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 2);
+    // list_agents, run_agent, get_agent_result, answer_agent_permission, stop_agent
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 5);
 
     let listed: Value = client
         .post(format!("{base_url}/mcp/claude_code"))
@@ -264,7 +281,7 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
             "method":"tools/call",
             "params": {
                 "name":"run_agent",
-                "arguments": {
+                "arguments": {"waitSeconds":120,
                     "extensionId":"deepseek-reviewer",
                     "cwd": directory.path(),
                     "prompt":"Inspect the project"
@@ -278,7 +295,7 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     let body: Value = response.json().await.expect("MCP JSON");
     assert_eq!(body["result"]["isError"], false);
     assert_eq!(
-        body["result"]["content"][0]["text"],
+        agent_result(&body),
         "child runtime completed"
     );
 }
@@ -341,7 +358,7 @@ printf '%s' '{{"type":"result","result":"parallel child completed"}}'
             .bearer_auth("parallel-token")
             .json(&json!({
                 "jsonrpc":"2.0","id":id,"method":"tools/call",
-                "params":{"name":"run_agent","arguments":{
+                "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                     "extensionId":"parallel-worker","cwd":directory.path(),"prompt":"Inspect"
                 }}
             }))
@@ -356,7 +373,7 @@ printf '%s' '{{"type":"result","result":"parallel child completed"}}'
         let response: Value = response.json().await.unwrap();
         assert_eq!(response["result"]["isError"], false, "{response}");
         assert_eq!(
-            response["result"]["content"][0]["text"],
+            agent_result(&response),
             "parallel child completed"
         );
     }
@@ -411,7 +428,7 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"claude-general",
                 "cwd":directory.path(),
                 "prompt":"Inspect a public GitHub repository",
@@ -436,10 +453,11 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"claude-general",
                 "cwd":directory.path(),
-                "prompt":"Inspect only local files"
+                "prompt":"Inspect only local files",
+                "webAccess":false
             }}
         }))
         .send()
@@ -450,8 +468,14 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     let argv = fs::read_to_string(&argv_log).unwrap();
-    assert!(!argv.contains("WebSearch"), "{argv}");
-    assert!(!argv.contains("WebFetch"), "{argv}");
+    // The permission mode approves every tool, so a refused call must withhold the
+    // web tools explicitly rather than merely leave them ungranted.
+    assert!(argv.contains("--permission-mode\nauto\n"), "{argv}");
+    assert!(
+        argv.contains("--disallowedTools\nWebSearch,WebFetch\n"),
+        "{argv}"
+    );
+    assert!(!argv.contains("--allowedTools"), "{argv}");
     assert!(
         argv.contains(&format!(
             "Working directory: {}",
@@ -465,7 +489,7 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"claude-general",
                 "cwd":directory.path(),
                 "prompt":"Inspect public docs",
@@ -480,7 +504,7 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .unwrap();
     assert_eq!(invalid["result"]["isError"], true);
     assert_eq!(
-        invalid["result"]["content"][0]["text"],
+        agent_result(&invalid),
         "run_agent webAccess must be a boolean"
     );
 }
@@ -559,7 +583,7 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
         .bearer_auth("native-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"native-reviewer",
                 "cwd":directory.path(),
                 "prompt":"Review"
@@ -573,7 +597,7 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "native runtime completed"
     );
 
@@ -582,7 +606,7 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
         .bearer_auth("native-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"native-reviewer",
                 "runtime":"codex",
                 "modelRoute":"grillforge/other",
@@ -670,7 +694,7 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"pi-reviewer","cwd":project,"prompt":"Review this"
             }}
         }))
@@ -681,17 +705,19 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        response["result"]["content"][0]["text"],
-        "pi child completed"
-    );
+    assert_eq!(agent_result(&response), "pi child completed");
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(argv.starts_with(&format!("{}|", pi_root.display())));
+    assert!(argv.contains("--mode json -p --no-session"));
+    assert!(argv.contains("--tools read,grep,find"));
+    assert!(argv.contains("Task: Review this"));
 
     let web_response: Value = reqwest::Client::new()
         .post(format!("{base_url}/mcp/claude_code"))
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"pi-reviewer","cwd":project,"prompt":"Research public docs",
                 "webAccess":true
             }}
@@ -702,18 +728,32 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
         .json()
         .await
         .unwrap();
-    assert_eq!(web_response["result"]["isError"], true);
+    assert_eq!(web_response["result"]["isError"], false, "{web_response}");
+
+    let refusal: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-token")
+        .json(&json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
+                "extensionId":"pi-reviewer","cwd":project,"prompt":"Stay offline",
+                "webAccess":false
+            }}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // Pi has no switch to withhold the network, so only a refusal can fail.
+    assert_eq!(refusal["result"]["isError"], true);
     assert!(
-        web_response["result"]["content"][0]["text"]
+        refusal["result"]["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("does not expose a scoped native web permission")
+            .contains("cannot withhold native web access")
     );
-    let argv = fs::read_to_string(argv_log).unwrap();
-    assert!(argv.starts_with(&format!("{}|", pi_root.display())));
-    assert!(argv.contains("--mode json -p --no-session"));
-    assert!(argv.contains("--tools read,grep,find"));
-    assert!(argv.contains("Task: Review this"));
     assert_eq!(
         fs::read_to_string(prompt_log).unwrap().trim(),
         "PI_AGENT_PRIVATE_PROMPT"
@@ -807,7 +847,7 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
 
     let response: Value = reqwest::Client::new().post(format!("{base_url}/mcp/claude_code"))
         .bearer_auth("broker-token")
-        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"extensionId":"pi-reviewer","cwd":project,"prompt":"Review"}}}))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,"extensionId":"pi-reviewer","cwd":project,"prompt":"Review"}}}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
@@ -918,12 +958,12 @@ printf '%s\n' '{{"text":"grok child completed","stopReason":"end_turn","num_turn
 
     let response: Value = reqwest::Client::new().post(format!("{base_url}/mcp/claude_code"))
         .bearer_auth("broker-token")
-        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"extensionId":"grok-reviewer","cwd":project,"prompt":"Plan this"}}}))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,"extensionId":"grok-reviewer","cwd":project,"prompt":"Plan this"}}}))
         .send().await.unwrap().json().await.unwrap();
 
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "grok child completed"
     );
     assert_eq!(
@@ -940,7 +980,7 @@ printf '%s\n' '{{"text":"grok child completed","stopReason":"end_turn","num_turn
     let argv = fs::read_to_string(argv_log).unwrap();
     assert_eq!(
         argv,
-        "--agent plan --disable-web-search -p Plan this --output-format json --model grillforge\n"
+        "--permission-mode auto --agent plan -p Plan this --output-format json --model grillforge\n"
     );
 }
 
@@ -1046,7 +1086,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"codex-reviewer","cwd":project,"prompt":"Review this",
                 "webAccess":true
             }}
@@ -1059,11 +1099,14 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "codex child completed"
     );
     let argv = fs::read_to_string(&argv_log).unwrap();
-    assert!(argv.starts_with("--search\nexec\n"), "{argv}");
+    assert!(
+        argv.starts_with("-s\nworkspace-write\n-a\nnever\n--search\nexec\n"),
+        "{argv}"
+    );
     assert!(!argv.contains("agents.reviewer.config_file="));
     assert!(!argv.contains("agents.default_subagent_model="));
     assert!(argv.contains("model=grillforge/worker"));
@@ -1077,7 +1120,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"codex-worker","cwd":project,"prompt":"Review this"
             }}
         }))
@@ -1161,7 +1204,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"native-codex-reviewer","cwd":directory.path(),"prompt":"Review"
             }}
         }))
@@ -1173,7 +1216,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "native codex child completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
@@ -1405,7 +1448,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"opencode-reviewer","cwd":directory.path(),"prompt":"Review this"
             }}
         }))
@@ -1417,7 +1460,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "OpenCode child completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
@@ -1498,7 +1541,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"opencode-general","cwd":directory.path(),"prompt":"Research this"
             }}
         }))
@@ -1510,7 +1553,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "native build completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
@@ -1621,7 +1664,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"kimi-coder","cwd":directory.path(),"prompt":"Review this"
             }}
         }))
@@ -1633,7 +1676,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "Kimi managed child completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
@@ -1715,7 +1758,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi native child completed"}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"kimi-explore","cwd":directory.path(),"prompt":"Inspect this"
             }}
         }))
@@ -1727,7 +1770,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi native child completed"}}'
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "Kimi native child completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
@@ -1831,7 +1874,7 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"gemini-reviewer","cwd":project,"prompt":"Review this"
             }}
         }))
@@ -1843,12 +1886,12 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "Gemini child completed"
     );
     assert_eq!(
         fs::read_to_string(argv_log).unwrap(),
-        "--skip-trust\n--output-format\njson\n-p\n@reviewer Review this\n"
+        "--approval-mode\nauto_edit\n--skip-trust\n--output-format\njson\n-p\n@reviewer Review this\n"
     );
     assert_eq!(
         fs::read_to_string(home_log).unwrap(),
@@ -1939,7 +1982,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi custom child completed"}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"kimi-reviewer","cwd":directory.path(),"prompt":"Inspect this"
             }}
         }))
@@ -1951,7 +1994,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi custom child completed"}}'
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
-        response["result"]["content"][0]["text"],
+        agent_result(&response),
         "Kimi custom child completed"
     );
     let argv = fs::read_to_string(argv_log).unwrap();
@@ -2005,7 +2048,7 @@ exit 1
         .bearer_auth("broker-secret")
         .json(&json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"native-reviewer",
                 "cwd": directory.path(),
                 "prompt":"Inspect the project"
@@ -2102,7 +2145,7 @@ printf '%s' '{"type":"result","result":"child saw the real window"}'
         .bearer_auth("broker-secret")
         .json(&json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
                 "extensionId":"wide-reviewer",
                 "cwd": directory.path(),
                 "prompt":"Inspect the project"
@@ -2117,7 +2160,358 @@ printf '%s' '{"type":"result","result":"child saw the real window"}'
 
     assert_eq!(body["result"]["isError"], false, "{body}");
     assert_eq!(
-        body["result"]["content"][0]["text"],
+        agent_result(&body),
         "child saw the real window"
     );
+}
+
+#[tokio::test]
+async fn a_client_publishes_the_permission_modes_it_accepts_and_rejects_the_rest() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    let argv_log = directory.path().join("argv");
+    fs::create_dir(directory.path().join(".claude")).unwrap();
+    fs::write(
+        &runtime,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' '{{\"type\":\"result\",\"result\":\"done\"}}'\n",
+            argv_log.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "codex",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "claude_code".into(),
+                runtime,
+                config_root: directory.path().join(".claude"),
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "claude-general".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("{base_url}/mcp/codex"))
+            .bearer_auth("broker-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    // The caller can see what this Agent's client accepts before choosing.
+    let listed: Value = call(1, "list_agents", json!({}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let listed: Value =
+        serde_json::from_str(listed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(listed[0]["defaultPermissionMode"], "auto");
+    let modes = listed[0]["permissionModes"].as_array().unwrap();
+    assert!(modes.iter().any(|mode| mode == "plan"), "{modes:?}");
+    assert!(
+        modes.iter().any(|mode| mode == "bypassPermissions"),
+        "{modes:?}"
+    );
+
+    // A named mode reaches the runtime.
+    let response: Value = call(
+        2,
+        "run_agent",
+        json!({
+            "extensionId":"claude-general","cwd":directory.path(),
+            "prompt":"Plan only","permissionMode":"plan","waitSeconds":120
+        }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    let argv = fs::read_to_string(&argv_log).unwrap();
+    assert!(argv.starts_with("--permission-mode\nplan\n"), "{argv}");
+
+    // A mode the client does not accept fails before the Agent is launched.
+    let rejected: Value = call(
+        3,
+        "run_agent",
+        json!({
+            "extensionId":"claude-general","cwd":directory.path(),
+            "prompt":"Anything","permissionMode":"workspace-write"
+        }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(rejected["result"]["isError"], true, "{rejected}");
+    let text = rejected["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("unsupported claude_code permission mode"),
+        "{text}"
+    );
+    assert!(text.contains("available:"), "{text}");
+}
+
+#[tokio::test]
+async fn a_stopped_run_is_cancelled_and_forgotten() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    fs::create_dir(directory.path().join(".claude")).unwrap();
+    fs::write(&runtime, "#!/bin/sh\nsleep 120\n").unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "codex",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "claude_code".into(),
+                runtime,
+                config_root: directory.path().join(".claude"),
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "slow".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("{base_url}/mcp/codex"))
+            .bearer_auth("broker-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    let started: Value = call(
+        1,
+        "run_agent",
+        json!({"extensionId":"slow","cwd":directory.path(),"prompt":"take your time"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let handle: Value =
+        serde_json::from_str(started["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let run_id = handle["runId"].as_str().unwrap().to_string();
+
+    // A long run does not hold the caller: checking without waiting returns at once.
+    let pending: Value = call(2, "get_agent_result", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pending: Value =
+        serde_json::from_str(pending["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(pending["status"], "running");
+
+    let stopped: Value = call(3, "stop_agent", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stopped["result"]["isError"], false, "{stopped}");
+
+    let gone: Value = call(4, "get_agent_result", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(gone["result"]["isError"], true, "{gone}");
+}
+
+#[tokio::test]
+async fn a_child_permission_prompt_is_relayed_to_the_delegating_agent() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    let decision_log = directory.path().join("decision");
+    fs::create_dir(directory.path().join(".claude")).unwrap();
+    // The child uses the very config GrillForge hands it to raise a prompt.
+    fs::write(
+        &runtime,
+        format!(
+            r#"#!/usr/bin/env python3
+import json, sys, urllib.request, time
+argv = sys.argv[1:]
+config = json.loads(argv[argv.index("--mcp-config") + 1])
+server = config["mcpServers"]["grillforge_permission"]
+url = server["env"]["GRILLFORGE_MCP_URL"]
+token = server["env"]["GRILLFORGE_MCP_TOKEN"]
+body = json.dumps({{
+    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+    "params": {{"name": "approve", "arguments": {{
+        "tool_name": "Write", "input": {{"file_path": "/tmp/x", "content": "y"}}
+    }}}}
+}}).encode()
+request = urllib.request.Request(url, data=body, method="POST")
+request.add_header("Content-Type", "application/json")
+request.add_header("Authorization", "Bearer " + token)
+with urllib.request.urlopen(request, timeout=120) as response:
+    payload = json.loads(response.read().decode())
+decision = json.loads(payload["result"]["content"][0]["text"])
+open("{log}", "w").write(json.dumps(decision))
+print(json.dumps({{"type": "result", "result": "child saw " + decision["behavior"]}}))
+"#,
+            log = decision_log.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker_with_sources(
+            "codex",
+            &service.state().unwrap(),
+            "broker-token",
+            vec![AgentSourceRuntime {
+                source_client_id: "claude_code".into(),
+                runtime,
+                config_root: directory.path().join(".claude"),
+            }],
+            vec![AgentRuntimeRoute {
+                extension_id: "worker".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("{base_url}/mcp/codex"))
+            .bearer_auth("broker-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    let started: Value = call(
+        1,
+        "run_agent",
+        json!({"extensionId":"worker","cwd":directory.path(),"prompt":"do work"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let handle: Value =
+        serde_json::from_str(started["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let run_id = handle["runId"].as_str().unwrap().to_string();
+
+    // Another caller cannot raise or answer a prompt for this run.
+    let unauthorized = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/agent-permission/{run_id}"))
+        .bearer_auth("not-the-secret")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    // The delegating Agent sees the prompt and decides.
+    let mut request_id = None;
+    for _ in 0..100 {
+        let status: Value = call(2, "get_agent_result", json!({"runId":run_id}))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let payload: Value =
+            serde_json::from_str(status["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        if payload["status"] == "awaiting_permission" {
+            assert_eq!(payload["pendingPermissions"][0]["toolName"], "Write");
+            request_id = payload["pendingPermissions"][0]["requestId"]
+                .as_str()
+                .map(str::to_string);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let request_id = request_id.expect("the prompt reached the delegating Agent");
+
+    let answered: Value = call(
+        3,
+        "answer_agent_permission",
+        json!({"requestId":request_id,"behavior":"allow"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(answered["result"]["isError"], false, "{answered}");
+
+    // The decision reached the child, which acted on it.
+    let collected: Value = call(4, "get_agent_result", json!({"runId":run_id,"waitSeconds":60}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(collected["result"]["isError"], false, "{collected}");
+    assert_eq!(agent_result(&collected), "child saw allow");
+    let logged: Value =
+        serde_json::from_str(&fs::read_to_string(&decision_log).unwrap()).unwrap();
+    assert_eq!(logged["behavior"], "allow");
 }
