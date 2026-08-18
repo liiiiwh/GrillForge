@@ -13,7 +13,8 @@ users one place to manage:
 - Main model selection
 - Native model Slots and extension SubAgent bindings
 - Provider endpoints and credentials
-- Model identities and capabilities
+- Model identities and capabilities, including the context window a client needs
+  to know before it can size a conversation correctly
 
 GrillForge is not itself a coding agent. Coding agents retain ownership of their
 agent loop, context, tools, permissions, and task execution.
@@ -120,6 +121,13 @@ The MVP does not implement:
 
 The local gateway may translate model API payloads, tool-call descriptions, and
 streaming events. It never executes tools and never owns the agent lifecycle.
+
+Keeping a started run reachable is not a task scheduler. GrillForge holds a
+handle to a run the delegating Agent started, so that Agent can collect it later
+instead of waiting; it never decides what runs, when, or in what order. Relaying
+a permission prompt to the Agent that delegated the work is likewise not a
+policy decision: GrillForge carries the question and the answer and makes
+neither.
 
 ## Extension SubAgent Boundary
 

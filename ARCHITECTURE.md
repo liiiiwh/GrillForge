@@ -213,15 +213,50 @@ conversation/Cowork 3P profile and Claude-safe role routes.
 The broker is an MCP control boundary, not an Agent Runtime. It owns:
 
 - Per-destination-client bearer authentication and allowed extension IDs
-- `list_agents` and `run_agent` request validation
+- `list_agents`, `run_agent`, `get_agent_result`, `answer_agent_permission`, and
+  `stop_agent` request validation
 - Resolution from an extension ID to a discovered local Agent and optional model
 - Launching the already-installed source Coding Agent runtime
 - A short-lived child-only gateway credential for managed models
-- Cancellation, exit status, and safe result forwarding
+- The run registry described below, and safe result forwarding
 
 The source Coding Agent runtime owns its Agent Loop, prompt processing, tools,
 permissions, and context. GrillForge never parses model output to implement an
 Agent loop and never executes Agent tools.
+
+### Run Handles
+
+A delegated run outlives the request that started it, so the delegating Agent
+keeps its turn. `run_agent` returns a run handle; `get_agent_result` collects the
+run, waiting only for a bounded interval it is given; `stop_agent` cancels the
+run and its child process. The registry holds one entry per run and drops a
+result once collected, or after an hour if nobody collects it.
+
+This registry is not a scheduler. GrillForge never decides when a run starts,
+never queues work, and never retries. The delegating Agent decides everything;
+the registry only keeps a running child reachable after its start request
+returned.
+
+### Permission Relay
+
+A source runtime that can route a permission prompt outward is launched with that
+prompt directed at a per-run GrillForge endpoint. A prompt arriving there is held,
+reported to the delegating Agent through `get_agent_result`, and answered by that
+Agent through `answer_agent_permission`.
+
+GrillForge carries the question and the answer. It never approves or denies on
+its own behalf, and an unanswered prompt is denied on a timeout so the child
+cannot hang. Only a client whose CLI exposes such a hook participates; the others
+run under the permission mode chosen at launch.
+
+### Client Permission Modes
+
+Each client declares the permission modes its own CLI accepts, together with the
+arguments that select them. The modes differ per client and are not mapped onto a
+shared vocabulary, because they are not equivalent: some clients take an
+enumeration, some a single switch, and some expose nothing at all. A client whose
+modes have not been read from a real installation declares none rather than a
+guess, since an unaccepted mode fails only once the Agent is already running.
 
 Mount configuration is client-specific and transactional. Pi uses community
 `pi-mcp-extension`; detection reads Pi's real package registry and installation

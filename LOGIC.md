@@ -107,6 +107,54 @@ Destination client
 
 GrillForge does not schedule work or create a parallel custom Agent runtime.
 
+### Run Lifecycle
+
+`run_agent` starts the run and returns a handle, so the delegating Agent keeps
+its turn while the child works. `get_agent_result` reports the run as running,
+awaiting permission, or completed, and waits only for the bounded interval the
+caller supplies. `stop_agent` cancels a run and its child. Passing `waitSeconds`
+to `run_agent` collects the result in the same call for a caller that only wants
+the answer.
+
+A result is delivered once and then dropped. An uncollected result is dropped
+after an hour, and unmounting a client cancels every run still active for it.
+
+### Permission Requests
+
+A permission prompt raised by a delegated Agent belongs to the Agent that
+delegated it. `get_agent_result` reports it as `awaiting_permission` with the
+tool name and its input, and `answer_agent_permission` returns allow or deny to
+the waiting child.
+
+GrillForge decides nothing here. An unanswered prompt is denied on a timeout,
+because a child left waiting is worse than a refused tool call. Only a runtime
+whose CLI exposes a prompt hook can raise one; the rest are bound by the
+permission mode chosen when they launched.
+
+### Permission Modes
+
+Each delegated run uses a permission mode its own client accepts. A call may name
+one from that client's published list; otherwise the client's default applies,
+chosen so a delegated Agent is as capable as the same Agent run by hand. A mode
+the client does not accept fails before the Agent launches.
+
+A delegated Agent reaches the network by default. Withholding it is a deliberate
+request, and it fails on a runtime with no switch that can honour it rather than
+silently granting what was refused.
+
+### Native Route Hook Scope
+
+Claude Code and Claude Client share one user settings file, so the hook installed
+there answers for the client whose session invoked it, identified by that
+session's entrypoint. One client's mounted extensions never decide the other's
+native Workflow and Agent tools, and the denial names the MCP server that
+session actually has.
+
+A GrillForge-launched child is a leaf: it may not open another SubAgent level,
+because one invocation would otherwise fan out into an unbounded tree of
+runtimes. The rule applies only to the delegating tools; the child keeps every
+other tool it was launched with.
+
 MCP configuration, source Agent, runtime, model, Provider, or authentication
 errors fail immediately. Capability tags are hints, not tool permissions.
 
