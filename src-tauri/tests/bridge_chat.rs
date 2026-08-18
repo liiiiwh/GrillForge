@@ -679,3 +679,75 @@ async fn reasoning_content_models_accept_claude_thinking_without_sending_reasoni
     assert_eq!(response["content"][0]["thinking"], "Checked it");
     assert_eq!(response["content"][1]["text"], "3");
 }
+
+#[tokio::test]
+async fn a_failed_tool_result_is_forwarded_with_its_error_marker() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chat_err","model":"qwen-coder",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":1}
+    }))
+    .await;
+
+    OpenAiChatBridge::new(base_url, "chat-secret")
+        .complete(json!({
+            "model":"qwen-coder","max_tokens":128,
+            "tools":[{"name":"read_file","description":"Read one file","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}],
+            "messages":[
+                {"role":"user","content":"inspect"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"read_file","input":{"path":"a.rs"}}]},
+                {"role":"user","content":[{
+                    "type":"tool_result","tool_use_id":"call_1",
+                    "content":"ENOENT: no such file","is_error":true
+                }]}
+            ]
+        }))
+        .await
+        .unwrap();
+
+    let request = captured.await.unwrap().body;
+    let tool_message = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .expect("tool message");
+    let content = tool_message["content"].as_str().expect("tool content");
+    assert!(content.contains("[grillforge:tool-result-error]"), "{content}");
+    assert!(content.contains("ENOENT: no such file"), "{content}");
+}
+
+#[tokio::test]
+async fn a_successful_tool_result_carries_no_error_marker() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chat_ok","model":"qwen-coder",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":1}
+    }))
+    .await;
+
+    OpenAiChatBridge::new(base_url, "chat-secret")
+        .complete(json!({
+            "model":"qwen-coder","max_tokens":128,
+            "tools":[{"name":"read_file","description":"Read one file","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}],
+            "messages":[
+                {"role":"user","content":"inspect"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"read_file","input":{"path":"a.rs"}}]},
+                {"role":"user","content":[{
+                    "type":"tool_result","tool_use_id":"call_1",
+                    "content":"file body","is_error":false
+                }]}
+            ]
+        }))
+        .await
+        .unwrap();
+
+    let request = captured.await.unwrap().body;
+    let tool_message = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .expect("tool message");
+    assert_eq!(tool_message["content"], "file body");
+}

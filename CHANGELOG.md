@@ -4,6 +4,26 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.16] - 2026-08-17
+
+### Fixed
+
+- A failed tool result now survives the Chat bridge. `tool_result.is_error` is a
+  standard Anthropic field that appears only when a tool call fails, so a
+  multi-turn extension SubAgent run died with a 502 the first time any of its
+  tools errored. The Responses bridge already carried the field; the Chat bridge
+  now marks the failure in the tool message text, because an OpenAI Chat tool
+  message has no error flag of its own.
+- The marker both bridges use for a failed tool result is now a single shared
+  constant instead of a repeated literal.
+
+### Verification
+
+- The full Chat bridge field allowlist was re-checked against a request envelope
+  captured from the current Claude Code, covering the top-level fields, system,
+  text, thinking, tool_use, and tool_result blocks.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.15] - 2026-08-17
 
 ### Fixed

@@ -12,6 +12,10 @@ use std::fmt::{Display, Formatter};
 use std::pin::Pin;
 use url::Url;
 
+/// Marks a failed Anthropic `tool_result` for upstreams whose tool messages
+/// carry no error flag of their own.
+pub(crate) const TOOL_RESULT_ERROR_MARKER: &str = "[grillforge:tool-result-error]";
+
 mod chat;
 mod chat_client;
 mod chat_reasoning;
@@ -782,7 +786,7 @@ fn convert_tool_result_output(
             return Ok(json!(text));
         }
         return Ok(json!([
-            {"type": "input_text", "text": "[grillforge:tool-result-error]"},
+            {"type": "input_text", "text": TOOL_RESULT_ERROR_MARKER},
             {"type": "input_text", "text": text}
         ]));
     }
@@ -797,7 +801,7 @@ fn convert_tool_result_output(
         })?;
     let mut output = Vec::with_capacity(blocks.len() + usize::from(is_error));
     if is_error {
-        output.push(json!({"type": "input_text", "text": "[grillforge:tool-result-error]"}));
+        output.push(json!({"type": "input_text", "text": TOOL_RESULT_ERROR_MARKER}));
     }
     for (index, part) in blocks.iter().enumerate() {
         let part_field = format!("{field}.content[{index}]");

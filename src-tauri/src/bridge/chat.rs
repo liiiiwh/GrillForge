@@ -2,7 +2,10 @@
 // 413c09e0790c304506888ae24b9be72820aca126.
 // Copyright (c) 2025 Jason Young. Licensed under the MIT License.
 
-use super::{AnthropicSseStream, BridgeError, append_api_endpoint, chat_sse_to_anthropic, media};
+use super::{
+    AnthropicSseStream, BridgeError, TOOL_RESULT_ERROR_MARKER, append_api_endpoint,
+    chat_sse_to_anthropic, media,
+};
 use reqwest::Client;
 use serde_json::{Map, Value, json};
 use url::Url;
@@ -375,7 +378,7 @@ fn convert_message(
                 }
                 reject_unknown(
                     block,
-                    &["type", "tool_use_id", "content", "cache_control"],
+                    &["type", "tool_use_id", "content", "is_error", "cache_control"],
                     Some(&block_field),
                 )?;
                 validate_cache_control(block.get("cache_control"), &block_field)?;
@@ -383,8 +386,24 @@ fn convert_message(
                     block.get("tool_use_id"),
                     &format!("{block_field}.tool_use_id"),
                 )?;
+                let is_error = match block.get("is_error") {
+                    Some(Value::Bool(value)) => *value,
+                    None => false,
+                    Some(_) => {
+                        return Err(invalid_request(&format!(
+                            "{block_field}.is_error must be a boolean"
+                        )));
+                    }
+                };
                 let content =
                     tool_result_text(block.get("content"), &format!("{block_field}.content"))?;
+                // A Chat tool message carries no error flag, so the failure is marked
+                // in the text exactly as the Responses bridge marks it.
+                let content = if is_error {
+                    format!("{TOOL_RESULT_ERROR_MARKER}\n{content}")
+                } else {
+                    content
+                };
                 tool_results.push(json!({
                     "role":"tool","tool_call_id":id,"content":content
                 }));
