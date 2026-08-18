@@ -26,6 +26,8 @@ fn model(id: &str) -> ModelInput {
         provider_id: "local".into(),
         capabilities: vec!["coding".into()],
         protocol_capabilities: vec![],
+            context_window: None,
+        max_output_tokens: None,
     }
 }
 

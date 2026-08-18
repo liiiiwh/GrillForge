@@ -107,8 +107,10 @@ impl PiIntegrationService {
                         .any(|capability| capability == "reasoning")
                         || !model.protocol_capabilities.is_empty(),
                     input,
-                    128_000,
-                    16_384,
+                    // Pi requires both limits; an unknown model keeps the previous
+                    // defaults rather than blocking the whole configuration.
+                    model.context_window.unwrap_or(128_000),
+                    model.max_output_tokens.unwrap_or(16_384),
                 )
                 .map_err(|error| error.to_string())
             })
@@ -264,6 +266,8 @@ mod tests {
                 provider_id: "local".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .unwrap();
         control.set_pi_model_enabled("coder".into(), true).unwrap();
@@ -317,6 +321,8 @@ mod tests {
                 provider_id: "local".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .unwrap();
         control.set_pi_model_enabled("coder".into(), true).unwrap();

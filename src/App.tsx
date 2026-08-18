@@ -90,6 +90,8 @@ type Model = {
   nativeProtocols: NativeProtocol[];
   unsupportedNativeProtocols: NativeProtocol[];
   routeAlias: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 };
 
 type ExtensionSubAgent = {
@@ -379,6 +381,7 @@ type ModelDraft = {
   capabilities: string;
   protocolCapabilities: ProtocolCapability[];
   nativeProtocols: NativeProtocol[];
+  contextWindow: string;
 };
 
 type ExtensionSubAgentDraft = {
@@ -432,6 +435,7 @@ const EMPTY_MODEL: ModelDraft = {
   capabilities: "",
   protocolCapabilities: [],
   nativeProtocols: [],
+  contextWindow: "",
 };
 
 const EMPTY_EXTENSION_SUBAGENT: ExtensionSubAgentDraft = {
@@ -1889,6 +1893,7 @@ function App() {
       capabilities: model.capabilities.join(", "),
       protocolCapabilities: model.protocolCapabilities ?? [],
       nativeProtocols: model.nativeProtocols ?? [],
+      contextWindow: model.contextWindow ? String(model.contextWindow) : "",
     });
     setShowModelForm(true);
   }
@@ -2026,6 +2031,15 @@ function App() {
     const name = modelDraft.name.trim();
     const id = editingModelId ?? slug(name);
     if (!id) return reportError("模型名称必须能生成小写拉丁字母标识。");
+    const declared = modelDraft.contextWindow.trim();
+    // Left blank the model stays unknown; a client then keeps its own default
+    // instead of being handed a number nobody verified.
+    let contextWindow: number | undefined;
+    if (declared) {
+      contextWindow = Number(declared);
+      if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0)
+        return reportError("上下文长度必须是正整数 token 数，留空表示未知。");
+    }
     const input = {
       id,
       name,
@@ -2037,6 +2051,7 @@ function App() {
         .filter(Boolean),
       protocolCapabilities: modelDraft.protocolCapabilities,
       nativeProtocols: modelDraft.nativeProtocols,
+      contextWindow,
     };
     if (input.nativeProtocols.length === 0)
       return reportError("请至少选择一种模型原生支持的 API 协议。");
@@ -5662,6 +5677,20 @@ function App() {
                       }))
                     }
                     placeholder="coding, review, refactor（逗号分隔）"
+                  />
+                </label>
+                <label className="field-wide">
+                  上下文长度
+                  <input
+                    inputMode="numeric"
+                    value={modelDraft.contextWindow}
+                    onChange={(event) =>
+                      setModelDraft((current) => ({
+                        ...current,
+                        contextWindow: event.target.value,
+                      }))
+                    }
+                    placeholder="例如 262144；留空表示未知，客户端沿用自身默认值"
                   />
                 </label>
                 <fieldset className="protocol-features field-wide">

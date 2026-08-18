@@ -33,6 +33,10 @@ pub struct DiscoveredModel {
     pub owned_by: Option<String>,
     #[serde(default)]
     pub native_protocols: Vec<NativeProtocol>,
+    /// Reported by providers that publish it; absent providers stay unknown
+    /// rather than being given an invented window.
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +62,13 @@ struct ModelEntry {
     owned_by: Option<String>,
     #[serde(default, alias = "protocols")]
     supported_protocols: Vec<NativeProtocol>,
+    #[serde(
+        default,
+        alias = "context_window",
+        alias = "max_context_length",
+        alias = "max_input_tokens"
+    )]
+    context_length: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +79,8 @@ struct GeminiModelsResponse {
 #[derive(Deserialize)]
 struct GeminiModelEntry {
     name: String,
+    #[serde(default, rename = "inputTokenLimit")]
+    input_token_limit: Option<u64>,
 }
 
 pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>, String> {
@@ -154,6 +167,7 @@ pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>,
                     .to_string(),
                 owned_by: Some("google".into()),
                 supported_protocols: vec![NativeProtocol::GeminiNative],
+                context_length: entry.input_token_limit,
             })
             .collect()
     } else {
@@ -173,6 +187,7 @@ pub async fn discover(provider: &ProviderRecord) -> Result<Vec<DiscoveredModel>,
                 id: id.to_string(),
                 owned_by: entry.owned_by,
                 native_protocols: entry.supported_protocols,
+                context_window: entry.context_length.filter(|window| *window > 0),
             });
         }
     }
@@ -232,6 +247,7 @@ fn discovered_from_suggestions(models: Vec<String>) -> Result<Vec<DiscoveredMode
                 id: id.into(),
                 owned_by: None,
                 native_protocols: Vec::new(),
+                context_window: None,
             });
         }
     }

@@ -62,6 +62,8 @@ fn binding_and_mcp_lifecycle_are_independent_and_empty_routes_stay_mounted() {
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .expect("model");
     control
@@ -677,6 +679,8 @@ fn editing_a_bound_extension_updates_the_live_broker_route_immediately() {
                 provider_id: "local".into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .expect("model");
     }
@@ -1152,6 +1156,8 @@ fn failed_multi_client_update_restores_the_record_and_every_changed_mount() {
                 provider_id: "local".into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .expect("model");
     }

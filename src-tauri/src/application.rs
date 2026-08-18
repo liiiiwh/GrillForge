@@ -119,6 +119,10 @@ pub struct PublicModel {
     pub native_protocols: Vec<NativeProtocol>,
     pub unsupported_native_protocols: Vec<NativeProtocol>,
     pub route_alias: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -156,6 +160,10 @@ pub struct ModelInput {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub protocol_capabilities: Vec<ProtocolCapability>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -523,6 +531,8 @@ impl ControlPlaneService {
             protocol_capabilities: input.protocol_capabilities,
             native_protocols: Some(vec![default_protocol]),
             unsupported_native_protocols: Vec::new(),
+            context_window: input.context_window,
+            max_output_tokens: input.max_output_tokens,
         };
         if documents
             .models
@@ -556,6 +566,8 @@ impl ControlPlaneService {
             protocol_capabilities: input.model.protocol_capabilities,
             native_protocols: Some(input.native_protocols),
             unsupported_native_protocols: Vec::new(),
+            context_window: input.model.context_window,
+            max_output_tokens: input.model.max_output_tokens,
         };
         if documents
             .models
@@ -590,6 +602,8 @@ impl ControlPlaneService {
             protocol_capabilities: input.protocol_capabilities,
             native_protocols,
             unsupported_native_protocols,
+            context_window: input.context_window,
+            max_output_tokens: input.max_output_tokens,
         };
         self.save_and_return(documents)
     }
@@ -620,6 +634,8 @@ impl ControlPlaneService {
             protocol_capabilities: input.model.protocol_capabilities,
             native_protocols: Some(input.native_protocols),
             unsupported_native_protocols: Vec::new(),
+            context_window: input.model.context_window,
+            max_output_tokens: input.model.max_output_tokens,
         };
         self.save_and_return(documents)
     }
@@ -1529,6 +1545,10 @@ fn apply_discovered_models(
             existing.native_protocols = Some(supported);
             existing.unsupported_native_protocols = unsupported;
             existing.protocol_capabilities = protocol_capabilities;
+            // Only fill a gap. A window the user entered outlives a re-sync.
+            if existing.context_window.is_none() {
+                existing.context_window = model.context_window;
+            }
             continue;
         }
         let upstream_slug = model_slug(&model.id);
@@ -1566,6 +1586,8 @@ fn apply_discovered_models(
             protocol_capabilities,
             native_protocols: Some(supported),
             unsupported_native_protocols: unsupported,
+            context_window: model.context_window,
+            max_output_tokens: None,
         });
     }
     documents
@@ -2080,6 +2102,8 @@ fn public_state(documents: &ConfigurationDocuments) -> Result<ControlPlaneState,
                 native_protocols: model.native_protocols.clone().unwrap_or_default(),
                 unsupported_native_protocols: model.unsupported_native_protocols.clone(),
                 route_alias: format!("grillforge/{}", model.id),
+                context_window: model.context_window,
+                max_output_tokens: model.max_output_tokens,
             })
             .collect(),
         agent_enabled: agent.enabled,

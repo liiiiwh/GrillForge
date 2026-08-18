@@ -28,6 +28,8 @@ fn pi_default_and_enabled_models_are_independent_from_claude() {
                 provider_id: "deepseek".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: Vec::new(),
+                            context_window: None,
+                max_output_tokens: None,
             })
             .unwrap();
     }

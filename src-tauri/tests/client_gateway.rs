@@ -53,6 +53,8 @@ async fn named_client_route_is_isolated_by_client_token_and_model_pool() {
             provider_id: "provider".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(temp.path());
@@ -139,6 +141,8 @@ fn anthropic_ingress_clients_accept_gemini_native_models_for_local_bridging() {
             provider_id: "gemini".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
 
@@ -191,6 +195,8 @@ async fn responses_ingress_client_routes_a_chat_only_model_through_the_bridge() 
             provider_id: "chat".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(temp.path());

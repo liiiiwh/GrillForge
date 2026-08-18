@@ -57,6 +57,7 @@ fn grok_build_projects_one_selected_responses_model_and_preserves_other_tables()
                 "provider-secret",
                 "deepseek-chat",
                 "DeepSeek Chat",
+                None,
             )
             .unwrap(),
         )
@@ -107,7 +108,7 @@ fn grok_build_disable_restores_exact_original_and_drift_fails_fast() {
     );
     adapter
         .apply(
-            GrokBuildRequest::new("http://127.0.0.1:9191/v1", "local-token", "coder", "Coder")
+            GrokBuildRequest::new("http://127.0.0.1:9191/v1", "local-token", "coder", "Coder", None)
                 .unwrap(),
         )
         .unwrap();
@@ -131,7 +132,7 @@ fn grok_build_disable_restores_exact_original_and_drift_fails_fast() {
     let clean = GrokBuildAdapter::new(GrokBuildPaths::new(config.clone()), clean_root);
     clean
         .apply(
-            GrokBuildRequest::new("https://api.example.com/v1", "secret", "model", "Model")
+            GrokBuildRequest::new("https://api.example.com/v1", "secret", "model", "Model", None)
                 .unwrap(),
         )
         .unwrap();
@@ -146,9 +147,10 @@ fn grok_build_request_rejects_non_base_or_unsafe_values_without_leaking_secret()
         "do-not-print",
         "model",
         "Model",
+        None,
     )
     .unwrap_err();
     assert!(!error.to_string().contains("do-not-print"));
-    assert!(GrokBuildRequest::new("https://api.example.com/v1?x=1", "key", "m", "M").is_err());
-    assert!(GrokBuildRequest::new("https://api.example.com/v1", "", "m", "M").is_err());
+    assert!(GrokBuildRequest::new("https://api.example.com/v1?x=1", "key", "m", "M", None).is_err());
+    assert!(GrokBuildRequest::new("https://api.example.com/v1", "", "m", "M", None).is_err());
 }

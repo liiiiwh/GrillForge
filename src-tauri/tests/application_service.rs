@@ -29,6 +29,8 @@ fn model() -> ModelInput {
         provider_id: "local".into(),
         capabilities: vec!["coding".into()],
         protocol_capabilities: vec![],
+            context_window: None,
+        max_output_tokens: None,
     }
 }
 
@@ -231,6 +233,8 @@ fn claude_and_pi_accept_gemini_native_registry_models() {
             provider_id: "gemini".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .expect("Gemini model");
 

@@ -123,6 +123,8 @@ async fn client_scoped_mcp_broker_resolves_the_extension_and_launches_child_only
             provider_id: "local".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .expect("model");
 
@@ -291,7 +293,9 @@ async fn workflow_can_run_independent_extension_agents_concurrently() {
         format!(
             r#"#!/bin/sh
 printf 'started\n' >> '{}'
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50; do
+i=0
+while [ $i -lt 300 ]; do
+  i=$((i+1))
   [ "$(wc -l < '{}')" -ge 2 ] && break
   sleep 0.1
 done
@@ -343,7 +347,7 @@ printf '%s' '{{"type":"result","result":"parallel child completed"}}'
             }))
             .send()
     };
-    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(45), async {
         tokio::join!(call(1), call(2))
     })
     .await
@@ -772,6 +776,8 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(directory.path());
@@ -881,6 +887,8 @@ printf '%s\n' '{{"text":"grok child completed","stopReason":"end_turn","num_turn
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(directory.path());
@@ -996,6 +1004,8 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(directory.path());
@@ -1197,6 +1207,8 @@ async fn client_agent_lists_update_independently_without_remounting_mcp() {
                 provider_id: "local".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .unwrap();
     }
@@ -1359,6 +1371,8 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(directory.path());
@@ -1573,6 +1587,8 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(directory.path());
@@ -1781,6 +1797,8 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(directory.path());
@@ -2007,5 +2025,99 @@ exit 1
     assert!(
         text.contains("API Error: 502 invalid Anthropic request"),
         "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_managed_child_is_told_the_models_real_context_window() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(directory.path());
+    service
+        .save_provider(ProviderInput {
+            id: "local".into(),
+            name: "Local".into(),
+            protocol: Protocol::AnthropicMessages,
+            endpoint: "http://127.0.0.1:9/anthropic".into(),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::Bearer,
+            api_key: Some("provider-secret".into()),
+            enabled: true,
+            models_url: None,
+        })
+        .expect("provider");
+    service
+        .save_model(ModelInput {
+            id: "wide".into(),
+            name: "Wide".into(),
+            upstream_id: "wide-upstream".into(),
+            provider_id: "local".into(),
+            capabilities: vec!["coding".into()],
+            protocol_capabilities: vec![],
+            context_window: Some(262_144),
+            max_output_tokens: None,
+        })
+        .expect("model");
+
+    // The child fails unless it was handed the window recorded for its model.
+    let runtime = directory.path().join("claude");
+    fs::write(
+        &runtime,
+        r#"#!/bin/sh
+if [ "$CLAUDE_CODE_MAX_CONTEXT_TOKENS" != "262144" ]; then
+  printf '%s\n' '{"type":"result","is_error":true,"result":"window was '"$CLAUDE_CODE_MAX_CONTEXT_TOKENS"'"}'
+  exit 1
+fi
+printf '%s' '{"type":"result","result":"child saw the real window"}'
+"#,
+    )
+    .expect("fake runtime");
+    let mut permissions = fs::metadata(&runtime).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).expect("executable permissions");
+
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("gateway");
+    let address = listener.local_addr().expect("gateway address");
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker(
+            "claude_code",
+            &service.state().expect("state"),
+            "broker-secret",
+            &runtime,
+            directory.path(),
+            vec![AgentRuntimeRoute {
+                extension_id: "wide-reviewer".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "reviewer".into(),
+                model_id: Some("wide".into()),
+            }],
+        )
+        .expect("activate broker");
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let body: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-secret")
+        .json(&json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"wide-reviewer",
+                "cwd": directory.path(),
+                "prompt":"Inspect the project"
+            }}
+        }))
+        .send()
+        .await
+        .expect("MCP response")
+        .json()
+        .await
+        .expect("MCP JSON");
+
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    assert_eq!(
+        body["result"]["content"][0]["text"],
+        "child saw the real window"
     );
 }

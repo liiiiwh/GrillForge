@@ -261,6 +261,7 @@ impl GrokBuildIntegrationService {
                     &token,
                     format!("grillforge/{}", selection.main_model.id),
                     selection.main_model.display_name,
+                    selection.main_model.context_window,
                 )
                 .map_err(|error| error.to_string())?,
             )
@@ -986,6 +987,8 @@ mod tests {
                 provider_id: "local".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .unwrap();
         for client in ["opencode", "hermes", "kimi_code"] {
@@ -1021,7 +1024,7 @@ mod tests {
         let grok_paths = GrokBuildPaths::new(temp.path().join("home/.grok/config.toml"));
         let grok = GrokBuildIntegrationService::new(grok_paths, &root);
         grok.adapter
-            .apply(GrokBuildRequest::new("http://127.0.0.1:9", "token", "grok", "Grok").unwrap())
+            .apply(GrokBuildRequest::new("http://127.0.0.1:9", "token", "grok", "Grok", None).unwrap())
             .unwrap();
 
         let control = gateway_control(&root);

@@ -2605,6 +2605,15 @@ struct AgentInvocation {
     source_runtime: AgentSourceRuntime,
 }
 
+/// Everything a child needs to reach one managed model, kept together so a
+/// runtime takes a single route rather than a widening argument list.
+struct ManagedRoute {
+    alias: String,
+    runtime_token: String,
+    model_id: String,
+    context_window: Option<u64>,
+}
+
 #[derive(Clone)]
 struct AgentRunOptions {
     web_access: bool,
@@ -2694,14 +2703,26 @@ async fn execute_agent(
         route,
         source_runtime,
     } = invocation;
-    let managed_route = route.model_id.as_ref().map(|model_id| {
-        (
-            format!("grillforge/{model_id}"),
-            uuid::Uuid::new_v4().to_string(),
-            model_id.clone(),
-        )
+    let managed_route = route.model_id.as_ref().map(|model_id| ManagedRoute {
+        alias: format!("grillforge/{model_id}"),
+        runtime_token: uuid::Uuid::new_v4().to_string(),
+        model_id: model_id.clone(),
+        // A client that is not told the real window falls back to its own default
+        // and rejects a prompt the upstream would have accepted.
+        context_window: active
+            .documents
+            .models
+            .models
+            .iter()
+            .find(|model| model.id == *model_id)
+            .and_then(|model| model.context_window),
     });
-    if let Some((_, runtime_token, model_id)) = &managed_route {
+    if let Some(ManagedRoute {
+        runtime_token,
+        model_id,
+        ..
+    }) = &managed_route
+    {
         active
             .runtime_routes
             .lock()
@@ -2718,7 +2739,7 @@ async fn execute_agent(
     let runtime_routes = Arc::clone(&active.runtime_routes);
     let cleanup_token = managed_route
         .as_ref()
-        .map(|(_, runtime_token, _)| runtime_token.clone());
+        .map(|route| route.runtime_token.clone());
     let options = AgentRunOptions {
         web_access,
         progress,
@@ -2834,7 +2855,7 @@ async fn run_gemini_agent_runtime(
     cwd: &Path,
     agent_id: &str,
     prompt: &str,
-    managed_route: Option<&(String, String, String)>,
+    managed_route: Option<&ManagedRoute>,
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
@@ -2855,8 +2876,8 @@ async fn run_gemini_agent_runtime(
         .parent()
         .ok_or_else(|| "Gemini configuration root has no parent home directory".to_string())?;
     let managed_config = managed_route
-        .map(|(_, runtime_token, model_id)| {
-            GeminiManagedConfigScratch::new(agent_id, model_id, runtime_token)
+        .map(|route| {
+            GeminiManagedConfigScratch::new(agent_id, &route.model_id, &route.runtime_token)
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
@@ -2865,10 +2886,10 @@ async fn run_gemini_agent_runtime(
         .env("GEMINI_CLI_HOME", home)
         .args(["--skip-trust", "--output-format", "json", "-p"])
         .arg(format!("@{agent_id} {prompt}"));
-    if let (Some((_, runtime_token, model_id)), Some(config)) = (managed_route, &managed_config) {
-        let model_route = format!("grillforge--{model_id}");
+    if let (Some(route), Some(config)) = (managed_route, &managed_config) {
+        let model_route = format!("grillforge--{}", route.model_id);
         command
-            .env("GEMINI_API_KEY", runtime_token)
+            .env("GEMINI_API_KEY", &route.runtime_token)
             .env("GEMINI_MODEL", &model_route)
             .env("GEMINI_CLI_SYSTEM_SETTINGS_PATH", config.path())
             .env(
@@ -2887,7 +2908,7 @@ async fn run_claude_agent_runtime(
     cwd: &Path,
     agent_id: &str,
     prompt: &str,
-    managed_route: Option<&(String, String, String)>,
+    managed_route: Option<&ManagedRoute>,
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
@@ -2897,8 +2918,8 @@ async fn run_claude_agent_runtime(
     if options.web_access {
         command.args(["--allowedTools", "WebSearch,WebFetch"]);
     }
-    if let Some((model_route, _, _)) = managed_route {
-        command.args(["--model", model_route]);
+    if let Some(route) = managed_route {
+        command.args(["--model", &route.alias]);
     }
     command.args([
         "-p",
@@ -2923,16 +2944,20 @@ async fn run_claude_agent_runtime(
         command.env_remove(key);
     }
     command.env("CLAUDE_CONFIG_DIR", &source.config_root);
-    if let Some((model_route, runtime_token, _)) = managed_route {
+    if let Some(route) = managed_route {
         command
             .env(
                 "ANTHROPIC_BASE_URL",
                 format!("{}/agent-runtime", base_url.trim_end_matches('/')),
             )
-            .env("ANTHROPIC_API_KEY", runtime_token)
-            .env("ANTHROPIC_MODEL", model_route)
+            .env("ANTHROPIC_API_KEY", &route.runtime_token)
+            .env("ANTHROPIC_MODEL", &route.alias)
             .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .env("GRILLFORGE_AGENT_CHILD", "1");
+    }
+    // Claude Code assumes a fixed window for a model it does not recognize.
+    if let Some(context_window) = managed_route.and_then(|route| route.context_window) {
+        command.env("CLAUDE_CODE_MAX_CONTEXT_TOKENS", context_window.to_string());
     }
     run_agent_command(command, "Claude Code", options.progress.clone()).await
 }
@@ -2942,7 +2967,7 @@ async fn run_codex_agent_runtime(
     cwd: &Path,
     agent_id: &str,
     prompt: &str,
-    managed_route: Option<&(String, String, String)>,
+    managed_route: Option<&ManagedRoute>,
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
@@ -2989,9 +3014,9 @@ async fn run_codex_agent_runtime(
             "-C",
         ])
         .arg(cwd);
-    if let Some((model_route, runtime_token, _)) = managed_route {
+    if let Some(route) = managed_route {
         command
-            .args(["-c", &format!("model={model_route}")])
+            .args(["-c", &format!("model={}", route.alias)])
             .args(["-c", "model_provider=grillforge_agent"])
             .args([
                 "-c",
@@ -3006,7 +3031,7 @@ async fn run_codex_agent_runtime(
             ])
             .args(["-c", "model_providers.grillforge_agent.wire_api=responses"])
             .args(["-c", "model_providers.grillforge_agent.name=GrillForge"])
-            .env("GRILLFORGE_AGENT_TOKEN", runtime_token)
+            .env("GRILLFORGE_AGENT_TOKEN", &route.runtime_token)
             .env("GRILLFORGE_AGENT_CHILD", "1");
     }
     command.arg(match developer_instructions {
@@ -3067,7 +3092,7 @@ async fn run_pi_agent_runtime(
     cwd: &Path,
     agent_id: &str,
     prompt: &str,
-    managed_route: Option<&(String, String, String)>,
+    managed_route: Option<&ManagedRoute>,
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
@@ -3085,8 +3110,13 @@ async fn run_pi_agent_runtime(
     }
     let scratch = PiAgentScratch::new(&agent.system_prompt)?;
     let managed_config = managed_route
-        .map(|(model_route, runtime_token, _)| {
-            PiManagedConfigScratch::new(base_url, runtime_token, model_route)
+        .map(|route| {
+            PiManagedConfigScratch::new(
+                base_url,
+                &route.runtime_token,
+                &route.alias,
+                route.context_window,
+            )
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
@@ -3100,8 +3130,8 @@ async fn run_pi_agent_runtime(
                 .unwrap_or(&source.config_root),
         )
         .args(["--mode", "json", "-p", "--no-session"]);
-    if let Some((model_route, _, _)) = managed_route {
-        command.args(["--model", &format!("grillforge_agent/{model_route}")]);
+    if let Some(route) = managed_route {
+        command.args(["--model", &format!("grillforge_agent/{}", route.alias)]);
         command.env("GRILLFORGE_AGENT_CHILD", "1");
     } else if let Some(model) = &agent.model {
         command.args(["--model", model]);
@@ -3124,7 +3154,7 @@ async fn run_opencode_agent_runtime(
     cwd: &Path,
     agent_id: &str,
     prompt: &str,
-    managed_route: Option<&(String, String, String)>,
+    managed_route: Option<&ManagedRoute>,
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
@@ -3152,8 +3182,8 @@ async fn run_opencode_agent_runtime(
         .env("OPENCODE_CONFIG_DIR", &source.config_root)
         .args(["run", "--format", "json"]);
     let promote_subagent = mode == crate::local_agents::OpenCodeAgentMode::Subagent;
-    if let Some((model_route, runtime_token, _)) = managed_route {
-        let provider_model = format!("grillforge_agent/{model_route}");
+    if let Some(route) = managed_route {
+        let provider_model = format!("grillforge_agent/{}", route.alias);
         let mut agent = json!({ "model": provider_model });
         if promote_subagent {
             agent["mode"] = Value::String("primary".into());
@@ -3166,13 +3196,13 @@ async fn run_opencode_agent_runtime(
                     "npm": "@ai-sdk/anthropic",
                     "env": [],
                     "options": {
-                        "apiKey": runtime_token,
+                        "apiKey": route.runtime_token,
                         "baseURL": format!("{}/agent-runtime/v1", base_url.trim_end_matches('/'))
                     },
                     "models": {
-                        (model_route): {
-                            "id": model_route,
-                            "name": format!("GrillForge {}", model_route.trim_start_matches("grillforge/"))
+                        (&route.alias): {
+                            "id": route.alias,
+                            "name": format!("GrillForge {}", route.alias.trim_start_matches("grillforge/"))
                         }
                     }
                 }
@@ -3200,7 +3230,7 @@ async fn run_kimi_agent_runtime(
     cwd: &Path,
     agent_id: &str,
     prompt: &str,
-    managed_route: Option<&(String, String, String)>,
+    managed_route: Option<&ManagedRoute>,
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
@@ -3219,8 +3249,13 @@ async fn run_kimi_agent_runtime(
         ));
     }
     let managed_config = managed_route
-        .map(|(model_route, runtime_token, _)| {
-            KimiManagedConfigScratch::new(&source.config_root, base_url, runtime_token, model_route)
+        .map(|route| {
+            KimiManagedConfigScratch::new(
+                &source.config_root,
+                base_url,
+                &route.runtime_token,
+                &route.alias,
+            )
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
@@ -3234,9 +3269,9 @@ async fn run_kimi_agent_runtime(
     } else {
         command.args(["--agent", agent_id]);
     }
-    if let (Some((model_route, _, _)), Some(config)) = (managed_route, &managed_config) {
+    if let (Some(route), Some(config)) = (managed_route, &managed_config) {
         command
-            .args(["--model", model_route])
+            .args(["--model", &route.alias])
             .env("KIMI_CODE_HOME", config.root())
             .env("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL", "1")
             .env("GRILLFORGE_AGENT_CHILD", "1");
@@ -3252,7 +3287,7 @@ async fn run_grok_build_agent_runtime(
     cwd: &Path,
     agent_id: &str,
     prompt: &str,
-    managed_route: Option<&(String, String, String)>,
+    managed_route: Option<&ManagedRoute>,
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
@@ -3263,8 +3298,13 @@ async fn run_grok_build_agent_runtime(
         ));
     }
     let managed_config = managed_route
-        .map(|(model_route, runtime_token, _)| {
-            GrokBuildManagedConfigScratch::new(base_url, runtime_token, model_route)
+        .map(|route| {
+            GrokBuildManagedConfigScratch::new(
+                base_url,
+                &route.runtime_token,
+                &route.alias,
+                route.context_window,
+            )
         })
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
@@ -3629,13 +3669,21 @@ fn grok_build_agent_message(stdout: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "Grok Build Agent runtime returned no final Agent message".to_string())
 }
 
+/// Grok Build requires the field, so an unknown model keeps the previous default.
+const DEFAULT_GROK_BUILD_CONTEXT_WINDOW: u64 = 500_000;
+
 struct GrokBuildManagedConfigScratch {
     root: PathBuf,
     runtime_token: String,
 }
 
 impl GrokBuildManagedConfigScratch {
-    fn new(base_url: &str, runtime_token: &str, model_route: &str) -> Result<Self, String> {
+    fn new(
+        base_url: &str,
+        runtime_token: &str,
+        model_route: &str,
+        context_window: Option<u64>,
+    ) -> Result<Self, String> {
         let root = std::env::temp_dir().join(format!(
             "grillforge-grok-build-agent-{}",
             uuid::Uuid::new_v4()
@@ -3643,12 +3691,16 @@ impl GrokBuildManagedConfigScratch {
         std::fs::create_dir(&root)
             .map_err(|error| format!("could not create Grok Build Agent configuration: {error}"))?;
         let config = format!(
-            "[models]\ndefault = \"grillforge\"\nsession_summary = \"grillforge\"\n\n[model.grillforge]\nmodel = {}\nbase_url = {}\nname = \"GrillForge Agent\"\nenv_key = \"GRILLFORGE_GROK_BUILD_API_KEY\"\napi_backend = \"responses\"\ncontext_window = 500000\n",
+            "[models]\ndefault = \"grillforge\"\nsession_summary = \"grillforge\"\n\n[model.grillforge]\nmodel = {}\nbase_url = {}\nname = \"GrillForge Agent\"\nenv_key = \"GRILLFORGE_GROK_BUILD_API_KEY\"\napi_backend = \"responses\"\ncontext_window = {}\n",
             toml_edit::Value::from(model_route),
             toml_edit::Value::from(format!(
                 "{}/agent-runtime/v1",
                 base_url.trim_end_matches('/')
             )),
+            toml_edit::Value::from(
+                i64::try_from(context_window.unwrap_or(DEFAULT_GROK_BUILD_CONTEXT_WINDOW))
+                    .unwrap_or(i64::MAX),
+            ),
         );
         if let Err(error) =
             crate::storage::atomic_replace(&root.join("config.toml"), config.as_bytes())
@@ -3780,7 +3832,12 @@ struct PiManagedConfigScratch {
 }
 
 impl PiManagedConfigScratch {
-    fn new(base_url: &str, runtime_token: &str, model_route: &str) -> Result<Self, String> {
+    fn new(
+        base_url: &str,
+        runtime_token: &str,
+        model_route: &str,
+        context_window: Option<u64>,
+    ) -> Result<Self, String> {
         let root = std::env::temp_dir().join(format!(
             "grillforge-pi-managed-agent-{}",
             uuid::Uuid::new_v4()
@@ -3799,7 +3856,9 @@ impl PiManagedConfigScratch {
                         "reasoning": true,
                         "input": ["text", "image"],
                         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                        "contextWindow": 200000,
+                        // Pi requires both fields, so an unknown model keeps the
+                        // previous default rather than blocking the run.
+                        "contextWindow": context_window.unwrap_or(200_000),
                         "maxTokens": 64000
                     }]
                 }

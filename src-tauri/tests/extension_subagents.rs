@@ -26,6 +26,8 @@ fn configured_service(root: &std::path::Path) -> ControlPlaneService {
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .expect("model");
     service

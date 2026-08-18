@@ -62,6 +62,8 @@ async fn pi_route_requires_its_token_and_reaches_the_selected_provider() {
             provider_id: "deepseek".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
 
@@ -156,6 +158,8 @@ async fn claude_and_pi_routes_reach_gemini_native_through_the_shared_gateway() {
             provider_id: "gemini".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     service.set_main_model(Some("gemini-pro".into())).unwrap();
@@ -263,6 +267,8 @@ async fn installed_pi_cli_uses_its_real_auth_header_through_grillforge() {
             provider_id: "deepseek".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
 

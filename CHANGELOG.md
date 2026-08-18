@@ -4,6 +4,44 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.18] - 2026-08-18
+
+### Added
+
+- The Model Registry records a model's context window and maximum output tokens,
+  the capability metadata the architecture always assigned to it. Provider
+  synchronization fills the window from the model list when the provider
+  publishes one, and the model asset page accepts it for the providers that do
+  not. An empty value keeps the model unknown rather than inventing a number.
+
+### Fixed
+
+- An extension SubAgent no longer fails with `Prompt is too long` on a model
+  whose window differs from the client's assumption. Claude Code assumes 200000
+  tokens for a model it does not recognize, so a 262144-token model was cut off
+  well below its real limit. A managed child now receives the recorded window
+  through `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
+- Pi, its extension children, and Grok Build read the same recorded window
+  instead of each carrying its own constant. Their previous constants remain
+  only as the fallback for a model whose window is still unknown, because those
+  clients require the field.
+- A re-synchronization no longer discards a context window entered by hand; it
+  only fills a gap.
+
+### Changed
+
+- The managed route a child runtime receives is a named record rather than a
+  three-element tuple, which keeps the runtime signatures within their argument
+  budget while carrying the window.
+
+### Verification
+
+- The override was confirmed against the installed Claude Code CLI before being
+  built on: an unset window reports 200000 and a set one reports the exact value.
+- Full Rust tests, strict Clippy, and frontend tests pass. A timing budget in the
+  parallel-extension test was widened after added load made a correct run fail
+  intermittently; the overlap it asserts is still enforced by the child barrier.
+
 ## [0.2.17] - 2026-08-18
 
 ### Changed

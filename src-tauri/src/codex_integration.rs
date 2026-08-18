@@ -254,6 +254,8 @@ mod tests {
                 provider_id: "provider".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .unwrap();
         control.set_codex_main_model(Some("coder".into())).unwrap();

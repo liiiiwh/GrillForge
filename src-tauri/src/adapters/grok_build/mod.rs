@@ -13,7 +13,7 @@ use url::Url;
 
 const SNAPSHOT_FILE: &str = "grok-build.snapshot.json";
 const PROFILE: &str = "grillforge";
-const DEFAULT_CONTEXT_WINDOW: i64 = 500_000;
+const DEFAULT_CONTEXT_WINDOW: u64 = 500_000;
 const CLI_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +153,7 @@ pub struct GrokBuildRequest {
     api_key: String,
     model: String,
     name: String,
+    context_window: u64,
 }
 
 impl GrokBuildRequest {
@@ -161,6 +162,7 @@ impl GrokBuildRequest {
         api_key: impl Into<String>,
         model: impl Into<String>,
         name: impl Into<String>,
+        context_window: Option<u64>,
     ) -> Result<Self, GrokBuildAdapterError> {
         let base_url = base_url.into();
         validate_base_url(&base_url)?;
@@ -175,6 +177,8 @@ impl GrokBuildRequest {
             api_key,
             model,
             name,
+            // Grok Build requires the field, so an unknown model keeps the default.
+            context_window: context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
         })
     }
 }
@@ -346,7 +350,8 @@ fn project(
     profile["name"] = value(&request.name);
     profile["api_key"] = value(&request.api_key);
     profile["api_backend"] = value("responses");
-    profile["context_window"] = value(DEFAULT_CONTEXT_WINDOW);
+    profile["context_window"] =
+        value(i64::try_from(request.context_window).unwrap_or(i64::MAX));
     model_table[PROFILE] = Item::Table(profile);
     Ok(document.to_string().into_bytes())
 }

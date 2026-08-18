@@ -484,6 +484,8 @@ async fn sync_records_observed_chat_reasoning_before_the_model_is_routed() {
             provider_id: "reasoning-vendor".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .expect("existing model without protocol capability");
     let state = service
@@ -673,6 +675,8 @@ fn manually_added_models_require_explicit_verified_native_protocols() {
         provider_id: "provider".into(),
         capabilities: vec![],
         protocol_capabilities: vec![],
+            context_window: None,
+        max_output_tokens: None,
     };
 
     assert!(
@@ -727,6 +731,8 @@ fn saving_or_updating_a_provider_does_not_claim_unprobed_protocol_support() {
                 provider_id: "provider".into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             },
             native_protocols: vec![NativeProtocol::OpenAiChat],
         })
@@ -799,6 +805,8 @@ async fn model_connection_uses_the_models_verified_protocol_not_the_provider_def
             provider_id: "deepseek".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .expect("model");
     service
@@ -892,6 +900,8 @@ async fn stale_model_protocol_facts_are_not_silently_overridden() {
             provider_id: "deepseek".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     service
@@ -917,4 +927,81 @@ async fn stale_model_protocol_facts_are_not_silently_overridden() {
         .expect_err("stale explicit facts must fail instead of using hidden compatibility data");
     assert!(error.contains("pro does not support Responses"));
     assert!(calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sync_records_a_reported_context_window_and_never_overwrites_an_edited_one() {
+    async fn models() -> Json<Value> {
+        Json(json!({"data": [
+            {"id": "reports", "context_length": 262144},
+            {"id": "silent"}
+        ]}))
+    }
+    async fn probe() -> Json<Value> {
+        Json(json!({"id":"chat","object":"chat.completion",
+            "choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}))
+    }
+    let upstream = Router::new()
+        .route("/v1/models", get(models))
+        .route("/v1/chat/completions", post(probe))
+        .route("/v1/responses", post(probe))
+        .route("/v1/messages", post(probe));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let root = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(root.path());
+    service
+        .save_provider(ProviderInput {
+            id: "vendor".into(),
+            name: "Vendor".into(),
+            protocol: Protocol::OpenAiChatCompletions,
+            endpoint: format!("http://{address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+
+    let state = service.sync_provider_models("vendor").await.expect("sync");
+    let window = |state: &grillforge_lib::application::ControlPlaneState, upstream_id: &str| {
+        state
+            .models
+            .iter()
+            .find(|model| model.upstream_id == upstream_id)
+            .unwrap_or_else(|| panic!("model {upstream_id}"))
+            .context_window
+    };
+    assert_eq!(window(&state, "reports"), Some(262144));
+    // A provider that publishes nothing leaves the model unknown rather than
+    // handing a client an invented window.
+    assert_eq!(window(&state, "silent"), None);
+
+    // The operator fills in the one the provider does not publish.
+    let silent = state
+        .models
+        .iter()
+        .find(|model| model.upstream_id == "silent")
+        .unwrap()
+        .clone();
+    let state = service
+        .update_model(ModelInput {
+            id: silent.id.clone(),
+            name: silent.name.clone(),
+            upstream_id: silent.upstream_id.clone(),
+            provider_id: silent.provider_id.clone(),
+            capabilities: silent.capabilities.clone(),
+            protocol_capabilities: silent.protocol_capabilities.clone(),
+            context_window: Some(64000),
+            max_output_tokens: Some(8192),
+        })
+        .expect("operator supplied window");
+    assert_eq!(window(&state, "silent"), Some(64000));
+
+    let state = service.sync_provider_models("vendor").await.expect("resync");
+    assert_eq!(window(&state, "silent"), Some(64000), "a re-sync must not discard it");
+    assert_eq!(window(&state, "reports"), Some(262144));
 }

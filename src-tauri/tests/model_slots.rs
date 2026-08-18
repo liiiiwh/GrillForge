@@ -23,6 +23,8 @@ fn model() -> ModelInput {
         provider_id: "local".into(),
         capabilities: vec!["review".into()],
         protocol_capabilities: vec![],
+            context_window: None,
+        max_output_tokens: None,
     }
 }
 

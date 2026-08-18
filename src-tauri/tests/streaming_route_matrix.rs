@@ -238,6 +238,8 @@ async fn every_ingress_streams_text_and_tools_through_every_native_protocol() {
                 provider_id: id.into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
+                            context_window: None,
+                max_output_tokens: None,
             })
             .unwrap();
         control

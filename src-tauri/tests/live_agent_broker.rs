@@ -158,6 +158,8 @@ async fn current_gemini_cli_runs_the_exact_project_agent_through_the_gateway() {
             provider_id: "local-anthropic".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(&grillforge_root);
@@ -312,6 +314,8 @@ async fn current_grok_build_cli_runs_an_exact_managed_agent_through_responses() 
             provider_id: "local-responses".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(&grillforge_root);
@@ -429,6 +433,8 @@ async fn installed_codex_runtime_routes_an_external_model_without_native_spawn_v
             provider_id: "local-responses".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let codex = grillforge_lib::adapters::codex::detect_codex_cli()
@@ -574,6 +580,8 @@ async fn installed_claude_runtime_executes_its_own_tool_loop_through_the_mcp_bro
             provider_id: "local-chat".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![ProtocolCapability::ReasoningEffort],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(&grillforge_root);
@@ -677,6 +685,8 @@ async fn installed_claude_runtime_completes_through_the_real_kimi_chat_stream() 
             provider_id: "kimi-live".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![ProtocolCapability::ReasoningContent],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
 
@@ -777,6 +787,8 @@ async fn installed_claude_runtime_executes_a_real_read_tool_through_kimi_chat() 
             provider_id: "kimi-live".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![ProtocolCapability::ReasoningContent],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
 
@@ -902,6 +914,8 @@ async fn current_opencode_cli_runs_an_exact_custom_subagent_through_the_broker()
             provider_id: "local-chat".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(&grillforge_root);
@@ -1133,6 +1147,8 @@ async fn current_kimi_runtime_completes_a_managed_agent_through_the_broker() {
             provider_id: "local-chat".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .unwrap();
     let gateway = Gateway::new(&grillforge_root);

@@ -74,6 +74,12 @@ pub struct ModelRecord {
     pub native_protocols: Option<Vec<NativeProtocol>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsupported_native_protocols: Vec<NativeProtocol>,
+    /// Known upstream limits. Absent means unknown: a client keeps its own
+    /// default rather than being handed an invented number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

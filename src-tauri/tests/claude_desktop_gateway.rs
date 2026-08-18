@@ -49,6 +49,8 @@ fn save_provider_and_model(
             provider_id: "provider".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
+                    context_window: None,
+            max_output_tokens: None,
         })
         .expect("model");
 }
