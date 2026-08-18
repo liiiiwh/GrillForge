@@ -27,8 +27,11 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::sync::mpsc;
 use url::Url;
 
 pub const DEFAULT_GATEWAY_ADDRESS: &str = "127.0.0.1:15721";
@@ -2482,14 +2485,33 @@ fn run_agent_progress_response(
             }
         })));
 
-        let task = run_agent(active, arguments);
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        let task = run_agent_with_progress(active, arguments, progress_tx);
         tokio::pin!(task);
         let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
         heartbeat.tick().await;
         let mut progress = 1_u64;
+        let mut progress_open = true;
         let result = loop {
             tokio::select! {
                 result = &mut task => break result,
+                message = progress_rx.recv(), if progress_open => {
+                    match message {
+                        Some(message) => {
+                            progress += 1;
+                            yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
+                                "jsonrpc": "2.0",
+                                "method": "notifications/progress",
+                                "params": {
+                                    "progressToken": progress_token,
+                                    "progress": progress,
+                                    "message": message
+                                }
+                            })));
+                        }
+                        None => progress_open = false,
+                    }
+                }
                 _ = heartbeat.tick() => {
                     progress += 1;
                     yield Ok::<Bytes, Infallible>(mcp_sse_event(json!({
@@ -2583,6 +2605,12 @@ struct AgentInvocation {
     source_runtime: AgentSourceRuntime,
 }
 
+#[derive(Clone)]
+struct AgentRunOptions {
+    web_access: bool,
+    progress: Option<mpsc::UnboundedSender<String>>,
+}
+
 fn prepare_agent_invocation(
     active: &ActiveAgentBroker,
     arguments: Value,
@@ -2642,12 +2670,22 @@ fn prepare_agent_invocation(
 
 async fn run_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
     let invocation = prepare_agent_invocation(&active, arguments)?;
-    execute_agent(active, invocation).await
+    execute_agent(active, invocation, None).await
+}
+
+async fn run_agent_with_progress(
+    active: ActiveAgentBroker,
+    arguments: Value,
+    progress: mpsc::UnboundedSender<String>,
+) -> Result<String, String> {
+    let invocation = prepare_agent_invocation(&active, arguments)?;
+    execute_agent(active, invocation, Some(progress)).await
 }
 
 async fn execute_agent(
     active: ActiveAgentBroker,
     invocation: AgentInvocation,
+    progress: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<String, String> {
     let AgentInvocation {
         cwd,
@@ -2681,6 +2719,10 @@ async fn execute_agent(
     let cleanup_token = managed_route
         .as_ref()
         .map(|(_, runtime_token, _)| runtime_token.clone());
+    let options = AgentRunOptions {
+        web_access,
+        progress,
+    };
     let output = match route.source_client_id.as_str() {
         "claude_code" => {
             run_claude_agent_runtime(
@@ -2690,7 +2732,7 @@ async fn execute_agent(
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
-                web_access,
+                &options,
             )
             .await
         }
@@ -2702,7 +2744,7 @@ async fn execute_agent(
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
-                web_access,
+                &options,
             )
             .await
         }
@@ -2714,7 +2756,7 @@ async fn execute_agent(
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
-                web_access,
+                &options,
             )
             .await
         }
@@ -2726,7 +2768,7 @@ async fn execute_agent(
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
-                web_access,
+                &options,
             )
             .await
         }
@@ -2738,7 +2780,7 @@ async fn execute_agent(
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
-                web_access,
+                &options,
             )
             .await
         }
@@ -2750,7 +2792,7 @@ async fn execute_agent(
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
-                web_access,
+                &options,
             )
             .await
         }
@@ -2762,7 +2804,7 @@ async fn execute_agent(
                 &prompt,
                 managed_route.as_ref(),
                 &active.base_url,
-                web_access,
+                &options,
             )
             .await
         }
@@ -2790,14 +2832,7 @@ async fn execute_agent(
         "grok_build" => return grok_build_agent_message(&output.stdout),
         _ => {}
     }
-    let response: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| "Claude Code Agent runtime returned invalid JSON".to_string())?;
-    response
-        .get("result")
-        .and_then(Value::as_str)
-        .filter(|result| !result.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "Claude Code Agent runtime returned no result".to_string())
+    claude_last_agent_message(&output.stdout)
 }
 
 async fn run_gemini_agent_runtime(
@@ -2807,7 +2842,7 @@ async fn run_gemini_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
-    web_access: bool,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
     let discovered =
         crate::local_agents::discover_gemini_agents_for_project(&source.config_root, cwd)?;
@@ -2816,7 +2851,7 @@ async fn run_gemini_agent_runtime(
             "Gemini Agent does not exist in the user or project configuration: {agent_id}"
         ));
     }
-    if web_access {
+    if options.web_access {
         return Err(
             "Gemini CLI does not expose a per-Agent scoped web permission for this runtime".into(),
         );
@@ -2848,7 +2883,7 @@ async fn run_gemini_agent_runtime(
             )
             .env("GRILLFORGE_AGENT_CHILD", "1");
     }
-    let output = run_agent_command(command, "Gemini CLI").await;
+    let output = run_agent_command(command, "Gemini CLI", options.progress.clone()).await;
     drop(managed_config);
     output
 }
@@ -2860,12 +2895,12 @@ async fn run_claude_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
-    web_access: bool,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
     let prompt = format!("Working directory: {}\n\n{prompt}", cwd.display());
     let mut command = tokio::process::Command::new(&source.runtime);
     command.current_dir(cwd).args(["--agent", agent_id]);
-    if web_access {
+    if options.web_access {
         command.args(["--allowedTools", "WebSearch,WebFetch"]);
     }
     if let Some((model_route, _, _)) = managed_route {
@@ -2874,7 +2909,8 @@ async fn run_claude_agent_runtime(
     command.args([
         "-p",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--no-session-persistence",
         &prompt,
     ]);
@@ -2904,7 +2940,7 @@ async fn run_claude_agent_runtime(
             .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .env("GRILLFORGE_AGENT_CHILD", "1");
     }
-    run_agent_command(command, "Claude Code").await
+    run_agent_command(command, "Claude Code", options.progress.clone()).await
 }
 
 async fn run_codex_agent_runtime(
@@ -2914,7 +2950,7 @@ async fn run_codex_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
-    web_access: bool,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
     let custom_agent_file =
         crate::local_agents::resolve_codex_custom_agent_file(&source.config_root, cwd, agent_id)?;
@@ -2934,7 +2970,8 @@ async fn run_codex_agent_runtime(
             agent_id,
             prompt,
             custom_agent_file.as_deref(),
-            web_access,
+            options.web_access,
+            options.progress.clone(),
         )
         .await;
     }
@@ -2944,7 +2981,7 @@ async fn run_codex_agent_runtime(
         ));
     }
     let mut command = tokio::process::Command::new(&source.runtime);
-    if web_access {
+    if options.web_access {
         command.arg("--search");
     }
     command
@@ -2982,7 +3019,7 @@ async fn run_codex_agent_runtime(
         Some(instructions) => format!("{instructions}\n\nTask:\n{prompt}"),
         None => prompt.to_string(),
     });
-    run_agent_command(command, "Codex").await
+    run_agent_command(command, "Codex", options.progress.clone()).await
 }
 
 async fn run_native_codex_subagent_runtime(
@@ -2992,6 +3029,7 @@ async fn run_native_codex_subagent_runtime(
     prompt: &str,
     custom_agent_file: Option<&Path>,
     web_access: bool,
+    progress: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<std::process::Output, String> {
     let mut command = tokio::process::Command::new(&source.runtime);
     if web_access {
@@ -3027,7 +3065,7 @@ async fn run_native_codex_subagent_runtime(
     command.arg(format!(
         "Use the Codex collaboration spawn_agent tool exactly once with agent_type {agent_id} and fork_turns none. Do not perform the task in the parent. Send the child this complete task:\n\n{prompt}\n\nWait for that child and return its final answer verbatim. If that exact agent_type cannot be selected, return an error instead of spawning a generic Agent."
     ));
-    run_agent_command(command, "Codex").await
+    run_agent_command(command, "Codex", progress).await
 }
 
 async fn run_pi_agent_runtime(
@@ -3037,7 +3075,7 @@ async fn run_pi_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
-    web_access: bool,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
     let agent_file =
         crate::local_agents::resolve_pi_agent_file(&source.config_root, cwd, agent_id)?
@@ -3045,7 +3083,7 @@ async fn run_pi_agent_runtime(
                 format!("Pi Agent does not exist in the user or project configuration: {agent_id}")
             })?;
     let agent = crate::local_agents::read_pi_agent_definition(&agent_file)?;
-    if web_access {
+    if options.web_access {
         return Err(
             "Pi CLI does not expose a scoped native web permission; GrillForge will not grant unrestricted shell network access"
                 .into(),
@@ -3081,7 +3119,7 @@ async fn run_pi_agent_runtime(
         command.arg("--append-system-prompt").arg(system_prompt);
     }
     command.arg(format!("Task: {prompt}"));
-    let output = run_agent_command(command, "Pi").await;
+    let output = run_agent_command(command, "Pi", options.progress.clone()).await;
     drop(scratch);
     drop(managed_config);
     output
@@ -3094,9 +3132,9 @@ async fn run_opencode_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
-    web_access: bool,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
-    if web_access {
+    if options.web_access {
         return Err(
             "OpenCode CLI does not expose a scoped native web permission for this Agent runtime"
                 .into(),
@@ -3160,7 +3198,7 @@ async fn run_opencode_agent_runtime(
         );
     }
     command.args(["--agent", agent_id]).arg(prompt);
-    run_agent_command(command, "OpenCode").await
+    run_agent_command(command, "OpenCode", options.progress.clone()).await
 }
 
 async fn run_kimi_agent_runtime(
@@ -3170,9 +3208,9 @@ async fn run_kimi_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
-    web_access: bool,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
-    if web_access {
+    if options.web_access {
         return Err(
             "Kimi Code CLI does not expose a scoped native web permission for this Agent runtime"
                 .into(),
@@ -3210,7 +3248,7 @@ async fn run_kimi_agent_runtime(
             .env("GRILLFORGE_AGENT_CHILD", "1");
     }
     command.args(["--prompt", prompt, "--output-format", "stream-json"]);
-    let output = run_agent_command(command, "Kimi Code").await;
+    let output = run_agent_command(command, "Kimi Code", options.progress.clone()).await;
     drop(managed_config);
     output
 }
@@ -3222,7 +3260,7 @@ async fn run_grok_build_agent_runtime(
     prompt: &str,
     managed_route: Option<&(String, String, String)>,
     base_url: &str,
-    web_access: bool,
+    options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
     let discovered = crate::local_agents::discover_grok_build_agents(&source.runtime, cwd)?;
     if !discovered.iter().any(|agent| agent.agent_id == agent_id) {
@@ -3237,7 +3275,7 @@ async fn run_grok_build_agent_runtime(
         .transpose()?;
     let mut command = tokio::process::Command::new(&source.runtime);
     command.current_dir(cwd).args(["--agent", agent_id]);
-    if !web_access {
+    if !options.web_access {
         command.arg("--disable-web-search");
     }
     command
@@ -3253,7 +3291,7 @@ async fn run_grok_build_agent_runtime(
     } else {
         command.env("GROK_HOME", &source.config_root);
     }
-    let output = run_agent_command(command, "Grok Build").await;
+    let output = run_agent_command(command, "Grok Build", options.progress.clone()).await;
     drop(managed_config);
     output
 }
@@ -3261,15 +3299,159 @@ async fn run_grok_build_agent_runtime(
 async fn run_agent_command(
     mut command: tokio::process::Command,
     runtime_name: &str,
+    progress: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<std::process::Output, String> {
-    command.kill_on_drop(true);
+    command
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let timeout_name = runtime_name.to_string();
+    let runtime_name = timeout_name.clone();
     tokio::time::timeout(
         Duration::from_secs(AGENT_RUNTIME_TIMEOUT_SECONDS),
-        command.output(),
+        async move {
+            let mut child = command.spawn().map_err(|error| {
+                format!("could not start {runtime_name} Agent runtime: {error}")
+            })?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| format!("could not capture {runtime_name} Agent stdout"))?;
+            let mut stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| format!("could not capture {runtime_name} Agent stderr"))?;
+            let stderr_task = tokio::spawn(async move {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+            });
+            let mut reader = BufReader::new(stdout);
+            let mut stdout = Vec::new();
+            let mut line = Vec::new();
+            let mut last_message = None;
+            let mut last_sent = tokio::time::Instant::now() - Duration::from_secs(1);
+            loop {
+                line.clear();
+                let read = reader.read_until(b'\n', &mut line).await.map_err(|error| {
+                    format!("could not read {runtime_name} Agent stdout: {error}")
+                })?;
+                if read == 0 {
+                    break;
+                }
+                stdout.extend_from_slice(&line);
+                let Some(sender) = progress.as_ref() else {
+                    continue;
+                };
+                let Some(message) = agent_progress_message(&runtime_name, &line) else {
+                    continue;
+                };
+                if last_message.as_deref() == Some(message.as_str())
+                    || last_sent.elapsed() < Duration::from_millis(500)
+                {
+                    continue;
+                }
+                let _ = sender.send(message.clone());
+                last_message = Some(message);
+                last_sent = tokio::time::Instant::now();
+            }
+            let status = child.wait().await.map_err(|error| {
+                format!("could not wait for {runtime_name} Agent runtime: {error}")
+            })?;
+            let stderr = stderr_task
+                .await
+                .map_err(|error| format!("could not join {runtime_name} stderr reader: {error}"))?
+                .map_err(|error| format!("could not read {runtime_name} Agent stderr: {error}"))?;
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
+        },
     )
     .await
-    .map_err(|_| format!("{runtime_name} Agent runtime exceeded three hours"))?
-    .map_err(|error| format!("could not start {runtime_name} Agent runtime: {error}"))
+    .map_err(|_| format!("{timeout_name} Agent runtime exceeded three hours"))?
+}
+
+fn agent_progress_message(runtime_name: &str, line: &[u8]) -> Option<String> {
+    let event: Value = serde_json::from_slice(line).ok()?;
+    if let Some(content) = event.pointer("/message/content").and_then(Value::as_array) {
+        if let Some(tool) = content.iter().find(|block| {
+            matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("tool_use" | "toolCall")
+            )
+        }) {
+            let name = tool
+                .get("name")
+                .or_else(|| tool.get("toolName"))
+                .and_then(Value::as_str)?;
+            return Some(format!("{runtime_name} 正在调用 {name}"));
+        }
+        if let Some(text) = content
+            .iter()
+            .find_map(|block| block.get("text").and_then(Value::as_str))
+        {
+            return progress_excerpt(runtime_name, text);
+        }
+    }
+    if let Some(item) = event.get("item") {
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
+        if item_type == "agent_message" {
+            return item
+                .get("text")
+                .and_then(Value::as_str)
+                .and_then(|text| progress_excerpt(runtime_name, text));
+        }
+        if matches!(
+            item_type,
+            "command_execution" | "mcp_tool_call" | "web_search"
+        ) {
+            let detail = item
+                .get("command")
+                .or_else(|| item.get("tool"))
+                .or_else(|| item.get("name"))
+                .or_else(|| item.get("query"))
+                .and_then(Value::as_str)
+                .unwrap_or(item_type);
+            return progress_excerpt(runtime_name, &format!("正在执行 {detail}"));
+        }
+    }
+    if event.get("role").and_then(Value::as_str) == Some("assistant") {
+        if let Some(text) = event.get("content").and_then(Value::as_str) {
+            return progress_excerpt(runtime_name, text);
+        }
+    }
+    None
+}
+
+fn progress_excerpt(runtime_name: &str, text: &str) -> Option<String> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    let mut excerpt = text.chars().take(280).collect::<String>();
+    if text.chars().count() > 280 {
+        excerpt.push('…');
+    }
+    Some(format!("{runtime_name}: {excerpt}"))
+}
+
+fn claude_last_agent_message(stdout: &[u8]) -> Result<String, String> {
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|_| "Claude Code Agent runtime returned non-UTF-8 output".to_string())?;
+    let mut result = None;
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = serde_json::from_str(line)
+            .map_err(|_| "Claude Code Agent runtime returned invalid JSONL".to_string())?;
+        if let Some(value) = event
+            .get("result")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            result = Some(value.to_string());
+        }
+    }
+    result.ok_or_else(|| "Claude Code Agent runtime returned no result".to_string())
 }
 
 fn codex_agent_developer_instructions(path: &Path) -> Result<String, String> {

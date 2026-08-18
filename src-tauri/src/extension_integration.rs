@@ -384,6 +384,7 @@ impl ExtensionIntegrationService {
                     "Pi needs pi-mcp-extension before it can use extension SubAgents".into(),
                 );
             }
+            crate::pi_mcp_extension::ensure_pi_mcp_progress_adapter(settings)?;
         }
         let mut routes = Vec::with_capacity(ids.len());
         for id in ids {

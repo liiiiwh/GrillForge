@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use url::Url;
 
 const SNAPSHOT_VERSION: u8 = 3;
+const PI_REQUEST_TIMEOUT_MS: u64 = 3 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpClientFormat {
@@ -94,6 +95,16 @@ struct MountSnapshot {
     version: u8,
     mounted_url: String,
     entry: MountEntrySnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pi_request_timeout: Option<PiRequestTimeoutSnapshot>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PiRequestTimeoutSnapshot {
+    settings_existed: bool,
+    request_timeout_existed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    original: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -149,10 +160,18 @@ impl McpMountManager {
         let snapshot_path = self.snapshot_path(client_id);
         let current = read_optional(&target.config_path)?;
         let previous_snapshot = read_optional(&snapshot_path)?;
-        let snapshot = match read_optional(&snapshot_path)? {
+        let mut snapshot = match read_optional(&snapshot_path)? {
             Some(bytes) => parse_snapshot(&snapshot_path, &bytes)?,
             None => capture_mount_snapshot(target, current.as_deref(), url)?,
         };
+        if target.format == McpClientFormat::PiExtensionJson
+            && snapshot.pi_request_timeout.is_none()
+        {
+            snapshot.pi_request_timeout = Some(capture_pi_request_timeout(
+                current.as_deref(),
+                &target.config_path,
+            )?);
+        }
         let updated = match target.format {
             McpClientFormat::ClaudeJson => update_claude_json(
                 current.as_deref(),
@@ -306,12 +325,7 @@ impl McpMountManager {
             };
             let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
             let current = read_optional(&target.config_path)?;
-            let expected = remove_mount(
-                target,
-                current.as_deref(),
-                &snapshot.entry,
-                &snapshot.mounted_url,
-            )?;
+            let expected = remove_mount(target, current.as_deref(), &snapshot)?;
             if current != expected {
                 restore_optional(&target.config_path, expected.as_deref())?;
             }
@@ -370,7 +384,12 @@ impl McpMountManager {
                 == Some(snapshot.mounted_url.as_str())
         };
         let hook_mounted = self.route_hook_is_mounted(target)?;
-        let mounted = mounted && hook_mounted;
+        let pi_timeout_mounted = if target.format == McpClientFormat::PiExtensionJson {
+            pi_request_timeout_is_mounted(current.as_deref(), &target.config_path)?
+        } else {
+            true
+        };
+        let mounted = mounted && hook_mounted && pi_timeout_mounted;
         Ok(McpMountStatus {
             mounted,
             configuration_changed: !mounted,
@@ -871,53 +890,58 @@ fn capture_mount_snapshot(
         version: SNAPSHOT_VERSION,
         mounted_url: mounted_url.to_string(),
         entry,
+        pi_request_timeout: if target.format == McpClientFormat::PiExtensionJson {
+            Some(capture_pi_request_timeout(current, &target.config_path)?)
+        } else {
+            None
+        },
     })
 }
 
 fn remove_mount(
     target: &McpMountTarget,
     current: Option<&[u8]>,
-    snapshot: &MountEntrySnapshot,
-    mounted_url: &str,
+    snapshot: &MountSnapshot,
 ) -> Result<Option<Vec<u8>>, String> {
     if target.format == McpClientFormat::CodexToml {
         return remove_codex_mount(
             current,
             &target.config_path,
             &target.client_id,
-            snapshot,
-            mounted_url,
+            &snapshot.entry,
+            &snapshot.mounted_url,
         );
     }
     let path = &target.config_path;
     let mut root = parse_json_object(current, path)?;
     let section = json_section(target.format);
-    let Some(section_value) = root.get_mut(section) else {
-        return Ok(current.map(<[u8]>::to_vec));
-    };
-    let servers = section_value
-        .as_object_mut()
-        .ok_or_else(|| format!("{section} must be an object: {}", path.display()))?;
-    let name = server_name(&target.client_id);
-    let owned = servers
-        .get(&name)
-        .and_then(|entry| mounted_json_url(target.format, entry))
-        == Some(mounted_url);
-    if !owned {
-        return Ok(current.map(<[u8]>::to_vec));
-    }
-    match &snapshot.original_json {
-        Some(original) => {
-            servers.insert(name, original.clone());
+    if let Some(section_value) = root.get_mut(section) {
+        let servers = section_value
+            .as_object_mut()
+            .ok_or_else(|| format!("{section} must be an object: {}", path.display()))?;
+        let name = server_name(&target.client_id);
+        let owned = servers
+            .get(&name)
+            .and_then(|entry| mounted_json_url(target.format, entry))
+            == Some(snapshot.mounted_url.as_str());
+        if owned {
+            match &snapshot.entry.original_json {
+                Some(original) => {
+                    servers.insert(name, original.clone());
+                }
+                None => {
+                    servers.remove(&name);
+                }
+            }
+            if !snapshot.entry.section_existed && servers.is_empty() {
+                root.remove(section);
+            }
         }
-        None => {
-            servers.remove(&name);
-        }
     }
-    if !snapshot.section_existed && servers.is_empty() {
-        root.remove(section);
+    if target.format == McpClientFormat::PiExtensionJson {
+        restore_pi_request_timeout(&mut root, snapshot.pi_request_timeout.as_ref(), path)?;
     }
-    if !snapshot.file_existed && root.is_empty() {
+    if !snapshot.entry.file_existed && root.is_empty() {
         return Ok(None);
     }
     serde_json::to_vec_pretty(&Value::Object(root))
@@ -1093,6 +1117,9 @@ fn update_remote_json(
     shape: JsonMcpShape,
 ) -> Result<Vec<u8>, String> {
     let mut root = parse_json_object(current, path)?;
+    if matches!(shape, JsonMcpShape::PiExtension) {
+        set_pi_request_timeout(&mut root, path)?;
+    }
     let (section, url_key) = match shape {
         JsonMcpShape::Gemini => ("mcpServers", "httpUrl"),
         JsonMcpShape::OpenCode => ("mcp", "url"),
@@ -1141,6 +1168,100 @@ fn update_remote_json(
     servers.insert(name, entry);
     serde_json::to_vec_pretty(&Value::Object(root))
         .map_err(|error| format!("could not serialize {}: {error}", path.display()))
+}
+
+fn capture_pi_request_timeout(
+    current: Option<&[u8]>,
+    path: &Path,
+) -> Result<PiRequestTimeoutSnapshot, String> {
+    let root = parse_json_object(current, path)?;
+    let settings_existed = root.contains_key("settings");
+    let settings = match root.get("settings") {
+        Some(value) => Some(
+            value
+                .as_object()
+                .ok_or_else(|| format!("settings must be an object: {}", path.display()))?,
+        ),
+        None => None,
+    };
+    let original = settings.and_then(|settings| settings.get("requestTimeoutMs").cloned());
+    if let Some(value) = original.as_ref() {
+        validate_pi_request_timeout(value, path)?;
+    }
+    Ok(PiRequestTimeoutSnapshot {
+        settings_existed,
+        request_timeout_existed: original.is_some(),
+        original,
+    })
+}
+
+fn set_pi_request_timeout(
+    root: &mut serde_json::Map<String, Value>,
+    path: &Path,
+) -> Result<(), String> {
+    let settings = root
+        .entry("settings")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| format!("settings must be an object: {}", path.display()))?;
+    if let Some(value) = settings.get("requestTimeoutMs") {
+        validate_pi_request_timeout(value, path)?;
+    }
+    settings.insert("requestTimeoutMs".into(), PI_REQUEST_TIMEOUT_MS.into());
+    Ok(())
+}
+
+fn restore_pi_request_timeout(
+    root: &mut serde_json::Map<String, Value>,
+    snapshot: Option<&PiRequestTimeoutSnapshot>,
+    path: &Path,
+) -> Result<(), String> {
+    let Some(snapshot) = snapshot else {
+        return Ok(());
+    };
+    let Some(settings_value) = root.get_mut("settings") else {
+        return Ok(());
+    };
+    let settings = settings_value
+        .as_object_mut()
+        .ok_or_else(|| format!("settings must be an object: {}", path.display()))?;
+    if settings.get("requestTimeoutMs").and_then(Value::as_u64) != Some(PI_REQUEST_TIMEOUT_MS) {
+        return Ok(());
+    }
+    if snapshot.request_timeout_existed {
+        let original = snapshot
+            .original
+            .clone()
+            .ok_or_else(|| format!("invalid Pi MCP timeout snapshot for {}", path.display()))?;
+        settings.insert("requestTimeoutMs".into(), original);
+    } else {
+        settings.remove("requestTimeoutMs");
+    }
+    if !snapshot.settings_existed && settings.is_empty() {
+        root.remove("settings");
+    }
+    Ok(())
+}
+
+fn pi_request_timeout_is_mounted(current: Option<&[u8]>, path: &Path) -> Result<bool, String> {
+    let root = parse_json_object(current, path)?;
+    Ok(root
+        .get("settings")
+        .and_then(Value::as_object)
+        .and_then(|settings| settings.get("requestTimeoutMs"))
+        .and_then(Value::as_u64)
+        == Some(PI_REQUEST_TIMEOUT_MS))
+}
+
+fn validate_pi_request_timeout(value: &Value, path: &Path) -> Result<(), String> {
+    if value.as_f64().is_some_and(|timeout| timeout > 0.0) {
+        Ok(())
+    } else {
+        Err(format!(
+            "settings.requestTimeoutMs must be a positive number: {}",
+            path.display()
+        ))
+    }
 }
 
 fn parse_json_object(

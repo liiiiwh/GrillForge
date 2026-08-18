@@ -1,9 +1,59 @@
 use grillforge_lib::pi_mcp_extension::{
-    PI_MCP_EXTENSION_SOURCE, install_pi_mcp_extension_with, install_pi_mcp_extension_with_timeout,
-    pi_mcp_extension_status_at,
+    PI_MCP_EXTENSION_SOURCE, ensure_pi_mcp_progress_adapter, install_pi_mcp_extension_with,
+    install_pi_mcp_extension_with_timeout, pi_mcp_extension_status_at,
 };
 use std::fs;
 use std::time::Duration;
+
+fn upstream_fixture(settings: &std::path::Path) {
+    let agent_root = settings.parent().unwrap();
+    for path in [
+        agent_root.join("npm/node_modules/pi-mcp-extension/src/index.ts"),
+        agent_root.join("npm/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js"),
+    ] {
+        fs::create_dir_all(path.parent().unwrap()).expect("fixture parent");
+        fs::write(path, "export default () => {};\n").expect("fixture source");
+    }
+}
+
+#[test]
+fn progress_adapter_disables_the_upstream_entrypoint_without_modifying_node_modules() {
+    let root = tempfile::tempdir().expect("root");
+    let settings = root.path().join("settings.json");
+    upstream_fixture(&settings);
+    fs::write(
+        &settings,
+        format!(r#"{{"theme":"dark","packages":["npm:other","{PI_MCP_EXTENSION_SOURCE}"]}}"#),
+    )
+    .expect("settings");
+    let upstream_before = fs::read(
+        root.path()
+            .join("npm/node_modules/pi-mcp-extension/src/index.ts"),
+    )
+    .expect("upstream");
+
+    ensure_pi_mcp_progress_adapter(&settings).expect("adapter");
+    ensure_pi_mcp_progress_adapter(&settings).expect("idempotent adapter");
+
+    let active: serde_json::Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    assert_eq!(active["theme"], "dark");
+    assert_eq!(active["packages"][0], "npm:other");
+    assert_eq!(
+        active["packages"][1],
+        serde_json::json!({"source": PI_MCP_EXTENSION_SOURCE, "autoload": false})
+    );
+    let adapter_root = root.path().join("extensions/grillforge-mcp-progress");
+    assert!(adapter_root.join("index.ts").is_file());
+    assert!(adapter_root.join("progress-adapter.mjs").is_file());
+    assert_eq!(
+        fs::read(
+            root.path()
+                .join("npm/node_modules/pi-mcp-extension/src/index.ts")
+        )
+        .unwrap(),
+        upstream_before
+    );
+}
 
 #[test]
 fn status_only_reports_the_exact_reviewed_pi_mcp_package() {
@@ -29,6 +79,7 @@ fn one_click_install_uses_the_selected_working_pi_cli_and_rechecks_settings() {
 
     let root = tempfile::tempdir().expect("root");
     let settings = root.path().join("settings.json");
+    upstream_fixture(&settings);
     let args = root.path().join("args.txt");
     let cli = root.path().join("pi");
     fs::write(
@@ -63,6 +114,7 @@ fn one_click_install_exposes_the_selected_pi_runtime_node_to_env_shebangs() {
     let bin = root.path().join("runtime/bin");
     fs::create_dir_all(&bin).expect("bin");
     let settings = root.path().join("settings.json");
+    upstream_fixture(&settings);
     let cli = bin.join("pi");
     let node = bin.join("node");
     fs::write(&cli, "#!/usr/bin/env node\n").expect("pi entrypoint");

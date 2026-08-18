@@ -5,7 +5,25 @@ use grillforge_lib::core::provider::{ApiKeyPlacement, EndpointMode, Protocol};
 use grillforge_lib::extension_integration::ExtensionIntegrationService;
 use grillforge_lib::gateway::Gateway;
 use grillforge_lib::mcp_mount::{McpClientFormat, McpMountManager, McpMountTarget};
+use grillforge_lib::pi_mcp_extension::PI_MCP_EXTENSION_SOURCE;
 use std::fs;
+use std::path::Path;
+
+fn install_pi_mcp_fixture(settings_path: &Path) {
+    let agent_root = settings_path.parent().expect("Pi agent root");
+    let upstream = agent_root.join("npm/node_modules/pi-mcp-extension/src/index.ts");
+    let sdk =
+        agent_root.join("npm/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js");
+    fs::create_dir_all(upstream.parent().expect("upstream directory")).expect("upstream directory");
+    fs::create_dir_all(sdk.parent().expect("SDK directory")).expect("SDK directory");
+    fs::write(&upstream, "export default function () {}\n").expect("upstream extension");
+    fs::write(&sdk, "export class Client {}\n").expect("MCP SDK client");
+    fs::write(
+        settings_path,
+        format!(r#"{{"packages":["{PI_MCP_EXTENSION_SOURCE}"]}}"#),
+    )
+    .expect("Pi extension settings");
+}
 
 #[test]
 fn binding_and_mcp_lifecycle_are_independent_and_empty_routes_stay_mounted() {
@@ -1076,11 +1094,7 @@ fn pi_requires_the_installed_extension_then_mounts_without_restarting_grillforge
     assert!(error.contains("pi-mcp-extension"));
     assert!(!pi_mcp.exists());
 
-    fs::write(
-        &pi_settings,
-        r#"{"packages":["npm:pi-mcp-extension@1.5.0"]}"#,
-    )
-    .expect("installed extension");
+    install_pi_mcp_fixture(&pi_settings);
     integration
         .mount_client(&control, &gateway, "pi")
         .expect("mount Pi after install");
@@ -1114,7 +1128,7 @@ fn failed_multi_client_update_restores_the_record_and_every_changed_mount() {
     fs::write(&runtime, "runtime").expect("runtime");
     let pi_settings = root.path().join(".pi/agent/settings.json");
     fs::create_dir_all(pi_settings.parent().unwrap()).expect("pi root");
-    fs::write(&pi_settings, r#"{"packages":["npm:pi-mcp-extension"]}"#).expect("Pi extension");
+    install_pi_mcp_fixture(&pi_settings);
     let control = ControlPlaneService::new(&grillforge);
     control
         .save_provider(ProviderInput {

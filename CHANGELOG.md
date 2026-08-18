@@ -4,6 +4,27 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.14] - 2026-08-17
+
+### Fixed
+
+- Pi extension SubAgent calls now use a three-hour request boundary instead of
+  the upstream extension's 30-second default, while unmount restores the
+  user's previous timeout exactly.
+- Pi maps standard MCP progress notifications to its native expandable tool
+  card without adding intermediate Agent output to the main conversation.
+- Claude Code, Claude Client, and Codex receive the same standard MCP progress
+  stream when their current host version exposes it; the final Agent result is
+  still returned exactly once.
+- Parallel extension Agent runs keep their progress isolated and continue to
+  use the installed client CLI for each Agent loop.
+
+### Verification
+
+- A real installed Pi 0.84.1 and `pi-mcp-extension` 1.5.0 completed a
+  loopback-only MCP tool call that ran for more than 31 seconds.
+- Full Rust tests, strict Clippy, frontend tests, and the production build pass.
+
 ## [0.2.13] - 2026-08-17
 
 ### Fixed

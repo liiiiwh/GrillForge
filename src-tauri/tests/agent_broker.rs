@@ -15,7 +15,7 @@ async fn run_agent_streams_coarse_progress_then_one_final_result() {
     let runtime = directory.path().join("claude");
     fs::write(
         &runtime,
-        "#!/bin/sh\nsleep 0.1\nprintf '%s' '{\"type\":\"result\",\"result\":\"final-only-result\"}'\n",
+        "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"checked one file\"}]}}'\nsleep 0.1\nprintf '%s\\n' '{\"type\":\"result\",\"result\":\"final-only-result\"}'\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&runtime).unwrap().permissions();
@@ -74,6 +74,14 @@ async fn run_agent_streams_coarse_progress_then_one_final_result() {
     assert_eq!(events[0]["method"], "notifications/progress");
     assert_eq!(events[0]["params"]["progressToken"], "task-7");
     assert_eq!(events[0]["params"]["progress"], 1);
+    assert!(
+        events.iter().any(|event| {
+            event["params"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("checked one file"))
+        }),
+        "{body}"
+    );
     assert!(!body.contains("SECRET PROMPT"), "{body}");
     let final_response = events.last().unwrap();
     assert_eq!(final_response["id"], 7);

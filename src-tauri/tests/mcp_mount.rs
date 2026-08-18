@@ -663,3 +663,66 @@ fn pi_mcp_is_only_available_when_the_user_installed_the_extension() {
         grillforge_lib::mcp_mount::pi_mcp_extension_installed(&settings).expect("inspect settings")
     );
 }
+
+#[test]
+fn pi_mount_sets_the_extension_request_timeout_and_restores_the_previous_value() {
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join("mcp.json");
+    fs::write(
+        &config,
+        r#"{"settings":{"requestTimeoutMs":45000,"maxRetries":2},"mcpServers":{"keep":{"transport":"stdio","command":"keep"}}}"#,
+    )
+    .expect("fixture");
+    let manager = McpMountManager::new(
+        root.path().join("snapshots"),
+        [McpMountTarget::new(
+            "pi",
+            &config,
+            McpClientFormat::PiExtensionJson,
+        )],
+    )
+    .expect("manager");
+
+    manager
+        .mount("pi", "http://127.0.0.1:15721/mcp/pi", "token")
+        .expect("mount");
+    let active: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(active["settings"]["requestTimeoutMs"], 10_800_000);
+    assert_eq!(active["settings"]["maxRetries"], 2);
+    assert_eq!(active["mcpServers"]["keep"]["command"], "keep");
+
+    manager.unmount("pi").expect("unmount");
+    let restored: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(restored["settings"]["requestTimeoutMs"], 45_000);
+    assert_eq!(restored["settings"]["maxRetries"], 2);
+    assert_eq!(restored["mcpServers"]["keep"]["command"], "keep");
+    assert!(restored["mcpServers"].get("grillforge-pi").is_none());
+}
+
+#[test]
+fn pi_unmount_preserves_a_request_timeout_changed_by_the_user_while_mounted() {
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join("mcp.json");
+    fs::write(&config, r#"{"mcpServers":{}}"#).expect("fixture");
+    let manager = McpMountManager::new(
+        root.path().join("snapshots"),
+        [McpMountTarget::new(
+            "pi",
+            &config,
+            McpClientFormat::PiExtensionJson,
+        )],
+    )
+    .expect("manager");
+
+    manager
+        .mount("pi", "http://127.0.0.1:15721/mcp/pi", "token")
+        .expect("mount");
+    let mut changed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    changed["settings"]["requestTimeoutMs"] = 7_200_000.into();
+    fs::write(&config, serde_json::to_vec_pretty(&changed).unwrap()).expect("user edit");
+
+    manager.unmount("pi").expect("unmount");
+    let restored: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(restored["settings"]["requestTimeoutMs"], 7_200_000);
+    assert!(restored["mcpServers"].get("grillforge-pi").is_none());
+}
