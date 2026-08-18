@@ -256,6 +256,16 @@ shasum -a 256 target/GrillForge-v<版本>-macos-universal.zip | tee target/Grill
 gh release create v<版本> target/GrillForge-v<版本>-macos-universal.zip target/GrillForge-v<版本>-macos-universal.zip.sha256 --title "GrillForge v<版本>" --notes-file <notes.md>
 ```
 
+**8. 同步 Homebrew tap。** 仓库 `liiiiwh/homebrew-tap`（本机克隆在
+`~/www/homebrew-tap`），改 `Casks/grillforge.rb` 的 `version` 与 `sha256` 后提交推送。
+sha256 用第 7 步生成的那个值，推送前应先下载已发布的附件核对一致：
+
+```bash
+shasum -a 256 <下载回来的 release zip>
+```
+
+发版时容易漏掉这一步——cask 曾连续三个版本停留在 0.2.13。
+
 > **本机代理注意事项。** 系统代理 `127.0.0.1:7890` 若未放行以下域名，`codesign` 会报
 > `The timestamp service is not available`，`gh` 会超时（`git push` 走 SSH 不受影响）。
 > 代理例外列表需包含 `timestamp.apple.com`、`github.com`（裸域名，`*.github.com`

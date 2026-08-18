@@ -262,6 +262,17 @@ shasum -a 256 target/GrillForge-v<version>-macos-universal.zip | tee target/Gril
 gh release create v<version> target/GrillForge-v<version>-macos-universal.zip target/GrillForge-v<version>-macos-universal.zip.sha256 --title "GrillForge v<version>" --notes-file <notes.md>
 ```
 
+**8. Sync the Homebrew tap.** The `liiiiwh/homebrew-tap` repository (cloned locally
+at `~/www/homebrew-tap`) carries `Casks/grillforge.rb`; update its `version` and
+`sha256`, then commit and push. Use the checksum from step 7, and confirm it
+against the published asset before pushing:
+
+```bash
+shasum -a 256 <the downloaded release zip>
+```
+
+This step is easy to forget — the cask sat at 0.2.13 for three releases.
+
 > **Local proxy caveat.** The system proxy at `127.0.0.1:7890` makes `codesign`
 > fail with `The timestamp service is not available` and `gh` time out unless the
 > bypass list contains `timestamp.apple.com`, `github.com` (the bare domain;
