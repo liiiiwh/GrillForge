@@ -2815,13 +2815,7 @@ async fn execute_agent(
     }
     let output = output?;
     if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "{} Agent runtime exited with {}: {}",
-            route.source_client_id,
-            output.status,
-            safe_single_line(&message)
-        ));
+        return Err(agent_runtime_failure(&route.source_client_id, &output));
     }
     match route.source_client_id.as_str() {
         "codex" => return codex_last_agent_message(&output.stdout),
@@ -3941,6 +3935,41 @@ fn optional_mcp_bool(object: &serde_json::Map<String, Value>, key: &str) -> Resu
             .as_bool()
             .ok_or_else(|| format!("run_agent {key} must be a boolean")),
     }
+}
+
+fn agent_runtime_failure(runtime_name: &str, output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = agent_stdout_failure(&output.stdout).unwrap_or_else(|| stderr.into_owned());
+    format!(
+        "{runtime_name} Agent runtime exited with {}: {}",
+        output.status,
+        safe_single_line(&detail)
+    )
+}
+
+/// A failed Agent runtime reports its cause on stdout, not stderr, because every
+/// supported runtime is launched with a machine-readable event stream.
+fn agent_stdout_failure(stdout: &[u8]) -> Option<String> {
+    let stdout = std::str::from_utf8(stdout).ok()?;
+    let mut detail = None;
+    for line in stdout.lines() {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if event.get("is_error").and_then(Value::as_bool) != Some(true)
+            && event.get("type").and_then(Value::as_str) != Some("error")
+        {
+            continue;
+        }
+        if let Some(found) = ["/result", "/message", "/error/message"]
+            .iter()
+            .find_map(|pointer| event.pointer(pointer).and_then(Value::as_str))
+            .filter(|value| !value.trim().is_empty())
+        {
+            detail = Some(found.to_string());
+        }
+    }
+    detail
 }
 
 fn safe_single_line(value: &str) -> String {

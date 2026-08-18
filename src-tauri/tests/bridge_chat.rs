@@ -595,6 +595,62 @@ async fn chat_accepts_real_claude_hints_only_with_explicit_reasoning_effort_capa
 }
 
 #[tokio::test]
+async fn adaptive_thinking_without_a_display_field_is_accepted() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chat_kimi","model":"kimi-for-coding-highspeed",
+        "choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"Checked it","content":"3"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":2}
+    }))
+    .await;
+
+    let response = OpenAiChatBridge::new(base_url, "chat-secret")
+        .with_capabilities(OpenAiChatCapabilities {
+            reasoning_content: true,
+            reasoning_effort: false,
+        })
+        .complete(json!({
+            "model":"kimi-for-coding-highspeed","max_tokens":32,
+            "output_config":{"effort":"high"},
+            "thinking":{"type":"adaptive"},
+            "messages":[{"role":"user","content":"Only output 3"}]
+        }))
+        .await
+        .unwrap();
+
+    captured.await.unwrap();
+    assert_eq!(response["content"][1]["text"], "3");
+}
+
+#[tokio::test]
+async fn adaptive_thinking_with_a_returned_display_is_rejected() {
+    let (base_url, _captured) = serve_once(json!({
+        "id":"chat_kimi","model":"kimi-for-coding-highspeed",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"3"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":1}
+    }))
+    .await;
+
+    let error = OpenAiChatBridge::new(base_url, "chat-secret")
+        .with_capabilities(OpenAiChatCapabilities {
+            reasoning_content: true,
+            reasoning_effort: false,
+        })
+        .complete(json!({
+            "model":"kimi-for-coding-highspeed","max_tokens":32,
+            "output_config":{"effort":"high"},
+            "thinking":{"type":"adaptive","display":"summarized"},
+            "messages":[{"role":"user","content":"Only output 3"}]
+        }))
+        .await
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("thinking.display must be omitted"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn reasoning_content_models_accept_claude_thinking_without_sending_reasoning_effort() {
     let (base_url, captured) = serve_once(json!({
         "id":"chat_kimi","model":"kimi-for-coding-highspeed",

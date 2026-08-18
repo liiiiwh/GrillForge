@@ -1941,3 +1941,71 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi custom child completed"}}'
     assert!(argv.contains(&format!("{}\n", custom_agent.display())));
     assert!(!argv.contains("--agent\nreviewer\n"));
 }
+
+#[tokio::test]
+async fn a_failed_agent_runtime_reports_the_error_it_wrote_to_stdout() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(directory.path());
+
+    let runtime = directory.path().join("claude");
+    fs::write(
+        &runtime,
+        r#"#!/bin/sh
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 502 invalid Anthropic request"}'
+exit 1
+"#,
+    )
+    .expect("fake runtime");
+    let mut permissions = fs::metadata(&runtime).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).expect("executable permissions");
+
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("gateway");
+    let address = listener.local_addr().expect("gateway address");
+    let base_url = format!("http://{address}");
+    gateway
+        .status(base_url.clone())
+        .activate_client_agent_broker(
+            "claude_code",
+            &service.state().expect("state"),
+            "broker-secret",
+            &runtime,
+            directory.path(),
+            vec![AgentRuntimeRoute {
+                extension_id: "native-reviewer".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "reviewer".into(),
+                model_id: None,
+            }],
+        )
+        .expect("activate broker");
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let body: Value = reqwest::Client::new()
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-secret")
+        .json(&json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"run_agent","arguments":{
+                "extensionId":"native-reviewer",
+                "cwd": directory.path(),
+                "prompt":"Inspect the project"
+            }}
+        }))
+        .send()
+        .await
+        .expect("MCP response")
+        .json()
+        .await
+        .expect("MCP JSON");
+
+    assert_eq!(body["result"]["isError"], true);
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(
+        text.contains("API Error: 502 invalid Anthropic request"),
+        "{text}"
+    );
+}

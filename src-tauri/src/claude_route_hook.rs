@@ -51,14 +51,21 @@ pub fn run_from_env() -> Result<(), String> {
     }
     let input: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid Claude route hook input: {error}"))?;
-    let root = std::env::var_os("GRILLFORGE_CONFIG_ROOT")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".grillforge")))
-        .ok_or_else(|| "could not resolve the GrillForge configuration directory".to_string())?;
-    let documents = ConfigurationFiles::new(root)
-        .read()
-        .map_err(|error| format!("could not read GrillForge routing configuration: {error}"))?;
-    let output = match decide(&documents, &input)? {
+    // A GrillForge-launched child runtime is a leaf: no broker is mounted into it,
+    // so denying its native Agent would leave it unable to delegate at all.
+    let decision = if std::env::var_os("GRILLFORGE_AGENT_CHILD").is_some() {
+        HookDecision::Allow
+    } else {
+        let root = std::env::var_os("GRILLFORGE_CONFIG_ROOT")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".grillforge")))
+            .ok_or_else(|| "could not resolve the GrillForge configuration directory".to_string())?;
+        let documents = ConfigurationFiles::new(root)
+            .read()
+            .map_err(|error| format!("could not read GrillForge routing configuration: {error}"))?;
+        decide(&documents, &input)?
+    };
+    let output = match decision {
         HookDecision::Allow => json!({}),
         HookDecision::Deny { reason } => json!({
             "hookSpecificOutput": {

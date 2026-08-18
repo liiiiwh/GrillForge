@@ -138,3 +138,43 @@ fn installed_hook_command_returns_the_official_pre_tool_use_deny_shape() {
             .contains("list_agents")
     );
 }
+
+#[test]
+fn a_grillforge_launched_child_runtime_keeps_its_native_agent_tools() {
+    let root = tempfile::tempdir().expect("root");
+    let documents = documents(true, true);
+    ConfigurationFiles::new(root.path())
+        .save(&documents.config, &documents.models, &documents.agents)
+        .expect("configuration");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_grillforge"))
+        .arg("claude-route-hook")
+        .env("GRILLFORGE_CONFIG_ROOT", root.path())
+        .env("GRILLFORGE_AGENT_CHILD", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hook process");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            serde_json::json!({
+                "hook_event_name":"PreToolUse",
+                "tool_name":"Agent",
+                "tool_input": {"description":"delegate"}
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .expect("hook input");
+    let output = child.wait_with_output().expect("hook result");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).expect("hook JSON");
+    assert_eq!(response, serde_json::json!({}));
+}

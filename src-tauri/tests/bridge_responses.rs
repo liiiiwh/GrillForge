@@ -1056,7 +1056,8 @@ async fn real_claude_transport_hints_are_validated_and_reasoning_is_capability_g
             "metadata":{"user_id":"user_redacted"},
             "context_management":{"edits":[{"keep":"all","type":"clear_thinking_20251015"}]},
             "output_config":{"effort":"high"},
-            "thinking":{"display":"omitted","type":"adaptive"},
+            // The current Claude Code sends adaptive thinking with no display field.
+            "thinking":{"type":"adaptive"},
             "system":"Be precise.",
             "tools":[{"name":"read_file","input_schema":{"type":"object","properties":{}}}],
             "messages":[{"role":"user","content":"inspect"}]

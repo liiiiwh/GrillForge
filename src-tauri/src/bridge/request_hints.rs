@@ -105,8 +105,13 @@ fn validate_thinking(value: &Value) -> Result<bool, BridgeError> {
     match kind {
         "adaptive" => {
             reject_unknown(thinking, &["type", "display"], "thinking")?;
-            if thinking.get("display").and_then(Value::as_str) != Some("omitted") {
-                return Err(invalid("thinking.display must be omitted"));
+            // An absent `display` already means omitted thinking, which is the only
+            // response shape a bridged provider can produce. Claude Code sends
+            // adaptive thinking without the field.
+            if let Some(display) = thinking.get("display") {
+                if display.as_str() != Some("omitted") {
+                    return Err(invalid("thinking.display must be omitted"));
+                }
             }
             Ok(true)
         }

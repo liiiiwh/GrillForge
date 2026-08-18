@@ -4,6 +4,31 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.15] - 2026-08-17
+
+### Fixed
+
+- Extension SubAgent calls that route a bridged model now complete. The bridge
+  required Claude Code to send `thinking.display`, but the current client sends
+  adaptive thinking without that field, so every Anthropic-to-Chat and
+  Anthropic-to-Responses request failed with a 502 until the client gave up and
+  exited. An absent `display` now means the omitted thinking it already implies,
+  while an explicit unsupported value is still rejected.
+- A failed Agent runtime now reports the cause its own event stream wrote to
+  stdout. Every supported runtime is launched with a machine-readable stream and
+  leaves stderr empty, so the previous message ended at an empty colon and
+  discarded the real error.
+- A GrillForge-launched Claude child runtime keeps its native Agent and Workflow
+  tools. The child inherits the route hook but has no broker mounted into it, so
+  denying its native tools left it unable to delegate at all.
+
+### Verification
+
+- The real installed Claude Code CLI completed both a streaming turn and a real
+  Read-tool loop against the live Kimi Coding API through the Chat bridge; both
+  failed before this release.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.14] - 2026-08-17
 
 ### Fixed
