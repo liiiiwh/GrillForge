@@ -358,7 +358,7 @@ printf '%s' '{{"type":"result","result":"parallel child completed"}}'
             .bearer_auth("parallel-token")
             .json(&json!({
                 "jsonrpc":"2.0","id":id,"method":"tools/call",
-                "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+                "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                     "extensionId":"parallel-worker","cwd":directory.path(),"prompt":"Inspect"
                 }}
             }))
@@ -428,7 +428,7 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"claude-general",
                 "cwd":directory.path(),
                 "prompt":"Inspect a public GitHub repository",
@@ -453,7 +453,7 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"claude-general",
                 "cwd":directory.path(),
                 "prompt":"Inspect only local files",
@@ -489,7 +489,7 @@ async fn claude_extension_enables_native_web_tools_only_for_an_explicit_web_requ
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"claude-general",
                 "cwd":directory.path(),
                 "prompt":"Inspect public docs",
@@ -583,7 +583,7 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
         .bearer_auth("native-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"native-reviewer",
                 "cwd":directory.path(),
                 "prompt":"Review"
@@ -606,7 +606,7 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
         .bearer_auth("native-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"native-reviewer",
                 "runtime":"codex",
                 "modelRoute":"grillforge/other",
@@ -694,7 +694,7 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"pi-reviewer","cwd":project,"prompt":"Review this"
             }}
         }))
@@ -717,7 +717,7 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"pi-reviewer","cwd":project,"prompt":"Research public docs",
                 "webAccess":true
             }}
@@ -847,7 +847,7 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
 
     let response: Value = reqwest::Client::new().post(format!("{base_url}/mcp/claude_code"))
         .bearer_auth("broker-token")
-        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,"extensionId":"pi-reviewer","cwd":project,"prompt":"Review"}}}))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"waitSeconds":120,"extensionId":"pi-reviewer","cwd":project,"prompt":"Review"}}}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
     assert_eq!(
@@ -958,7 +958,7 @@ printf '%s\n' '{{"text":"grok child completed","stopReason":"end_turn","num_turn
 
     let response: Value = reqwest::Client::new().post(format!("{base_url}/mcp/claude_code"))
         .bearer_auth("broker-token")
-        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,"extensionId":"grok-reviewer","cwd":project,"prompt":"Plan this"}}}))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_agent","arguments":{"waitSeconds":120,"extensionId":"grok-reviewer","cwd":project,"prompt":"Plan this"}}}))
         .send().await.unwrap().json().await.unwrap();
 
     assert_eq!(response["result"]["isError"], false, "{response}");
@@ -1086,7 +1086,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"codex-reviewer","cwd":project,"prompt":"Review this",
                 "webAccess":true
             }}
@@ -1120,7 +1120,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"codex-worker","cwd":project,"prompt":"Review this"
             }}
         }))
@@ -1204,7 +1204,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"native-codex-reviewer","cwd":directory.path(),"prompt":"Review"
             }}
         }))
@@ -1448,7 +1448,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"opencode-reviewer","cwd":directory.path(),"prompt":"Review this"
             }}
         }))
@@ -1541,7 +1541,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"opencode-general","cwd":directory.path(),"prompt":"Research this"
             }}
         }))
@@ -1664,7 +1664,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"kimi-coder","cwd":directory.path(),"prompt":"Review this"
             }}
         }))
@@ -1758,7 +1758,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi native child completed"}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"kimi-explore","cwd":directory.path(),"prompt":"Inspect this"
             }}
         }))
@@ -1874,7 +1874,7 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"gemini-reviewer","cwd":project,"prompt":"Review this"
             }}
         }))
@@ -1982,7 +1982,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi custom child completed"}}'
         .bearer_auth("broker-token")
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"kimi-reviewer","cwd":directory.path(),"prompt":"Inspect this"
             }}
         }))
@@ -2048,7 +2048,7 @@ exit 1
         .bearer_auth("broker-secret")
         .json(&json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"native-reviewer",
                 "cwd": directory.path(),
                 "prompt":"Inspect the project"
@@ -2145,7 +2145,7 @@ printf '%s' '{"type":"result","result":"child saw the real window"}'
         .bearer_auth("broker-secret")
         .json(&json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"run_agent","arguments":{"waitSeconds":120,"waitSeconds":120,
+            "params":{"name":"run_agent","arguments":{"waitSeconds":120,
                 "extensionId":"wide-reviewer",
                 "cwd": directory.path(),
                 "prompt":"Inspect the project"

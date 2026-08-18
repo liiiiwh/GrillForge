@@ -41,8 +41,22 @@ The project follows [Semantic Versioning](https://semver.org/).
   Workflow, and the denial names that client's own MCP server rather than one its
   session does not have.
 
+- A DeepSeek Harness adapter. The harness composes plugin layers under one user
+  layer, so GrillForge owns a single marked block in
+  `$DSH_HOME/profiles/headless/cordis.patch.yml`: the model route it declares as
+  an OpenAI-completions provider against the local gateway, and the MCP server
+  carrying its extension SubAgents. The credential is a reference resolved from
+  `$DSH_HOME/.env`, so no secret enters the patch layer, and every entry the user
+  wrote around the block survives Apply and Disable.
+
 ### Verification
 
+- The generated DeepSeek Harness layer was composed by a real `dsh` 0.1.0-rc.7
+  installation, which reported the GrillForge model route and MCP server without
+  error. Two defects surfaced that way and were fixed: a plugin name beginning
+  with `@` needs quoting because `@` is a reserved YAML indicator, and a plugin
+  the base profile does not carry must be added through an `insert` list rather
+  than an id-targeted patch.
 - The permission relay was proven against the installed Claude Code CLI before
   being built on, and again in a test where the child raises a prompt through the
   very configuration GrillForge hands it.

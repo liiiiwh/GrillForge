@@ -1,6 +1,7 @@
 pub mod claude_code;
 pub mod claude_desktop;
 pub mod codex;
+pub mod dsh;
 pub mod gemini;
 pub mod grok_build;
 pub mod hermes;
