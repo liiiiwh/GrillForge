@@ -189,9 +189,20 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 
 不要把真实凭据写入源码、Fixture、Snapshot、命令历史或 CI 默认任务。
 
-### macOS 打包
+### macOS 发布流程
+
+**1. 升版本号。** 三处必须一致，另外补 `CHANGELOG.md` 条目：
+
+```text
+package.json
+src-tauri/Cargo.toml
+src-tauri/tauri.conf.json
+```
+
+**2. 构建并签名。**
 
 ```bash
+APPLE_SIGNING_IDENTITY="Developer ID Application: Weike Zhizi(weihai)Information Technology Co., Ltd. (4B7ATJ93VY)" \
 pnpm tauri build --target universal-apple-darwin --bundles app
 ```
 
@@ -200,6 +211,57 @@ pnpm tauri build --target universal-apple-darwin --bundles app
 ```text
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
 ```
+
+**3. 打公证包。**
+
+```bash
+ditto -c -k --keepParent \
+  src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app \
+  target/GrillForge-v<版本>-notary.zip
+```
+
+**4. 公证。** 凭据存在钥匙串的 `grillforge` profile 里，命令本身不接触密钥：
+
+```bash
+xcrun notarytool submit target/GrillForge-v<版本>-notary.zip --keychain-profile grillforge --wait
+```
+
+profile 只需创建一次（`--issuer` 取自 App Store Connect → 用户和访问 → 集成 → 密钥）：
+
+```bash
+xcrun notarytool store-credentials grillforge \
+  --key ~/Downloads/AuthKey_<KEY_ID>.p8 --key-id <KEY_ID> --issuer <ISSUER_UUID>
+```
+
+**5. 装订并验证。** `spctl` 必须返回 `source=Notarized Developer ID`：
+
+```bash
+xcrun stapler staple src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
+spctl -a -vvv -t install src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
+```
+
+**6. 安装。** 先优雅退出，让它还原写进各客户端的 MCP 挂载；重启后约一分钟的挂载协调期内扩展调用可能返回误导性的 401，等 `~/.pi/agent/mcp.json` 被改写后再验证：
+
+```bash
+osascript -e 'quit app "GrillForge"'
+ditto src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app /Applications/GrillForge.app
+open -a /Applications/GrillForge.app
+```
+
+**7. 发布。**
+
+```bash
+ditto -c -k --keepParent <上面的 .app> target/GrillForge-v<版本>-macos-universal.zip
+shasum -a 256 target/GrillForge-v<版本>-macos-universal.zip | tee target/GrillForge-v<版本>-macos-universal.zip.sha256
+gh release create v<版本> target/GrillForge-v<版本>-macos-universal.zip target/GrillForge-v<版本>-macos-universal.zip.sha256 --title "GrillForge v<版本>" --notes-file <notes.md>
+```
+
+> **本机代理注意事项。** 系统代理 `127.0.0.1:7890` 若未放行以下域名，`codesign` 会报
+> `The timestamp service is not available`，`gh` 会超时（`git push` 走 SSH 不受影响）。
+> 代理例外列表需包含 `timestamp.apple.com`、`github.com`（裸域名，`*.github.com`
+> **不**匹配它）、`*.githubusercontent.com`、`*.githubassets.com`。已在修改设置前
+> 启动的终端仍持有旧的 `HTTP_PROXY`，必要时用
+> `env -u HTTP_PROXY -u HTTPS_PROXY ...` 前缀绕开。
 
 ## 贡献
 

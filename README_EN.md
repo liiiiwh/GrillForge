@@ -189,9 +189,20 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 
 Never place real credentials in source files, fixtures, snapshots, shell history, or default CI jobs.
 
-### macOS Packaging
+### macOS Release
+
+**1. Bump the version** in all three files and add a `CHANGELOG.md` entry:
+
+```text
+package.json
+src-tauri/Cargo.toml
+src-tauri/tauri.conf.json
+```
+
+**2. Build and sign.**
 
 ```bash
+APPLE_SIGNING_IDENTITY="Developer ID Application: Weike Zhizi(weihai)Information Technology Co., Ltd. (4B7ATJ93VY)" \
 pnpm tauri build --target universal-apple-darwin --bundles app
 ```
 
@@ -200,6 +211,64 @@ The bundle is written to:
 ```text
 src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
 ```
+
+**3. Package for notarization.**
+
+```bash
+ditto -c -k --keepParent \
+  src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app \
+  target/GrillForge-v<version>-notary.zip
+```
+
+**4. Notarize.** Credentials live in the `grillforge` keychain profile, so the
+command never handles the key itself:
+
+```bash
+xcrun notarytool submit target/GrillForge-v<version>-notary.zip --keychain-profile grillforge --wait
+```
+
+Create the profile once (`--issuer` comes from App Store Connect, Users and
+Access, Integrations, Keys):
+
+```bash
+xcrun notarytool store-credentials grillforge \
+  --key ~/Downloads/AuthKey_<KEY_ID>.p8 --key-id <KEY_ID> --issuer <ISSUER_UUID>
+```
+
+**5. Staple and verify.** `spctl` must report `source=Notarized Developer ID`:
+
+```bash
+xcrun stapler staple src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
+spctl -a -vvv -t install src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app
+```
+
+**6. Install.** Quit gracefully first so GrillForge restores the MCP mounts it
+wrote into each client. For about a minute after the restart it reconciles those
+mounts and rotates client tokens; an extension call made in that window can fail
+with a misleading 401, so wait until `~/.pi/agent/mcp.json` has been rewritten
+before verifying.
+
+```bash
+osascript -e 'quit app "GrillForge"'
+ditto src-tauri/target/universal-apple-darwin/release/bundle/macos/GrillForge.app /Applications/GrillForge.app
+open -a /Applications/GrillForge.app
+```
+
+**7. Publish.**
+
+```bash
+ditto -c -k --keepParent <the .app above> target/GrillForge-v<version>-macos-universal.zip
+shasum -a 256 target/GrillForge-v<version>-macos-universal.zip | tee target/GrillForge-v<version>-macos-universal.zip.sha256
+gh release create v<version> target/GrillForge-v<version>-macos-universal.zip target/GrillForge-v<version>-macos-universal.zip.sha256 --title "GrillForge v<version>" --notes-file <notes.md>
+```
+
+> **Local proxy caveat.** The system proxy at `127.0.0.1:7890` makes `codesign`
+> fail with `The timestamp service is not available` and `gh` time out unless the
+> bypass list contains `timestamp.apple.com`, `github.com` (the bare domain;
+> `*.github.com` does **not** match it), `*.githubusercontent.com`, and
+> `*.githubassets.com`. `git push` uses SSH and is unaffected. A shell started
+> before the proxy settings changed still holds the stale `HTTP_PROXY`; prefix
+> commands with `env -u HTTP_PROXY -u HTTPS_PROXY ...` when needed.
 
 ## Contributing
 
