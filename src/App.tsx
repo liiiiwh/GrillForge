@@ -31,6 +31,7 @@ import modelscopeIcon from "./assets/provider-icons/modelscope-color.svg";
 import novitaIcon from "./assets/provider-icons/novita.svg";
 import nvidiaIcon from "./assets/provider-icons/nvidia.svg";
 import ollamaIcon from "./assets/provider-icons/ollama.svg";
+import piIcon from "./assets/provider-icons/pi.svg";
 import openaiIcon from "./assets/provider-icons/openai.svg";
 import opencodeIcon from "./assets/provider-icons/opencode-logo-light.svg";
 import openrouterIcon from "./assets/provider-icons/openrouter.svg";
@@ -939,12 +940,13 @@ const clientBrandIcons: Record<string, string> = {
   claude_code: anthropicIcon,
   claude_desktop: anthropicIcon,
   codex: openaiIcon,
-  pi: grillforgeLogo,
+  pi: piIcon,
   gemini: geminiIcon,
   grok_build: grokIcon,
   opencode: opencodeIcon,
   hermes: hermesIcon,
   kimi_code: kimiIcon,
+  dsh: deepseekIcon,
 };
 
 function AppLogo({ className = "" }: { className?: string }) {

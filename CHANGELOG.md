@@ -4,6 +4,14 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.21] - 2026-08-18
+
+### Changed
+
+- Pi carries its own mark instead of the GrillForge logo, and DeepSeek Harness
+  carries the DeepSeek mark, so every client in the list is told apart by its own
+  brand.
+
 ## [0.2.20] - 2026-08-18
 
 ### Added
