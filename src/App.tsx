@@ -385,6 +385,16 @@ type ProviderDraft = {
   parameters: Record<string, string>;
 };
 
+type RouteEdge = {
+  key: string;
+  clientId: string;
+  clientName: string;
+  target: string;
+  targetDetail: string;
+  model: string;
+  provider: string;
+};
+
 type ModelDraft = {
   name: string;
   upstreamId: string;
@@ -716,20 +726,24 @@ const unavailableClient: ClientIntegrationStatus = {
 
 export async function loadOptionalClientSnapshot() {
   const errors: Record<string, string> = {};
-  const fixed = await Promise.allSettled([
-    invoke<IntegrationStatus>("integration_status"),
-    invoke<ClaudeCliStatus>("detect_claude_code"),
-    invoke<ClaudeDesktopStatus>("claude_desktop_status"),
-    invoke<PiStatus>("pi_status"),
-    invoke<PiMcpExtensionStatus>("pi_mcp_extension_status"),
-    invoke<CodexStatus>("codex_status"),
-    invoke<ClientMcpStatus[]>("client_mcp_statuses"),
-  ]);
-  const additional = await Promise.allSettled(
-    additionalClients.map((client) =>
-      invoke<ClientIntegrationStatus>(client.status),
+  // Each of these probes an installed CLI, and none depends on another, so they
+  // go out together rather than in two waves.
+  const [fixed, additional] = await Promise.all([
+    Promise.allSettled([
+      invoke<IntegrationStatus>("integration_status"),
+      invoke<ClaudeCliStatus>("detect_claude_code"),
+      invoke<ClaudeDesktopStatus>("claude_desktop_status"),
+      invoke<PiStatus>("pi_status"),
+      invoke<PiMcpExtensionStatus>("pi_mcp_extension_status"),
+      invoke<CodexStatus>("codex_status"),
+      invoke<ClientMcpStatus[]>("client_mcp_statuses"),
+    ]),
+    Promise.allSettled(
+      additionalClients.map((client) =>
+        invoke<ClientIntegrationStatus>(client.status),
+      ),
     ),
-  );
+  ]);
 
   function result<T>(
     settled: PromiseSettledResult<T>,
@@ -2398,6 +2412,105 @@ function App() {
   const mountedClientCount = Object.values(mcpStatuses).filter(
     (status) => status.mounted,
   ).length;
+
+  // One row per route that is actually configured. A client following its native
+  // model has no edge, so the table never implies a mapping that does not exist.
+  const routeEdges: RouteEdge[] = useMemo(() => {
+    if (!state) return [];
+    const named = (modelId: string | null | undefined) => {
+      const model = models.find((item) => item.id === modelId);
+      if (!model) return null;
+      const provider = providers.find((item) => item.id === model.providerId);
+      return {
+        model: model.name,
+        provider: provider ? `${provider.name} · ${model.upstreamId}` : model.upstreamId,
+      };
+    };
+    const edges: RouteEdge[] = [];
+    const push = (
+      key: string,
+      clientId: string,
+      clientName: string,
+      target: string,
+      targetDetail: string,
+      modelId: string | null | undefined,
+    ) => {
+      const resolved = named(modelId);
+      if (!resolved) return;
+      edges.push({
+        key,
+        clientId,
+        clientName,
+        target,
+        targetDetail,
+        model: resolved.model,
+        provider: resolved.provider,
+      });
+    };
+
+    for (const [slot, modelId] of Object.entries(state.modelSlots)) {
+      push(
+        `claude_code-slot-${slot}`,
+        "claude_code",
+        "Claude Code",
+        modelSlotLabels[slot] ?? slot,
+        "模型槽位",
+        modelId,
+      );
+    }
+    for (const [slot, modelId] of Object.entries(state.claudeDesktopModelSlots)) {
+      push(
+        `claude_desktop-slot-${slot}`,
+        "claude_desktop",
+        "Claude Client",
+        modelSlotLabels[slot] ?? slot,
+        "对话角色",
+        modelId,
+      );
+    }
+    push("pi-main", "pi", "Pi", "默认模型", "主路由", state.piMainModelId);
+    push("codex-main", "codex", "Codex", "默认模型", "主路由", state.codexMainModelId);
+    for (const client of additionalClients) {
+      push(
+        `${client.id}-main`,
+        client.id,
+        client.name,
+        "默认模型",
+        "主路由",
+        state.clientConfigurations[client.id]?.mainModelId,
+      );
+    }
+
+    const clientNames: Record<string, string> = {
+      claude_code: "Claude Code",
+      claude_desktop: "Claude Client",
+      codex: "Codex",
+      pi: "Pi",
+      ...Object.fromEntries(
+        additionalClients.map((client) => [client.id, client.name]),
+      ),
+    };
+    for (const [clientId, ids] of Object.entries(
+      state.clientExtensionSubagentIds,
+    )) {
+      for (const id of ids ?? []) {
+        const subagent = state.extensionSubagents.find(
+          (item) => item.id === id,
+        );
+        if (!subagent) continue;
+        // An extension that follows its source runtime's own model has no edge.
+        push(
+          `${clientId}-ext-${id}`,
+          clientId,
+          clientNames[clientId] ?? clientId,
+          subagent.name,
+          `扩展 SubAgent · ${subagent.sourceClientId}`,
+          subagent.modelId,
+        );
+      }
+    }
+    return edges;
+  }, [state, models, providers]);
 
   return (
     <div className="app-shell">
@@ -5356,203 +5469,57 @@ function App() {
                   detail="查看各客户端当前选择的供应商和模型。"
                 />
                 <section className="route-status-grid">
-                  <article>
-                    <ClientLogo clientId="claude_code" name="Claude Code" />
-                    <div>
-                      <strong>Claude Code</strong>
-                      <small>
-                        {Object.keys(state.modelSlots).length} 个槽位 ·{" "}
-                        {(state.clientExtensionSubagentIds.claude_code ?? []).length} 个扩展
-                      </small>
-                    </div>
-                    <Badge tone={integrationTone}>
-                      {takeoverLabel(integration.takeover)}
-                    </Badge>
-                  </article>
-                  <article>
-                    <ClientLogo clientId="claude_desktop" name="Claude Client" />
-                    <div>
-                      <strong>Claude Client 对话 / Cowork</strong>
-                      <small>
-                        {Object.keys(state.claudeDesktopModelSlots).length}{" "}
-                        个对话角色模型
-                      </small>
-                    </div>
-                    <Badge tone={desktopTone}>
-                      {takeoverLabel(claudeDesktop.takeover)}
-                    </Badge>
-                  </article>
-                  <article>
-                    <ClientLogo clientId="pi" name="Pi" />
-                    <div>
-                      <strong>Pi</strong>
-                      <small>
-                        {state.piEnabledModelIds.length} 个可用模型 ·{" "}
-                        {state.piMainModelId ? "已设默认" : "未设默认"}
-                      </small>
-                    </div>
-                    <Badge tone={piTone}>
-                      {takeoverLabel(piStatus.takeover)}
-                    </Badge>
-                  </article>
+                  {dashboardClients.map((client) => (
+                    <article key={client.id}>
+                      <ClientLogo clientId={client.id} name={client.name} />
+                      <div>
+                        <strong>{client.name}</strong>
+                        <small>{client.detail}</small>
+                      </div>
+                      <Badge tone={client.tone}>{client.status}</Badge>
+                    </article>
+                  ))}
                 </section>
-                <section className="route-status-grid">
-                  <article>
-                    <ClientLogo clientId="codex" name="Codex" />
-                    <div>
-                      <strong>Codex</strong>
-                      <small>
-                        {state.codexMainModelId ? "已设默认模型" : "跟随原生"}
-                      </small>
-                    </div>
-                    <Badge tone={codexTone}>
-                      {takeoverLabel(codexStatus.takeover)}
-                    </Badge>
-                  </article>
-                  {additionalClients.map((client) => {
-                    const status = clientStatuses[client.id];
-                    const config = state.clientConfigurations[client.id];
-                    return (
-                      <article key={client.id}>
-                        <ClientLogo clientId={client.id} name={client.name} />
-                        <div>
-                          <strong>{client.name}</strong>
-                          <small>
-                            {config.mainModelId
-                              ? `${config.enabledModelIds.length || 1} 个模型`
-                              : "跟随原生"}
-                          </small>
+                <section className="route-table">
+                  <header>
+                    <span>客户端</span>
+                    <span>槽位 / SubAgent</span>
+                    <span>模型 · 供应商</span>
+                  </header>
+                  {routeEdges.length === 0 ? (
+                    <p className="route-table-empty">
+                      还没有配置任何模型路由。在「客户端」页为某个槽位或扩展 SubAgent
+                      选择模型后，这里会逐条列出实际生效的路由。
+                    </p>
+                  ) : (
+                    routeEdges.map((edge) => (
+                      <article key={edge.key}>
+                        <div className="route-cell">
+                          <ClientLogo
+                            clientId={edge.clientId}
+                            name={edge.clientName}
+                          />
+                          <div>
+                            <strong>{edge.clientName}</strong>
+                          </div>
                         </div>
-                        <Badge tone={takeoverTone(status.takeover)}>
-                          {takeoverLabel(status.takeover)}
-                        </Badge>
+                        <div className="route-cell">
+                          <div>
+                            <strong>{edge.target}</strong>
+                            {edge.targetDetail && (
+                              <small>{edge.targetDetail}</small>
+                            )}
+                          </div>
+                        </div>
+                        <div className="route-cell">
+                          <div>
+                            <strong>{edge.model}</strong>
+                            {edge.provider && <small>{edge.provider}</small>}
+                          </div>
+                        </div>
                       </article>
-                    );
-                  })}
-                </section>
-                <section className="relation-map">
-                  <div className="relation-column">
-                    <p>客户端</p>
-                    <article className="relation-node relation-node--accent">
-                      <ClientLogo clientId="claude_code" name="Claude Code" />
-                      <div>
-                        <strong>Claude Code CLI</strong>
-                        <small>{takeoverLabel(integration.takeover)}</small>
-                      </div>
-                    </article>
-                    <article className="relation-node relation-node--accent">
-                      <ClientLogo clientId="claude_desktop" name="Claude Client" />
-                      <div>
-                        <strong>Claude Client</strong>
-                        <small>{takeoverLabel(claudeDesktop.takeover)}</small>
-                      </div>
-                    </article>
-                    <article className="relation-node relation-node--accent">
-                      <ClientLogo clientId="pi" name="Pi" />
-                      <div>
-                        <strong>Pi</strong>
-                        <small>{takeoverLabel(piStatus.takeover)}</small>
-                      </div>
-                    </article>
-                  </div>
-                  <div className="relation-arrow" aria-hidden="true">
-                    →
-                  </div>
-                  <div className="relation-column">
-                    <p>槽位 / SubAgent</p>
-                    {integration.supportedModelSlots.map((slot) => (
-                      <article className="relation-node" key={slot}>
-                        <strong>{modelSlotLabels[slot] ?? slot}</strong>
-                        <small>Claude Code</small>
-                      </article>
-                    ))}
-                    {extensionSubagents.map((subagent) => (
-                      <article className="relation-node" key={subagent.id}>
-                        <strong>{subagent.name}</strong>
-                        <small>
-                          {subagent.capabilities.join(" · ") || "未标注能力"}
-                        </small>
-                      </article>
-                    ))}
-                    <article className="relation-node">
-                      <strong>Client 对话角色</strong>
-                      <small>Claude Client</small>
-                    </article>
-                    <article className="relation-node">
-                      <strong>Pi 默认 / 模型池</strong>
-                      <small>{state.piEnabledModelIds.length} 个模型</small>
-                    </article>
-                  </div>
-                  <div className="relation-arrow" aria-hidden="true">
-                    →
-                  </div>
-                  <div className="relation-column">
-                    <p>模型 / 供应商</p>
-                    {integration.supportedModelSlots.map((slot) => {
-                      const model = models.find(
-                        (item) => item.id === state.modelSlots[slot],
-                      );
-                      const provider = providers.find(
-                        (item) => item.id === model?.providerId,
-                      );
-                      return (
-                        <article className="relation-node" key={slot}>
-                          <strong>{model?.name ?? "跟随原生"}</strong>
-                          <small>
-                            {provider
-                              ? `${provider.name} · ${model?.upstreamId}`
-                              : (modelSlotLabels[slot] ?? slot)}
-                          </small>
-                        </article>
-                      );
-                    })}
-                    {extensionSubagents.map((subagent) => {
-                      const model = models.find(
-                        (item) => item.id === subagent.modelId,
-                      );
-                      const provider = providers.find(
-                        (item) => item.id === model?.providerId,
-                      );
-                      return (
-                        <article className="relation-node" key={subagent.id}>
-                          <strong>{model?.name ?? "模型缺失"}</strong>
-                          <small>
-                            {provider?.name ?? "跟随来源原生"}
-                          </small>
-                        </article>
-                      );
-                    })}
-                    <article className="relation-node">
-                      <strong>
-                        {Object.keys(state.claudeDesktopModelSlots).length} 个
-                        Client 角色
-                      </strong>
-                      <small>
-                        {Object.entries(state.claudeDesktopModelSlots)
-                          .map(
-                            ([slot, id]) =>
-                              `${slot}: ${models.find((model) => model.id === id)?.name ?? "缺失"}`,
-                          )
-                          .join(" · ") || "全部跟随原生"}
-                      </small>
-                    </article>
-                    <article className="relation-node">
-                      <strong>
-                        {models.find(
-                          (model) => model.id === state.piMainModelId,
-                        )?.name ?? "Pi 跟随原生"}
-                      </strong>
-                      <small>
-                        {state.piEnabledModelIds
-                          .map(
-                            (id) =>
-                              models.find((model) => model.id === id)?.name ??
-                              "缺失",
-                          )
-                          .join(" · ") || "模型池为空"}
-                      </small>
-                    </article>
-                  </div>
+                    ))
+                  )}
                 </section>
               </>
             )}

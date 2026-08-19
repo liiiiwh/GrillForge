@@ -4,6 +4,28 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.24] - 2026-08-18
+
+### Fixed
+
+- Opening the client list no longer stalls the window. Every integration command
+  waits on a CLI child process, and a Tauri command that is not declared async
+  runs inline on the thread that draws the window; entering that view refreshes
+  thirteen of them at once. They now run on the thread pool, and the refresh goes
+  out in one wave instead of two.
+- The routing overview no longer leaves a hole in its client grid. The clients
+  were listed by hand across two grids, so a three-card grid left its fourth cell
+  empty; one grid now renders the same list the rest of the app uses.
+
+### Changed
+
+- The routing page shows the routes that exist. Its three columns were three
+  independent lists with arrows between them, which implied a row-by-row mapping
+  that was not there: the columns held different numbers of unrelated rows. Each
+  row is now one configured route — client, the slot or extension SubAgent it
+  routes, and the model and provider it lands on — and a client following its
+  native model contributes no row.
+
 ## [0.2.23] - 2026-08-18
 
 ### Fixed

@@ -183,7 +183,7 @@ pub fn install_pi_mcp_extension_with_timeout(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pi_mcp_extension_status() -> Result<PiMcpExtensionStatus, String> {
     let settings = crate::adapters::pi::current_pi_paths()
         .map_err(|error| error.to_string())?
@@ -191,7 +191,7 @@ pub fn pi_mcp_extension_status() -> Result<PiMcpExtensionStatus, String> {
     pi_mcp_extension_status_at(&settings)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn install_pi_mcp_extension(
     control: tauri::State<'_, crate::application::ControlPlaneService>,
     integration: tauri::State<'_, crate::extension_integration::ExtensionIntegrationService>,

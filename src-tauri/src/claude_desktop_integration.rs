@@ -279,14 +279,14 @@ pub fn default_claude_desktop_paths(home: &Path) -> ClaudeDesktopPaths {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn claude_desktop_status(
     integration: State<'_, ClaudeDesktopIntegrationService>,
 ) -> Result<ClaudeDesktopIntegrationStatus, String> {
     integration.status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_claude_desktop(
     integration: State<'_, ClaudeDesktopIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
@@ -315,7 +315,7 @@ pub fn apply_claude_desktop(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_claude_desktop(
     integration: State<'_, ClaudeDesktopIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
@@ -330,7 +330,7 @@ pub fn disable_claude_desktop(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restart_claude_client() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -342,7 +342,7 @@ pub fn restart_claude_client() -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restart_codex_client() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {

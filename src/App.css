@@ -310,19 +310,11 @@ button.client-card { width: 100%; cursor: pointer; }
 .model-card p { min-height: 30px; margin-bottom: 9px; color: var(--muted); font-size: 8px; line-height: 1.5; }
 .model-card > span { color: var(--accent); font-size: 8px; }
 
-.relation-map { display: grid; grid-template-columns: 1fr 34px 1fr 34px 1fr; align-items: start; }
-.route-status-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; margin-bottom: 16px; }
+.route-status-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(280px,1fr)); gap: 9px; margin-bottom: 16px; }
 .route-status-grid article { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
 .route-status-grid strong, .route-status-grid small { display: block; }
 .route-status-grid strong { font-size: 9px; }
 .route-status-grid small { margin-top: 3px; color: var(--muted); font-size: 7px; }
-.relation-column { display: grid; gap: 8px; }
-.relation-column > p { margin: 0 0 3px; color: #8b91a0; font-size: 8px; font-weight: 700; }
-.relation-node { display: grid; gap: 3px; min-height: 52px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
-.relation-node--accent { grid-template-columns: auto 1fr; align-items: center; border-color: #d8d3ff; background: #faf9ff; }
-.relation-node strong { font-size: 9px; }
-.relation-node small { color: #89909f; font-size: 7px; line-height: 1.4; }
-.relation-arrow { padding-top: 50px; color: #a29bbc; text-align: center; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: rgba(29,31,42,.28); backdrop-filter: blur(3px); }
 .pi-mcp-install-confirm { width: min(460px,100%); padding: 24px; border: 1px solid #e0e2e8; border-radius: 16px; background: #fff; box-shadow: 0 28px 90px rgba(25,27,39,.26); }
@@ -406,8 +398,7 @@ button.client-card { width: 100%; cursor: pointer; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .overview-hero-grid { grid-template-columns: 1fr; }
   .metric-card--hero { grid-column: 1/-1; }
-  .split-grid, .relation-map { grid-template-columns: 1fr; }
-  .relation-arrow { display: none; }
+  .split-grid { grid-template-columns: 1fr; }
   .model-card-grid { grid-template-columns: 1fr 1fr; }
   .provider-card-grid { grid-template-columns: 1fr; }
   .preset-gallery { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -442,3 +433,15 @@ button.client-card { width: 100%; cursor: pointer; }
   .shared-pool-note, .boundary-note { display: grid; gap: 5px; }
   .feedback { right: 12px; bottom: 12px; width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
 }
+
+/* One row per configured route: client, what it routes, and where it lands. */
+.route-table { border: 1px solid var(--line); border-radius: 12px; background: #fff; overflow: hidden; }
+.route-table header, .route-table article { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.1fr) minmax(0,1.3fr); gap: 14px; align-items: center; padding: 10px 14px; }
+.route-table header { color: #8b91a0; font-size: 7px; font-weight: 700; letter-spacing: .04em; background: #fafbfc; border-bottom: 1px solid var(--line); }
+.route-table article + article { border-top: 1px solid #f0f1f4; }
+.route-table article:hover { background: #fbfaff; }
+.route-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.route-cell > div { min-width: 0; }
+.route-cell strong { display: block; font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.route-cell small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.route-table-empty { margin: 0; padding: 26px 16px; color: var(--muted); font-size: 8px; line-height: 1.7; text-align: center; }

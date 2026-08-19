@@ -930,7 +930,7 @@ pub fn default_claude_runtime_path(path: Option<&Path>) -> Result<PathBuf, Strin
         .ok_or_else(|| "Claude Code CLI is required to run extension SubAgents".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_client_extension_binding(
     control: tauri::State<'_, ControlPlaneService>,
     integration: tauri::State<'_, ExtensionIntegrationService>,
@@ -948,7 +948,7 @@ pub fn set_client_extension_binding(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_extension_subagent(
     control: tauri::State<'_, ControlPlaneService>,
     integration: tauri::State<'_, ExtensionIntegrationService>,
@@ -958,7 +958,7 @@ pub fn update_extension_subagent(
     integration.update_extension(&control, &gateway, input)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mount_client_mcp(
     control: tauri::State<'_, ControlPlaneService>,
     integration: tauri::State<'_, ExtensionIntegrationService>,
@@ -968,7 +968,7 @@ pub fn mount_client_mcp(
     integration.mount_client(&control, &gateway, &client_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unmount_client_mcp(
     control: tauri::State<'_, ControlPlaneService>,
     integration: tauri::State<'_, ExtensionIntegrationService>,
@@ -978,7 +978,7 @@ pub fn unmount_client_mcp(
     integration.unmount_client(&control, &gateway, &client_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn client_mcp_status(
     control: tauri::State<'_, ControlPlaneService>,
     integration: tauri::State<'_, ExtensionIntegrationService>,
@@ -987,7 +987,7 @@ pub fn client_mcp_status(
     integration.client_status(&control.state()?, &client_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn client_mcp_statuses(
     control: tauri::State<'_, ControlPlaneService>,
     integration: tauri::State<'_, ExtensionIntegrationService>,

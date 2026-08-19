@@ -231,14 +231,14 @@ pub fn default_claude_config_root(home: &Path) -> PathBuf {
     home.join(".claude")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integration_status(
     integration: State<'_, IntegrationService>,
 ) -> Result<IntegrationStatus, String> {
     integration.status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn detect_claude_code() -> Result<ClaudeCliStatus, String> {
     let detection = detect_claude_cli().map_err(|error| error.to_string())?;
     Ok(match detection {
@@ -255,7 +255,7 @@ pub fn detect_claude_code() -> Result<ClaudeCliStatus, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_claude_code(
     integration: State<'_, IntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
@@ -296,7 +296,7 @@ pub fn apply_claude_code(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_claude_code(
     integration: State<'_, IntegrationService>,
     control_plane: State<'_, ControlPlaneService>,

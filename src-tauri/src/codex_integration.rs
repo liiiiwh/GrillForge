@@ -175,7 +175,7 @@ fn inspect_native_models_for(
         .unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn codex_status(
     integration: State<'_, CodexIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -183,7 +183,7 @@ pub fn codex_status(
     integration.status(&control)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_codex(
     integration: State<'_, CodexIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -207,7 +207,7 @@ pub fn apply_codex(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_codex(
     integration: State<'_, CodexIntegrationService>,
     control: State<'_, ControlPlaneService>,

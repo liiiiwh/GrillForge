@@ -774,7 +774,7 @@ impl KimiCodeIntegrationService {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn gemini_status(
     service: State<'_, GeminiIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -782,7 +782,7 @@ pub fn gemini_status(
     service.status(&control)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_gemini(
     service: State<'_, GeminiIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -802,7 +802,7 @@ pub fn apply_gemini(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_gemini(
     service: State<'_, GeminiIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -817,7 +817,7 @@ pub fn disable_gemini(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn grok_build_status(
     service: State<'_, GrokBuildIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -825,7 +825,7 @@ pub fn grok_build_status(
     service.status(&control)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_grok_build(
     service: State<'_, GrokBuildIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -839,7 +839,7 @@ pub fn apply_grok_build(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_grok_build(
     service: State<'_, GrokBuildIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -850,7 +850,7 @@ pub fn disable_grok_build(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn opencode_status(
     service: State<'_, OpenCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -858,7 +858,7 @@ pub fn opencode_status(
     service.status(&control)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_opencode(
     service: State<'_, OpenCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -878,7 +878,7 @@ pub fn apply_opencode(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_opencode(
     service: State<'_, OpenCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -893,7 +893,7 @@ pub fn disable_opencode(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hermes_status(
     service: State<'_, HermesIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -901,7 +901,7 @@ pub fn hermes_status(
     service.status(&control)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_hermes(
     service: State<'_, HermesIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -915,7 +915,7 @@ pub fn apply_hermes(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_hermes(
     service: State<'_, HermesIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -926,7 +926,7 @@ pub fn disable_hermes(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kimi_code_status(
     service: State<'_, KimiCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -934,7 +934,7 @@ pub fn kimi_code_status(
     service.status(&control)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_kimi_code(
     service: State<'_, KimiCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -948,7 +948,7 @@ pub fn apply_kimi_code(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_kimi_code(
     service: State<'_, KimiCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -1274,7 +1274,7 @@ impl DshIntegrationService {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn dsh_status(
     service: State<'_, DshIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -1282,7 +1282,7 @@ pub fn dsh_status(
     service.status(&control)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_dsh(
     service: State<'_, DshIntegrationService>,
     control: State<'_, ControlPlaneService>,
@@ -1291,7 +1291,7 @@ pub fn apply_dsh(
     service.apply_with_gateway(&control, &gateway)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_dsh(
     service: State<'_, DshIntegrationService>,
     control: State<'_, ControlPlaneService>,

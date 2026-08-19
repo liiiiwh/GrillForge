@@ -1,6 +1,6 @@
 [package]
 name = "grillforge"
-version = "0.2.23"
+version = "0.2.24"
 description = "The control plane for AI coding agents"
 authors = ["GrillForge contributors"]
 edition = "2024"

@@ -189,7 +189,7 @@ impl PiIntegrationService {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pi_status(
     integration: State<'_, PiIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
@@ -197,7 +197,7 @@ pub fn pi_status(
     integration.status(&control_plane.state()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_pi(
     integration: State<'_, PiIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
@@ -215,7 +215,7 @@ pub fn apply_pi(
     Ok(status)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_pi(
     integration: State<'_, PiIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
