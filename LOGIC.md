@@ -110,11 +110,22 @@ GrillForge does not schedule work or create a parallel custom Agent runtime.
 ### Run Lifecycle
 
 `run_agent` starts the run and returns a handle, so the delegating Agent keeps
-its turn while the child works. `get_agent_result` reports the run as running,
-awaiting permission, or completed, and waits only for the bounded interval the
-caller supplies. `stop_agent` cancels a run and its child. Passing `waitSeconds`
-to `run_agent` collects the result in the same call for a caller that only wants
-the answer.
+its turn while the child works and can start every branch of a fan-out before
+collecting any of them. `get_agent_result` reports the run as running, awaiting
+permission, or completed. `stop_agent` cancels a run and its child. Passing
+`waitSeconds` to `run_agent` collects the result in the same call for a caller
+that only wants the answer.
+
+A collect waits by default, because collecting is the caller's next move after
+starting a run: answering at once would report a run that has barely begun as
+running to a caller that then treats its turn as finished. The default interval
+has to hold for every mounted client, so it stays under the shortest tool-call
+budget any of them applies rather than the longest one any of them allows. A
+caller that knows its own client passes `waitSeconds`, and `0` looks without
+waiting.
+
+A wait also ends the moment the child asks for permission, because that request
+is the caller's to answer and the child is blocked until it is.
 
 A result is delivered once and then dropped. An uncollected result is dropped
 after an hour, and unmounting a client cancels every run still active for it.

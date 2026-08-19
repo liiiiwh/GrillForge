@@ -743,6 +743,17 @@ struct AgentRun {
 const AGENT_RUN_RETENTION: Duration = Duration::from_secs(3600);
 const AGENT_RUN_MAX_WAIT_SECONDS: u64 = 300;
 
+/// How long a collect waits when the caller names no interval. Collecting is
+/// almost always the caller's next move after starting a run, so without a wait
+/// it reports a run that has barely begun as `running` to a caller that then
+/// treats its turn as finished.
+///
+/// It has to hold for every mounted client, so it stays under the shortest
+/// tool-call budget any of them applies: 60 seconds, the MCP default that a
+/// client aborts a silent call at. A caller that knows its own client tolerates
+/// more passes `waitSeconds`, up to [`AGENT_RUN_MAX_WAIT_SECONDS`].
+const AGENT_RUN_DEFAULT_WAIT_SECONDS: u64 = 45;
+
 /// What the caller still owes on an unfinished run. It travels with the payload
 /// because that is where the caller decides whether the turn is done.
 const AGENT_RUN_COLLECT_OBLIGATION: &str =
@@ -2492,7 +2503,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "get_agent_result",
                     "title": "收取扩展 SubAgent 结果",
-                    "description": "Collects a run started by run_agent. Returns status \"running\" with the latest coarse progress, or \"completed\" with the Agent's final result. waitSeconds waits for completion up to 300 seconds; omit it to check without waiting, and call again while it reports running. 用 runId 收取结果。",
+                    "description": "Collects a run started by run_agent. Returns status \"running\" with the latest coarse progress, or \"completed\" with the Agent's final result. It waits for the run by default, so one call is usually enough; pass waitSeconds to choose the interval, up to 300 seconds, or 0 to look without waiting. Call it again whenever it reports running. 用 runId 收取结果。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {"readOnlyHint": true, "destructiveHint": false},
                     "inputSchema": {
@@ -2719,6 +2730,12 @@ async fn await_permission_decision(gateway: &Gateway, run_id: &str, arguments: V
                 notify: Arc::clone(&notify),
             },
         );
+    }
+    // The parent may be inside a collect; the request is what it has to answer.
+    if let Ok(runs) = gateway.active_agent_runs.lock() {
+        if let Some(run) = runs.get(run_id) {
+            run.notify.notify_waiters();
+        }
     }
     let deadline = Instant::now() + AGENT_PERMISSION_TIMEOUT;
     loop {
@@ -2973,7 +2990,7 @@ async fn get_agent_result(active: &ActiveAgentBroker, arguments: Value) -> Resul
     }
     let run_id = required_mcp_string(object, "runId")?;
     let wait = match object.get("waitSeconds") {
-        None => 0,
+        None => AGENT_RUN_DEFAULT_WAIT_SECONDS,
         Some(value) => value
             .as_u64()
             .filter(|seconds| *seconds <= AGENT_RUN_MAX_WAIT_SECONDS)
@@ -3010,28 +3027,34 @@ async fn collect_run(
                     Err(message) => Err(message),
                 };
             }
-            if Instant::now() >= deadline {
-                let progress = run.progress.clone();
-                let pending = active
-                    .permissions
-                    .lock()
-                    .map_err(|_| "Agent permission registry lock is poisoned".to_string())?
-                    .iter()
-                    .filter(|(_, entry)| entry.run_id == run_id && entry.decision.is_none())
-                    .map(|(request_id, entry)| {
-                        json!({
-                            "requestId": request_id,
-                            "toolName": entry.tool_name,
-                            "input": entry.input,
-                        })
+            let pending = active
+                .permissions
+                .lock()
+                .map_err(|_| "Agent permission registry lock is poisoned".to_string())?
+                .iter()
+                .filter(|(_, entry)| entry.run_id == run_id && entry.decision.is_none())
+                .map(|(request_id, entry)| {
+                    json!({
+                        "requestId": request_id,
+                        "toolName": entry.tool_name,
+                        "input": entry.input,
                     })
-                    .collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
+            // A permission request is the caller's to answer, so it ends the
+            // wait: the child is blocked until the answer comes back.
+            if !pending.is_empty() || Instant::now() >= deadline {
+                let progress = run.progress.clone();
                 return serde_json::to_string(&json!({
                     "runId": run_id,
                     "status": if pending.is_empty() { "running" } else { "awaiting_permission" },
                     "progress": progress,
+                    "next": if pending.is_empty() {
+                        AGENT_RUN_COLLECT_OBLIGATION
+                    } else {
+                        "answer every pendingPermissions entry with answer_agent_permission, then call get_agent_result again; the child is blocked until you do"
+                    },
                     "pendingPermissions": pending,
-                    "next": AGENT_RUN_COLLECT_OBLIGATION,
                 }))
                 .map_err(|_| "could not serialize the Agent run status".to_string());
             }

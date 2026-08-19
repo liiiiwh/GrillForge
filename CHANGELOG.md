@@ -4,6 +4,22 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.33] - 2026-08-19
+
+### Fixed
+
+- A collect now waits for the run instead of answering at once. Collecting is
+  the caller's next move after starting a run, so an immediate answer reported a
+  run that had barely begun as running, and a caller that had been told to
+  collect did collect — once — and then treated its turn as finished. The
+  interval stays under the shortest tool-call budget a mounted client applies, so
+  it holds for every client rather than only the most patient one.
+- A wait ends the moment the child asks for permission. It used to run to its own
+  deadline first, which left the child blocked for the whole interval before its
+  request was ever reported.
+- An unfinished run waiting on permission now says to answer it, rather than
+  repeating the instruction to collect.
+
 ## [0.2.32] - 2026-08-19
 
 ### Fixed

@@ -125,6 +125,80 @@ async fn a_running_agent_reports_progress_without_leaking_the_prompt() {
 }
 
 #[tokio::test]
+async fn collecting_waits_for_a_run_the_caller_has_only_just_started() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    // Long enough that an unwaiting collect can only report it as running.
+    fs::write(
+        &runtime,
+        "#!/bin/sh\nsleep 2\nprintf '%s\\n' '{\"type\":\"result\",\"result\":\"slow-result\"}'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    gateway
+        .status(format!("http://{address}"))
+        .activate_client_agent_broker(
+            "codex",
+            &service.state().unwrap(),
+            "wait-token",
+            &runtime,
+            directory.path(),
+            vec![AgentRuntimeRoute {
+                extension_id: "reviewer".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("http://{address}/mcp/codex"))
+            .bearer_auth("wait-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    let started: Value = call(
+        1,
+        "run_agent",
+        json!({"extensionId":"reviewer","cwd":directory.path(),"prompt":"look around"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let handle: Value =
+        serde_json::from_str(started["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let run_id = handle["runId"].as_str().unwrap().to_string();
+
+    // Collecting is the caller's next move, so a collect that names no interval
+    // waits for the run instead of reporting the run it just started as running
+    // and leaving the caller free to answer without a result.
+    let collected: Value = call(2, "get_agent_result", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(collected["result"]["isError"], false, "{collected}");
+    assert_eq!(agent_result(&collected), "slow-result");
+}
+
+#[tokio::test]
 async fn client_scoped_mcp_broker_resolves_the_extension_and_launches_child_only_routing() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let service = ControlPlaneService::new(directory.path());
@@ -2321,8 +2395,8 @@ async fn a_stopped_run_is_cancelled_and_forgotten() {
         serde_json::from_str(started["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     let run_id = handle["runId"].as_str().unwrap().to_string();
 
-    // A long run does not hold the caller: checking without waiting returns at once.
-    let pending: Value = call(2, "get_agent_result", json!({"runId":run_id}))
+    // A caller that asks for no wait is not held by a long run.
+    let pending: Value = call(2, "get_agent_result", json!({"runId":run_id,"waitSeconds":0}))
         .await
         .unwrap()
         .json()
@@ -2450,27 +2524,37 @@ print(json.dumps({{"type": "result", "result": "child saw " + decision["behavior
         .unwrap();
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
-    // The delegating Agent sees the prompt and decides.
-    let mut request_id = None;
-    for _ in 0..100 {
-        let status: Value = call(2, "get_agent_result", json!({"runId":run_id}))
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let payload: Value =
-            serde_json::from_str(status["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-        if payload["status"] == "awaiting_permission" {
-            assert_eq!(payload["pendingPermissions"][0]["toolName"], "Write");
-            request_id = payload["pendingPermissions"][0]["requestId"]
-                .as_str()
-                .map(str::to_string);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    let request_id = request_id.expect("the prompt reached the delegating Agent");
+    // The delegating Agent sees the prompt and decides. One collect is enough:
+    // the wait ends on the request rather than running to its own deadline,
+    // because the child stays blocked until this is answered.
+    let asked = std::time::Instant::now();
+    let status: Value = call(2, "get_agent_result", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // It came back on the request, not on its own deadline. Waiting out the
+    // deadline would leave the child blocked for the whole interval.
+    assert!(
+        asked.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        asked.elapsed()
+    );
+    let payload: Value =
+        serde_json::from_str(status["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["status"], "awaiting_permission", "{payload}");
+    assert_eq!(payload["pendingPermissions"][0]["toolName"], "Write");
+    assert!(
+        payload["next"]
+            .as_str()
+            .expect("permission obligation")
+            .contains("answer_agent_permission")
+    );
+    let request_id = payload["pendingPermissions"][0]["requestId"]
+        .as_str()
+        .map(str::to_string)
+        .expect("the prompt reached the delegating Agent");
 
     let answered: Value = call(
         3,
