@@ -4935,9 +4935,10 @@ function App() {
                             </div>
                           </section>
                         )}
-                        {["gemini", "opencode", "kimi_code"].includes(
-                          selectedAdditionalClient.id,
-                        ) &&
+                        {/* The backend reports one status per client whose MCP
+                            format it can write, so a client that gains support
+                            appears here without editing a list. */}
+                        {mcpStatuses[selectedAdditionalClient.id] &&
                           extensionBindingsFor(
                             selectedAdditionalClient.id,
                             selectedAdditionalClient.name,

@@ -60,6 +60,43 @@ describe("every view mounts", () => {
     await waitFor(() => expect(screen.getByText("路由概览")).toBeTruthy());
   });
 
+  it("offers extension SubAgents to any client the backend can mount", async () => {
+    // The backend reports a status per MCP-capable client; the page must follow
+    // that rather than a hardcoded list that drifts when support is added.
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "load_state") return emptyState;
+      if (command === "provider_presets") return { schema_version: 1, presets: [] };
+      if (command === "client_mcp_statuses")
+        return [
+          {
+            clientId: "dsh",
+            desiredMounted: false,
+            mounted: false,
+            configurationChanged: false,
+          },
+        ];
+      throw new Error("unavailable");
+    });
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getAllByText("控制中心").length).toBeGreaterThan(0),
+    );
+    const clientsNav = screen
+      .getAllByRole("button")
+      .find((button) => button.textContent?.trim().endsWith("客户端"));
+    fireEvent.click(clientsNav!);
+    await waitFor(() =>
+      expect(screen.getAllByText("DeepSeek Harness").length).toBeGreaterThan(0),
+    );
+    fireEvent.click(screen.getAllByText("DeepSeek Harness")[0]);
+    await waitFor(() =>
+      expect(
+        screen.getByText("DeepSeek Harness 可用的扩展 SubAgent"),
+      ).toBeTruthy(),
+    );
+  });
+
   it("renders the client view without breaking the render", async () => {
     render(<App />);
     await waitFor(() =>

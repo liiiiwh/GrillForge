@@ -4,6 +4,22 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.27] - 2026-08-19
+
+### Fixed
+
+- The client page offers extension SubAgents to DeepSeek Harness. The section was
+  shown from a hardcoded list of three clients, so the mount support added in
+  0.2.26 stayed invisible. The page now follows the statuses the backend reports,
+  which it already sends for exactly the clients whose MCP configuration it can
+  write, so a client that gains support no longer needs a second edit here.
+
+### Verification
+
+- A test selects DeepSeek Harness and asserts the section appears. Restoring the
+  hardcoded list makes it fail, so the check covers the drift rather than this
+  one client.
+
 ## [0.2.26] - 2026-08-18
 
 ### Added
