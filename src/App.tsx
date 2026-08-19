@@ -391,8 +391,10 @@ type RouteEdge = {
   clientName: string;
   target: string;
   targetDetail: string;
-  model: string;
+  /** Null when the route follows the client's own model rather than a managed one. */
+  model: string | null;
   provider: string;
+  isExtension: boolean;
 };
 
 type ModelDraft = {
@@ -2434,17 +2436,21 @@ function App() {
       target: string,
       targetDetail: string,
       modelId: string | null | undefined,
+      isExtension = false,
     ) => {
       const resolved = named(modelId);
-      if (!resolved) return;
+      // A managed slot with no model is simply unset. An extension SubAgent is
+      // still mounted and still worth showing, so it stays with no model.
+      if (!resolved && !isExtension) return;
       edges.push({
         key,
         clientId,
         clientName,
         target,
         targetDetail,
-        model: resolved.model,
-        provider: resolved.provider,
+        model: resolved?.model ?? null,
+        provider: resolved?.provider ?? "",
+        isExtension,
       });
     };
 
@@ -2506,11 +2512,34 @@ function App() {
           subagent.name,
           `扩展 SubAgent · ${subagent.sourceClientId}`,
           subagent.modelId,
+          true,
         );
       }
     }
     return edges;
   })();
+
+  /** What the routing view says about a client's extension SubAgent mount. */
+  function mountSummary(clientId: string, extensionCount: number) {
+    const status = mcpStatuses[clientId];
+    if (!status) {
+      return extensionCount > 0
+        ? { label: "该客户端不支持挂载", tone: "warn" as const }
+        : null;
+    }
+    if (status.configurationChanged) {
+      return { label: "配置已变更，需重新应用", tone: "warn" as const };
+    }
+    if (status.mounted) {
+      return { label: `已挂载 ${extensionCount} 个 SubAgent`, tone: "good" as const };
+    }
+    if (status.desiredMounted) {
+      return { label: "已绑定，尚未挂载", tone: "warn" as const };
+    }
+    return extensionCount > 0
+      ? { label: "已绑定，未挂载", tone: "warn" as const }
+      : { label: "未挂载 SubAgent", tone: "neutral" as const };
+  }
 
   // One node per client, forking to each of its routes.
   const routeBranches = routeEdges.reduce<
@@ -5512,10 +5541,25 @@ function App() {
                             <strong>{branch.clientName}</strong>
                             <small>{branch.edges.length} 条路由</small>
                           </div>
+                          {(() => {
+                            const summary = mountSummary(
+                              branch.clientId,
+                              branch.edges.filter((edge) => edge.isExtension)
+                                .length,
+                            );
+                            return summary ? (
+                              <Badge tone={summary.tone}>{summary.label}</Badge>
+                            ) : null;
+                          })()}
                         </div>
                         <ul className="route-forks">
                           {branch.edges.map((edge) => (
-                            <li key={edge.key}>
+                            <li
+                              className={
+                                edge.isExtension ? "route-fork--extension" : ""
+                              }
+                              key={edge.key}
+                            >
                               <span className="route-fork-target">
                                 <strong>{edge.target}</strong>
                                 {edge.targetDetail && (
@@ -5523,7 +5567,7 @@ function App() {
                                 )}
                               </span>
                               <span className="route-fork-model">
-                                <strong>{edge.model}</strong>
+                                <strong>{edge.model ?? "跟随原生模型"}</strong>
                                 {edge.provider && <small>{edge.provider}</small>}
                               </span>
                             </li>

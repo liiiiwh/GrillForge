@@ -123,6 +123,59 @@ describe("every view mounts", () => {
     expect(branches[0].textContent).toContain("Claude Opus 5");
   });
 
+  it("says whether a client's SubAgents are mounted, and shows native ones", async () => {
+    const mountedState = {
+      ...emptyState,
+      extensionSubagents: [
+        {
+          id: "ext-native",
+          name: "Coding",
+          sourceClientId: "claude_code",
+          sourceAgentId: "claude",
+          // Follows its source runtime's own model: it used to vanish from the
+          // diagram even though it is mounted.
+          modelId: null,
+          capabilities: [],
+        },
+      ],
+      clientExtensionSubagentIds: { dsh: ["ext-native"] },
+      mcpMountedClientIds: ["dsh"],
+    };
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "load_state") return mountedState;
+      if (command === "provider_presets") return { schema_version: 1, presets: [] };
+      if (command === "client_mcp_statuses")
+        return [
+          {
+            clientId: "dsh",
+            desiredMounted: true,
+            mounted: true,
+            configurationChanged: false,
+          },
+        ];
+      throw new Error("unavailable");
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() =>
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(0),
+    );
+    const routesNav = within(container)
+      .getAllByRole("button")
+      .find((button) => button.textContent?.trim().endsWith("路由策略"));
+    fireEvent.click(routesNav!);
+    await waitFor(() =>
+      expect(container.querySelectorAll(".route-branch").length).toBeGreaterThan(0),
+    );
+
+    const branch = container.querySelector(".route-branch")!;
+    expect(branch.textContent).toContain("已挂载 1 个 SubAgent");
+    // The mounted extension is present and says it follows the native model.
+    expect(branch.querySelectorAll(".route-fork--extension")).toHaveLength(1);
+    expect(branch.textContent).toContain("Coding");
+    expect(branch.textContent).toContain("跟随原生模型");
+  });
+
   it("offers extension SubAgents to any client the backend can mount", async () => {
     // The backend reports a status per MCP-capable client; the page must follow
     // that rather than a hardcoded list that drifts when support is added.

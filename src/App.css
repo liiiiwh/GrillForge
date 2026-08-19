@@ -438,6 +438,10 @@ button.client-card { width: 100%; cursor: pointer; }
 .route-tree { display: grid; gap: 12px; }
 .route-branch { border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 12px 14px; }
 .route-branch-client { display: flex; align-items: center; gap: 9px; padding-bottom: 10px; border-bottom: 1px solid #f0f1f4; }
+.route-branch-client > .badge { margin-left: auto; }
+/* An extension SubAgent route reads differently from a model slot. */
+.route-fork--extension .route-fork-target strong::before { content: "✦ "; color: var(--accent); }
+.route-fork--extension .route-fork-model { border-color: #dcd6fb; background: #f6f4ff; }
 .route-branch-client strong { display: block; font-size: 10px; }
 .route-branch-client small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
 /* The forks hang off one trunk under the client, so the branching is the shape. */

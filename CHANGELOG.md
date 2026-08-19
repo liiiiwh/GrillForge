@@ -4,6 +4,21 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.30] - 2026-08-19
+
+### Added
+
+- Each client in the routing overview states whether its extension SubAgents are
+  mounted: mounted with a count, bound but not yet mounted, changed outside
+  GrillForge and needing a reapply, or not mounted at all.
+
+### Fixed
+
+- A mounted extension SubAgent that follows its source runtime's own model now
+  appears in the routing overview. Routes were dropped whenever no managed model
+  resolved, which hid exactly the SubAgents that were mounted and running.
+- An extension SubAgent route is marked as one, so it is not read as a model slot.
+
 ## [0.2.29] - 2026-08-19
 
 ### Fixed
