@@ -325,7 +325,10 @@ fn codex_mount_uses_the_real_http_mcp_toml_shape() {
             .iter()
             .filter_map(toml_edit::Value::as_str)
             .collect::<Vec<_>>(),
-        vec!["list_agents", "run_agent"]
+        // Codex may call every tool the broker offers. Allowing only
+        // list_agents and run_agent let it start runs it could never collect,
+        // so every delegated result was lost.
+        grillforge_lib::gateway::AGENT_MCP_TOOLS.to_vec()
     );
     assert_eq!(
         server["omit_tools_from"]
@@ -353,6 +356,40 @@ fn codex_mount_uses_the_real_http_mcp_toml_shape() {
         Some("http://127.0.0.1:9999/mcp")
     );
     assert!(parsed["mcp_servers"].get("grillforge-codex").is_none());
+}
+
+#[test]
+fn a_codex_tool_list_from_an_older_build_reads_as_a_configuration_change() {
+    let root = tempfile::tempdir().expect("root");
+    let config = root.path().join("config.toml");
+    fs::write(&config, "model = \"gpt-5\"\n").expect("fixture");
+    let manager = McpMountManager::new(
+        root.path().join("snapshots"),
+        [McpMountTarget::new(
+            "codex",
+            &config,
+            McpClientFormat::CodexToml,
+        )],
+    )
+    .expect("manager");
+    manager
+        .mount("codex", "http://127.0.0.1:15721/mcp/codex", "codex-token")
+        .expect("mount");
+    assert!(manager.status("codex").expect("status").mounted);
+
+    // What an older build wrote: the url is right, so only the tool list can
+    // reveal that this client can start runs it has no tool to collect.
+    let stale = fs::read_to_string(&config)
+        .expect("active config")
+        .replace(
+            r#"enabled_tools = ["list_agents", "run_agent", "get_agent_result", "answer_agent_permission", "stop_agent"]"#,
+            r#"enabled_tools = ["list_agents", "run_agent"]"#,
+        );
+    assert!(stale.contains(r#"enabled_tools = ["list_agents", "run_agent"]"#));
+    fs::write(&config, stale).expect("stale tool list");
+    let status = manager.status("codex").expect("status");
+    assert!(!status.mounted);
+    assert!(status.configuration_changed);
 }
 
 #[test]

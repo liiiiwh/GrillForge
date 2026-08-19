@@ -743,6 +743,22 @@ struct AgentRun {
 const AGENT_RUN_RETENTION: Duration = Duration::from_secs(3600);
 const AGENT_RUN_MAX_WAIT_SECONDS: u64 = 300;
 
+/// What the caller still owes on an unfinished run. It travels with the payload
+/// because that is where the caller decides whether the turn is done.
+const AGENT_RUN_COLLECT_OBLIGATION: &str =
+    "call get_agent_result with this runId until it returns completed; the result cannot reach you after you answer the user";
+
+/// Every tool the broker offers. A client that is only allowed to call some of
+/// these cannot honour the run contract: `run_agent` hands back a handle, so a
+/// client without `get_agent_result` starts runs it can never collect.
+pub const AGENT_MCP_TOOLS: [&str; 5] = [
+    "list_agents",
+    "run_agent",
+    "get_agent_result",
+    "answer_agent_permission",
+    "stop_agent",
+];
+
 #[derive(Clone)]
 struct ActiveAgentRuntimeRoute {
     documents: ConfigurationDocuments,
@@ -2425,7 +2441,7 @@ async fn agent_broker_mcp_for_client(
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。workflow 或并行不是原生 Agent 的例外：有匹配项时，必须并发调用多个 run_agent，不得改用客户端内置 Workflow、Agent 或 SubAgent。run_agent 立即返回 runId 并在后台运行本机原生 Agent，你可以继续做别的事；用 get_agent_result 收取结果（waitSeconds 可在需要时最多等 300 秒），用 stop_agent 取消。若 get_agent_result 返回 awaiting_permission，说明子 Agent 在等你授权，用 answer_agent_permission 下发 allow 或 deny。不要把中间输出写入主会话。不要先启动客户端内置 Agent。列表为空时才使用客户端内置 Agent；如用户明确要求原生 Agent，应提示用户先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
+            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。workflow 或并行不是原生 Agent 的例外：有匹配项时，必须并发调用多个 run_agent，不得改用客户端内置 Workflow、Agent 或 SubAgent。run_agent 立即返回 runId；结果只能你自己用 get_agent_result 取回（waitSeconds 最多 300 秒，未完成就再取一次），拿到 completed 前不要回复用户，也不要只报 runId。用 stop_agent 取消。若 get_agent_result 返回 awaiting_permission，说明子 Agent 在等你授权，用 answer_agent_permission 下发 allow 或 deny。不要把中间输出写入主会话。不要先启动客户端内置 Agent。列表为空时才使用客户端内置 Agent；如用户明确要求原生 Agent，应提示用户先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -2449,7 +2465,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
-                    "description": "Starts one delegated task and returns a runId immediately; it does not block your turn. For workflow or parallel requests, invoke multiple run_agent calls concurrently. Do not use the client's native Workflow, Agent, or SubAgent when list_agents returned a matching extension. When the MCP client supports progress notifications, it shows coarse runtime status without adding Agent output to the main conversation. The local source Coding Agent owns the Agent loop and tools. run_agent returns a runId immediately and the Agent keeps running in the background, so continue with other work and collect it with get_agent_result; pass waitSeconds only when you actually need to wait. Provide cwd and a complete prompt; webAccess defaults to true; set it to false only to keep an Agent offline. Choose permissionMode from the Agent's published list when the task needs less or more than its default. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务，立即拿到 runId。",
+                    "description": "Starts one delegated task and returns a runId immediately; it does not block your turn. For workflow or parallel requests, invoke multiple run_agent calls concurrently. Do not use the client's native Workflow, Agent, or SubAgent when list_agents returned a matching extension. The local source Coding Agent owns the Agent loop and tools. The result reaches you only through get_agent_result: nothing can deliver it after you answer the user, so collect every runId you start, repeating the call while it reports running, and never report a runId to the user in place of a result. Pass waitSeconds to wait inside the call. Provide cwd and a complete prompt; webAccess defaults to true; set it to false only to keep an Agent offline. Choose permissionMode from the Agent's published list when the task needs less or more than its default. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务，立即拿到 runId。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": false,
@@ -2476,7 +2492,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "get_agent_result",
                     "title": "收取扩展 SubAgent 结果",
-                    "description": "Collects a run started by run_agent. Returns status \"running\" with the latest coarse progress, or \"completed\" with the Agent's final result. waitSeconds waits for completion up to 300 seconds; omit it to check without waiting. 用 runId 收取结果。",
+                    "description": "Collects a run started by run_agent. Returns status \"running\" with the latest coarse progress, or \"completed\" with the Agent's final result. waitSeconds waits for completion up to 300 seconds; omit it to check without waiting, and call again while it reports running. 用 runId 收取结果。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {"readOnlyHint": true, "destructiveHint": false},
                     "inputSchema": {
@@ -2930,8 +2946,12 @@ async fn start_agent(active: ActiveAgentBroker, arguments: Value) -> Result<Stri
             },
         );
     if wait == 0 {
-        return serde_json::to_string(&json!({"runId": run_id, "status": "running"}))
-            .map_err(|_| "could not serialize the Agent run handle".to_string());
+        return serde_json::to_string(&json!({
+            "runId": run_id,
+            "status": "running",
+            "next": AGENT_RUN_COLLECT_OBLIGATION,
+        }))
+        .map_err(|_| "could not serialize the Agent run handle".to_string());
     }
     collect_run(
         &active_for_wait,
@@ -3011,6 +3031,7 @@ async fn collect_run(
                     "status": if pending.is_empty() { "running" } else { "awaiting_permission" },
                     "progress": progress,
                     "pendingPermissions": pending,
+                    "next": AGENT_RUN_COLLECT_OBLIGATION,
                 }))
                 .map_err(|_| "could not serialize the Agent run status".to_string());
             }

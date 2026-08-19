@@ -119,6 +119,15 @@ the answer.
 A result is delivered once and then dropped. An uncollected result is dropped
 after an hour, and unmounting a client cancels every run still active for it.
 
+Only the caller can collect a result. MCP answers a tool call and nothing more:
+there is no way to deliver a result into a turn that has already ended, so a
+delegating Agent that reports a runId and stops has thrown the work away. The
+tools therefore state the obligation, and every unfinished payload repeats it.
+
+For the same reason a client may mount every broker tool or none of them. A
+client allowed to call `run_agent` but not `get_agent_result` starts runs it can
+never collect, which is silent loss rather than a failure it could report.
+
 ### Permission Requests
 
 A permission prompt raised by a delegated Agent belongs to the Agent that

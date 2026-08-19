@@ -84,6 +84,14 @@ async fn a_running_agent_reports_progress_without_leaking_the_prompt() {
     let handle: Value =
         serde_json::from_str(started["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(handle["status"], "running");
+    // The handle says what is still owed, at the point where the caller decides
+    // whether its turn is finished.
+    assert!(
+        handle["next"]
+            .as_str()
+            .expect("collect obligation")
+            .contains("call get_agent_result with this runId")
+    );
     let run_id = handle["runId"].as_str().unwrap().to_string();
 
     // Collecting waits only as long as it was asked to and returns the one result.
@@ -254,8 +262,19 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
         tools["result"]["tools"][1]["inputSchema"]["properties"]["webAccess"]["type"],
         "boolean"
     );
-    // list_agents, run_agent, get_agent_result, answer_agent_permission, stop_agent
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 5);
+    // What a client is allowed to mount has to be exactly what is advertised,
+    // or it starts runs it has no tool to collect.
+    assert_eq!(
+        tools["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>(),
+        grillforge_lib::gateway::AGENT_MCP_TOOLS.to_vec()
+    );
+    // The result only arrives if the caller comes back for it.
+    assert!(run_description.contains("The result reaches you only through get_agent_result"));
 
     let listed: Value = client
         .post(format!("{base_url}/mcp/claude_code"))

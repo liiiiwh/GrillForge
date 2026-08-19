@@ -4,6 +4,24 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.32] - 2026-08-19
+
+### Fixed
+
+- Codex could start extension SubAgents but never collect them. Its mount wrote
+  `enabled_tools = ["list_agents", "run_agent"]`, so the tool that returns a
+  run's result was not offered to it at all: every delegated result was lost the
+  moment the run was started. The mount now offers every broker tool.
+- A tool list written by an older build now reads as a configuration change, so
+  the client reports that it needs reapplying instead of looking correctly
+  mounted because its url still matches.
+- The tools told the caller to start a run and move on. A result can only be
+  collected by the caller — MCP cannot deliver one into a turn that has already
+  ended — so the tools state that, and every unfinished run repeats it in its own
+  payload.
+- `run_agent` claimed the client was sent progress notifications. Nothing ever
+  sent one; progress is only reported in a `get_agent_result` reply.
+
 ## [0.2.31] - 2026-08-19
 
 ### Fixed

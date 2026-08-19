@@ -1050,7 +1050,13 @@ async fn installed_codex_prefers_the_grillforge_extension_for_an_explicit_subage
             ])
             .args([
                 "-c",
-                "mcp_servers.grillforge_test.enabled_tools=[\"list_agents\",\"run_agent\"]",
+                // Mirrors what the mount writes: everything the broker offers.
+                &format!(
+                    "mcp_servers.grillforge_test.enabled_tools=[{}]",
+                    grillforge_lib::gateway::AGENT_MCP_TOOLS
+                        .map(|tool| format!("\"{tool}\""))
+                        .join(",")
+                ),
             ])
             .args([
                 "-c",

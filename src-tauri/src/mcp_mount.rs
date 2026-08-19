@@ -374,13 +374,27 @@ impl McpMountManager {
         let mounted = if target.format == McpClientFormat::DshPatchYaml {
             dsh_block_field(current.as_deref(), "url").as_deref() == Some(snapshot.mounted_url.as_str())
         } else if target.format == McpClientFormat::CodexToml {
-            parse_toml(current.as_deref(), &target.config_path)?
+            let document = parse_toml(current.as_deref(), &target.config_path)?;
+            let server = document
                 .get("mcp_servers")
                 .and_then(toml_edit::Item::as_table_like)
-                .and_then(|servers| servers.get(&server_name(client_id)))
+                .and_then(|servers| servers.get(&server_name(client_id)));
+            // The tool list is checked as well as the url: a list written before
+            // a tool existed keeps the url intact while leaving the client
+            // unable to collect what it starts.
+            server
                 .and_then(|entry| entry.get("url"))
                 .and_then(toml_edit::Item::as_str)
                 == Some(snapshot.mounted_url.as_str())
+                && server
+                    .and_then(|entry| entry.get("enabled_tools"))
+                    .and_then(toml_edit::Item::as_array)
+                    .is_some_and(|tools| {
+                        tools
+                            .iter()
+                            .filter_map(toml_edit::Value::as_str)
+                            .eq(crate::gateway::AGENT_MCP_TOOLS)
+                    })
         } else {
             let root = parse_json_object(current.as_deref(), &target.config_path)?;
             root.get(json_section(target.format))
@@ -1214,8 +1228,11 @@ fn update_codex_toml(
     server["enabled"] = toml_edit::value(true);
     server["required"] = toml_edit::value(true);
     let mut enabled_tools = toml_edit::Array::new();
-    enabled_tools.push("list_agents");
-    enabled_tools.push("run_agent");
+    // Every tool, not a chosen few: a client allowed to start runs but not to
+    // collect them orphans every result it asks for.
+    for tool in crate::gateway::AGENT_MCP_TOOLS {
+        enabled_tools.push(tool);
+    }
     server["enabled_tools"] = toml_edit::value(enabled_tools);
     let mut omitted_surfaces = toml_edit::Array::new();
     omitted_surfaces.push("deferred");
