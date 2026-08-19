@@ -435,13 +435,19 @@ button.client-card { width: 100%; cursor: pointer; }
 }
 
 /* One row per configured route: client, what it routes, and where it lands. */
-.route-table { border: 1px solid var(--line); border-radius: 12px; background: #fff; overflow: hidden; }
-.route-table header, .route-table article { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.1fr) minmax(0,1.3fr); gap: 14px; align-items: center; padding: 10px 14px; }
-.route-table header { color: #8b91a0; font-size: 7px; font-weight: 700; letter-spacing: .04em; background: #fafbfc; border-bottom: 1px solid var(--line); }
-.route-table article + article { border-top: 1px solid #f0f1f4; }
-.route-table article:hover { background: #fbfaff; }
-.route-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.route-cell > div { min-width: 0; }
-.route-cell strong { display: block; font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.route-cell small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.route-table-empty { margin: 0; padding: 26px 16px; color: var(--muted); font-size: 8px; line-height: 1.7; text-align: center; }
+.route-tree { display: grid; gap: 12px; }
+.route-branch { border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 12px 14px; }
+.route-branch-client { display: flex; align-items: center; gap: 9px; padding-bottom: 10px; border-bottom: 1px solid #f0f1f4; }
+.route-branch-client strong { display: block; font-size: 10px; }
+.route-branch-client small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+/* The forks hang off one trunk under the client, so the branching is the shape. */
+.route-forks { position: relative; margin: 0; padding: 10px 0 0 26px; list-style: none; }
+.route-forks::before { content: ""; position: absolute; top: 0; bottom: 14px; left: 10px; border-left: 1px solid #d9d5f5; }
+.route-forks li { position: relative; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.4fr); gap: 12px; align-items: center; padding: 7px 0; }
+.route-forks li::before { content: ""; position: absolute; top: 50%; left: -16px; width: 14px; border-top: 1px solid #d9d5f5; }
+.route-forks li:last-child::after { content: ""; position: absolute; top: 50%; bottom: -8px; left: -16px; border-left: 1px solid #fff; }
+.route-fork-target, .route-fork-model { min-width: 0; }
+.route-fork-target strong, .route-fork-model strong { display: block; font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.route-fork-target small, .route-fork-model small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.route-fork-model { padding: 6px 10px; border: 1px solid #eceafd; border-radius: 8px; background: #fbfaff; }
+.route-tree-empty { margin: 0; padding: 26px 16px; border: 1px dashed #d8dbe4; border-radius: 12px; color: var(--muted); font-size: 8px; line-height: 1.7; text-align: center; }

@@ -2512,6 +2512,23 @@ function App() {
     return edges;
   })();
 
+  // One node per client, forking to each of its routes.
+  const routeBranches = routeEdges.reduce<
+    { clientId: string; clientName: string; edges: RouteEdge[] }[]
+  >((branches, edge) => {
+    const existing = branches.find((branch) => branch.clientId === edge.clientId);
+    if (existing) {
+      existing.edges.push(edge);
+      return branches;
+    }
+    branches.push({
+      clientId: edge.clientId,
+      clientName: edge.clientName,
+      edges: [edge],
+    });
+    return branches;
+  }, []);
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -4730,9 +4747,7 @@ function App() {
                                 : "默认模型"}
                             </span>
                           </article>
-                          {["gemini", "opencode", "kimi_code"].includes(
-                            selectedAdditionalClient.id,
-                          ) && (
+                          {mcpStatuses[selectedAdditionalClient.id] && (
                             <article>
                               <small>扩展 SubAgent</small>
                               <strong>
@@ -4744,9 +4759,7 @@ function App() {
                             </article>
                           )}
                         </section>
-                        {["gemini", "opencode", "kimi_code"].includes(
-                          selectedAdditionalClient.id,
-                        ) && (
+                        {mcpStatuses[selectedAdditionalClient.id] && (
                           <nav
                             className="client-tabs"
                             aria-label={`${selectedAdditionalClient.name} 配置`}
@@ -5481,43 +5494,41 @@ function App() {
                     </article>
                   ))}
                 </section>
-                <section className="route-table">
-                  <header>
-                    <span>客户端</span>
-                    <span>槽位 / SubAgent</span>
-                    <span>模型 · 供应商</span>
-                  </header>
+                <section className="route-tree">
                   {routeEdges.length === 0 ? (
-                    <p className="route-table-empty">
+                    <p className="route-tree-empty">
                       还没有配置任何模型路由。在「客户端」页为某个槽位或扩展 SubAgent
-                      选择模型后，这里会逐条列出实际生效的路由。
+                      选择模型后，这里会画出实际生效的分叉。
                     </p>
                   ) : (
-                    routeEdges.map((edge) => (
-                      <article key={edge.key}>
-                        <div className="route-cell">
+                    routeBranches.map((branch) => (
+                      <article className="route-branch" key={branch.clientId}>
+                        <div className="route-branch-client">
                           <ClientLogo
-                            clientId={edge.clientId}
-                            name={edge.clientName}
+                            clientId={branch.clientId}
+                            name={branch.clientName}
                           />
                           <div>
-                            <strong>{edge.clientName}</strong>
+                            <strong>{branch.clientName}</strong>
+                            <small>{branch.edges.length} 条路由</small>
                           </div>
                         </div>
-                        <div className="route-cell">
-                          <div>
-                            <strong>{edge.target}</strong>
-                            {edge.targetDetail && (
-                              <small>{edge.targetDetail}</small>
-                            )}
-                          </div>
-                        </div>
-                        <div className="route-cell">
-                          <div>
-                            <strong>{edge.model}</strong>
-                            {edge.provider && <small>{edge.provider}</small>}
-                          </div>
-                        </div>
+                        <ul className="route-forks">
+                          {branch.edges.map((edge) => (
+                            <li key={edge.key}>
+                              <span className="route-fork-target">
+                                <strong>{edge.target}</strong>
+                                {edge.targetDetail && (
+                                  <small>{edge.targetDetail}</small>
+                                )}
+                              </span>
+                              <span className="route-fork-model">
+                                <strong>{edge.model}</strong>
+                                {edge.provider && <small>{edge.provider}</small>}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
                       </article>
                     ))
                   )}

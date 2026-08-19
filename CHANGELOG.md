@@ -4,6 +4,31 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.29] - 2026-08-19
+
+### Fixed
+
+- DeepSeek Harness shows its extension SubAgent settings. Three separate places
+  decided this from the same hardcoded list of three clients — the settings
+  section, the count beside the client's status, and the tab that reaches them.
+  0.2.27 changed only the first, so the feature stayed invisible. All three now
+  follow the clients the backend reports it can mount, and none of them can drift
+  apart again.
+
+### Changed
+
+- The routing overview draws each client as one node that forks to its routes,
+  instead of repeating the client on every row.
+
+### Verification
+
+- The view tests were scoped to the tree each one renders. They had been querying
+  the whole document, so a click could land on the previous test's buttons and a
+  test could pass for the wrong reason.
+- Removing the grouping makes the fork test fail, and restoring the hardcoded
+  list makes the DeepSeek Harness test fail, so both cover the behaviour rather
+  than the instance.
+
 ## [0.2.28] - 2026-08-19
 
 ### Changed
