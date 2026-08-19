@@ -422,12 +422,19 @@ fn convert_message(
         }
     }
     if !tool_results.is_empty() {
-        if !content_parts.is_empty() || !tool_calls.is_empty() || !reasoning.is_empty() {
+        // tool_use and reasoning are assistant-only, so neither can share the user
+        // turn that carries a tool result.
+        if !tool_calls.is_empty() || !reasoning.is_empty() {
             return Err(invalid_request(
-                "tool_result cannot be mixed with other content in one message",
+                "tool_result cannot be mixed with assistant content in one message",
             ));
         }
         output.extend(tool_results);
+        // Anthropic lets one user turn carry its tool results and then say more.
+        // Chat has no such message, so the remainder follows as its own user turn.
+        if !content_parts.is_empty() {
+            output.push(json!({"role":role,"content":chat_content(content_parts)}));
+        }
         return Ok(());
     }
     if !reasoning.is_empty() && tool_calls.is_empty() {
@@ -435,16 +442,7 @@ fn convert_message(
             "reasoning_content is only valid on assistant tool calls",
         ));
     }
-    let content = if content_parts.is_empty() {
-        Value::Null
-    } else if content_parts.len() == 1
-        && content_parts[0].get("type").and_then(Value::as_str) == Some("text")
-    {
-        content_parts[0]["text"].clone()
-    } else {
-        Value::Array(content_parts)
-    };
-    let mut message = json!({"role":role,"content":content});
+    let mut message = json!({"role":role,"content":chat_content(content_parts)});
     let has_tool_calls = !tool_calls.is_empty();
     if has_tool_calls {
         message["tool_calls"] = Value::Array(tool_calls);
@@ -458,6 +456,20 @@ fn convert_message(
     }
     output.push(message);
     Ok(())
+}
+
+/// A lone text part travels as a plain string, which is what a Chat endpoint
+/// expects; anything else keeps its part array.
+fn chat_content(content_parts: Vec<Value>) -> Value {
+    if content_parts.is_empty() {
+        return Value::Null;
+    }
+    if content_parts.len() == 1
+        && content_parts[0].get("type").and_then(Value::as_str) == Some("text")
+    {
+        return content_parts[0]["text"].clone();
+    }
+    Value::Array(content_parts)
 }
 
 fn tool_result_text(value: Option<&Value>, field: &str) -> Result<String, BridgeError> {

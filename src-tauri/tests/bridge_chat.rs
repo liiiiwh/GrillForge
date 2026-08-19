@@ -756,3 +756,65 @@ async fn a_successful_tool_result_carries_no_error_marker() {
         .expect("tool message");
     assert_eq!(tool_message["content"], "file body");
 }
+
+#[tokio::test]
+async fn a_tool_result_may_be_followed_by_more_user_content() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chat_mixed","model":"qwen-coder",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":1}
+    }))
+    .await;
+
+    OpenAiChatBridge::new(base_url, "chat-secret")
+        .complete(json!({
+            "model":"qwen-coder","max_tokens":128,
+            "tools":[{"name":"read_file","description":"Read one file","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}],
+            "messages":[
+                {"role":"user","content":"inspect"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"read_file","input":{"path":"a.rs"}}]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"call_1","content":"file body"},
+                    {"type":"text","text":"now summarise it"}
+                ]}
+            ]
+        }))
+        .await
+        .unwrap();
+
+    let request = captured.await.unwrap().body;
+    let messages = request["messages"].as_array().unwrap();
+    let tool_index = messages
+        .iter()
+        .position(|message| message["role"] == "tool")
+        .expect("tool message");
+    assert_eq!(messages[tool_index]["content"], "file body");
+    // The remainder follows as its own user turn, after the tool result.
+    let trailing = &messages[tool_index + 1];
+    assert_eq!(trailing["role"], "user");
+    assert_eq!(trailing["content"], "now summarise it");
+}
+
+#[tokio::test]
+async fn a_tool_result_still_cannot_share_a_turn_with_assistant_content() {
+    let (base_url, _captured) = serve_once(json!({
+        "id":"chat_bad","model":"qwen-coder",
+        "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":1}
+    }))
+    .await;
+
+    let error = OpenAiChatBridge::new(base_url, "chat-secret")
+        .complete(json!({
+            "model":"qwen-coder","max_tokens":128,
+            "messages":[
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"call_1","content":"file body"},
+                    {"type":"tool_use","id":"call_2","name":"read_file","input":{}}
+                ]}
+            ]
+        }))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("require assistant role"), "{error}");
+}

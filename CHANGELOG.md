@@ -4,6 +4,28 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.22] - 2026-08-18
+
+### Fixed
+
+- A delegated Agent no longer fails when a turn carries a tool result and then
+  says more. Anthropic allows one user turn to hold its tool results followed by
+  further content; Chat Completions has no such message, so the remainder now
+  follows as its own user turn after the tool messages instead of being rejected.
+  A tool result still cannot share a turn with assistant-only content, which is
+  malformed rather than merely untranslatable.
+- Checkboxes in the model form are no longer stretched to the size of a text
+  field. The form sizes its inputs at full width and 36px, which also caught the
+  native-protocol and advanced-option checkboxes, inflating them until their
+  labels wrapped one character per line and pushed the context window field out
+  of view.
+
+### Verification
+
+- The model form was rendered against the real stylesheet before and after the
+  rule, reproducing the reported layout and then the corrected one.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.21] - 2026-08-18
 
 ### Changed

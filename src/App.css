@@ -247,6 +247,8 @@ button.client-card { width: 100%; cursor: pointer; }
 .protocol-features > div { display: flex; flex-wrap: wrap; gap: 9px 14px; margin-top: 8px; }
 .protocol-features > div label { display: flex; align-items: center; gap: 5px; }
 .protocol-features input { accent-color: var(--accent); }
+/* The form sizes its text fields at 100% x 36px; a checkbox is not one of them. */
+.inline-form input[type="checkbox"], .inline-form input[type="radio"] { width: auto; height: auto; }
 .form-actions { padding-top: 3px; }
 .form-actions span { color: var(--muted); font-size: 8px; }
 .provider-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 4px 0 13px; }
