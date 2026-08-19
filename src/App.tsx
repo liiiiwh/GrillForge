@@ -4845,6 +4845,11 @@ function App() {
                             </div>
                           </section>
                         </section>
+                        {mcpStatuses[selectedAdditionalClient.id] &&
+                          extensionBindingsFor(
+                            selectedAdditionalClient.id,
+                            selectedAdditionalClient.name,
+                          )}
                         {selectedAdditionalClient.pool && (
                           <section className="subagent-section">
                             <div className="config-heading">
@@ -4938,11 +4943,6 @@ function App() {
                         {/* The backend reports one status per client whose MCP
                             format it can write, so a client that gains support
                             appears here without editing a list. */}
-                        {mcpStatuses[selectedAdditionalClient.id] &&
-                          extensionBindingsFor(
-                            selectedAdditionalClient.id,
-                            selectedAdditionalClient.name,
-                          )}
                         <section className="agent-card">
                           <ClientLogo
                             clientId={selectedAdditionalClient.id}

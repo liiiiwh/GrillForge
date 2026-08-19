@@ -4,6 +4,14 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.28] - 2026-08-19
+
+### Changed
+
+- A client's extension SubAgent bindings now sit above its model pool. The pool
+  lists every model the client may use, so on a client with many models the
+  bindings were pushed off the bottom of the page and read as missing.
+
 ## [0.2.27] - 2026-08-19
 
 ### Fixed

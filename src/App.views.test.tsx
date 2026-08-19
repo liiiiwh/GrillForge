@@ -95,6 +95,14 @@ describe("every view mounts", () => {
         screen.getByText("DeepSeek Harness 可用的扩展 SubAgent"),
       ).toBeTruthy(),
     );
+
+    // It must precede the model pool: a list of every model pushed it off-screen.
+    const headings = screen.getAllByRole("heading").map((node) => node.textContent ?? "");
+    const bindings = headings.findIndex((text) => text.includes("可用的扩展 SubAgent"));
+    const pool = headings.findIndex((text) => text.includes("可用模型"));
+    expect(bindings).toBeGreaterThanOrEqual(0);
+    expect(pool).toBeGreaterThanOrEqual(0);
+    expect(bindings).toBeLessThan(pool);
   });
 
   it("renders the client view without breaking the render", async () => {
