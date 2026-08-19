@@ -190,7 +190,7 @@ impl PiIntegrationService {
 }
 
 #[tauri::command]
-pub async fn pi_status(
+pub fn pi_status(
     integration: State<'_, PiIntegrationService>,
     control_plane: State<'_, ControlPlaneService>,
 ) -> Result<PiIntegrationStatus, String> {

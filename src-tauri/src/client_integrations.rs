@@ -775,7 +775,7 @@ impl KimiCodeIntegrationService {
 }
 
 #[tauri::command]
-pub async fn gemini_status(
+pub fn gemini_status(
     service: State<'_, GeminiIntegrationService>,
     control: State<'_, ControlPlaneService>,
 ) -> Result<ClientIntegrationStatus, String> {
@@ -818,7 +818,7 @@ pub fn disable_gemini(
 }
 
 #[tauri::command]
-pub async fn grok_build_status(
+pub fn grok_build_status(
     service: State<'_, GrokBuildIntegrationService>,
     control: State<'_, ControlPlaneService>,
 ) -> Result<ClientIntegrationStatus, String> {
@@ -851,7 +851,7 @@ pub fn disable_grok_build(
 }
 
 #[tauri::command]
-pub async fn opencode_status(
+pub fn opencode_status(
     service: State<'_, OpenCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
 ) -> Result<ClientIntegrationStatus, String> {
@@ -894,7 +894,7 @@ pub fn disable_opencode(
 }
 
 #[tauri::command]
-pub async fn hermes_status(
+pub fn hermes_status(
     service: State<'_, HermesIntegrationService>,
     control: State<'_, ControlPlaneService>,
 ) -> Result<ClientIntegrationStatus, String> {
@@ -927,7 +927,7 @@ pub fn disable_hermes(
 }
 
 #[tauri::command]
-pub async fn kimi_code_status(
+pub fn kimi_code_status(
     service: State<'_, KimiCodeIntegrationService>,
     control: State<'_, ControlPlaneService>,
 ) -> Result<KimiCodeIntegrationStatus, String> {
@@ -1275,7 +1275,7 @@ impl DshIntegrationService {
 }
 
 #[tauri::command]
-pub async fn dsh_status(
+pub fn dsh_status(
     service: State<'_, DshIntegrationService>,
     control: State<'_, ControlPlaneService>,
 ) -> Result<ClientIntegrationStatus, String> {

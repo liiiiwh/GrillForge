@@ -4,6 +4,30 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.23] - 2026-08-18
+
+### Fixed
+
+- A bridged request may enable thinking without naming an effort, and may ask for
+  the summarized thinking the bridge already produces from a provider's reasoning
+  content. Both are documented and were rejected.
+- A bridged request may carry any documented context-management edit, not only
+  the one strategy this bridge happened to meet first. The field is dropped on
+  the way out, so rejecting the rest bought nothing.
+- Discovering local Agents no longer runs on the async worker threads. Every
+  branch of that sweep waits on a CLI child process, and the client status
+  commands did the same, so a single slow CLI could hold a worker for its whole
+  timeout while other requests waited.
+
+### Verification
+
+- The bridge's 101 field allowlists were reviewed against the documented API
+  surface. Three rejections were wrong and are fixed; the rest, including
+  `stop_sequences` and sampling controls on a Responses target, were confirmed
+  correct because that target cannot express them and dropping them silently
+  would be worse than failing.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.22] - 2026-08-18
 
 ### Fixed

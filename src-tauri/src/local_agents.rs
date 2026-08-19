@@ -1453,6 +1453,16 @@ fn read_plugin_settings(settings_path: &Path) -> Result<BTreeMap<String, bool>, 
 pub async fn discover_local_agents(
     project_root: Option<String>,
 ) -> Result<LocalAgentDiscovery, String> {
+    // Each branch waits on a CLI child process, so the whole sweep runs off the
+    // async worker threads rather than holding one for every installed client.
+    tokio::task::spawn_blocking(move || discover_local_agents_blocking(project_root))
+        .await
+        .map_err(|error| format!("local Agent discovery did not finish: {error}"))?
+}
+
+fn discover_local_agents_blocking(
+    project_root: Option<String>,
+) -> Result<LocalAgentDiscovery, String> {
     let home = dirs::home_dir().ok_or_else(|| "home directory is unavailable".to_string())?;
     let claude_root = home.join(".claude");
     let project_root = project_root

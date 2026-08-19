@@ -27,11 +27,6 @@ pub(crate) fn validate(
             "output_config/thinking require the provider {capability_name} capability"
         )));
     }
-    if thinking_enabled && output_effort.is_none() {
-        return Err(invalid(
-            "adaptive thinking requires output_config.effort for an exact OpenAI mapping",
-        ));
-    }
     Ok(output_effort)
 }
 
@@ -63,14 +58,18 @@ fn validate_context_management(value: &Value) -> Result<(), BridgeError> {
         let edit = edit
             .as_object()
             .ok_or_else(|| invalid(&format!("{field} must be an object")))?;
-        reject_unknown(edit, &["type", "keep"], &field)?;
-        if edit.get("type").and_then(Value::as_str) != Some("clear_thinking_20251015") {
-            return Err(invalid(&format!(
-                "{field}.type must be clear_thinking_20251015"
-            )));
-        }
-        if edit.get("keep").and_then(Value::as_str) != Some("all") {
-            return Err(invalid(&format!("{field}.keep must be all")));
+        reject_unknown(
+            edit,
+            &["type", "keep", "clear_at_least", "clear_tool_inputs", "exclude_tools"],
+            &field,
+        )?;
+        match edit.get("type").and_then(Value::as_str) {
+            Some("clear_thinking_20251015") | Some("clear_tool_uses_20250919") => {}
+            _ => {
+                return Err(invalid(&format!(
+                    "{field}.type must be clear_thinking_20251015 or clear_tool_uses_20250919"
+                )));
+            }
         }
     }
     Ok(())
@@ -81,9 +80,11 @@ fn validate_output_config(value: &Value) -> Result<Option<String>, BridgeError> 
         .as_object()
         .ok_or_else(|| invalid("output_config must be an object"))?;
     reject_unknown(config, &["effort"], "output_config")?;
-    let effort = config
-        .get("effort")
-        .and_then(Value::as_str)
+    let Some(effort) = config.get("effort") else {
+        return Ok(None);
+    };
+    let effort = effort
+        .as_str()
         .ok_or_else(|| invalid("output_config.effort must be a string"))?;
     match effort {
         "low" | "medium" | "high" | "xhigh" => Ok(Some(effort.to_owned())),
@@ -109,8 +110,9 @@ fn validate_thinking(value: &Value) -> Result<bool, BridgeError> {
             // response shape a bridged provider can produce. Claude Code sends
             // adaptive thinking without the field.
             if let Some(display) = thinking.get("display") {
-                if display.as_str() != Some("omitted") {
-                    return Err(invalid("thinking.display must be omitted"));
+                match display.as_str() {
+                    Some("omitted") | Some("summarized") => {}
+                    _ => return Err(invalid("thinking.display must be omitted or summarized")),
                 }
             }
             Ok(true)

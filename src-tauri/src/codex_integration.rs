@@ -176,7 +176,7 @@ fn inspect_native_models_for(
 }
 
 #[tauri::command]
-pub async fn codex_status(
+pub fn codex_status(
     integration: State<'_, CodexIntegrationService>,
     control: State<'_, ControlPlaneService>,
 ) -> Result<CodexIntegrationStatus, String> {

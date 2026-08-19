@@ -622,7 +622,7 @@ async fn adaptive_thinking_without_a_display_field_is_accepted() {
 }
 
 #[tokio::test]
-async fn adaptive_thinking_with_a_returned_display_is_rejected() {
+async fn adaptive_thinking_accepts_a_documented_display_and_rejects_the_rest() {
     let (base_url, _captured) = serve_once(json!({
         "id":"chat_kimi","model":"kimi-for-coding-highspeed",
         "choices":[{"index":0,"message":{"role":"assistant","content":"3"},"finish_reason":"stop"}],
@@ -638,7 +638,7 @@ async fn adaptive_thinking_with_a_returned_display_is_rejected() {
         .complete(json!({
             "model":"kimi-for-coding-highspeed","max_tokens":32,
             "output_config":{"effort":"high"},
-            "thinking":{"type":"adaptive","display":"summarized"},
+            "thinking":{"type":"adaptive","display":"invented"},
             "messages":[{"role":"user","content":"Only output 3"}]
         }))
         .await
@@ -647,9 +647,38 @@ async fn adaptive_thinking_with_a_returned_display_is_rejected() {
     assert!(
         error
             .to_string()
-            .contains("thinking.display must be omitted"),
+            .contains("thinking.display must be omitted or summarized"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn thinking_needs_no_effort_and_may_ask_for_a_summary() {
+    let (base_url, captured) = serve_once(json!({
+        "id":"chat_kimi","model":"kimi-for-coding-highspeed",
+        "choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"Checked","content":"3"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":4,"completion_tokens":2}
+    }))
+    .await;
+
+    // A caller may enable thinking without naming an effort, and may ask for the
+    // summary this bridge can actually produce from reasoning_content.
+    let response = OpenAiChatBridge::new(base_url, "chat-secret")
+        .with_capabilities(OpenAiChatCapabilities {
+            reasoning_content: true,
+            reasoning_effort: false,
+        })
+        .complete(json!({
+            "model":"kimi-for-coding-highspeed","max_tokens":32,
+            "thinking":{"type":"adaptive","display":"summarized"},
+            "messages":[{"role":"user","content":"Only output 3"}]
+        }))
+        .await
+        .unwrap();
+
+    captured.await.unwrap();
+    assert_eq!(response["content"][0]["type"], "thinking");
+    assert_eq!(response["content"][1]["text"], "3");
 }
 
 #[tokio::test]

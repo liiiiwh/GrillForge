@@ -3718,7 +3718,17 @@ async fn run_grok_build_agent_runtime(
     base_url: &str,
     options: &AgentRunOptions,
 ) -> Result<std::process::Output, String> {
-    let discovered = crate::local_agents::discover_grok_build_agents(&source.runtime, cwd)?;
+    // Discovery waits on a child process, so it runs off the async worker threads
+    // rather than blocking one for as long as that child takes.
+    let discovered = {
+        let runtime = source.runtime.clone();
+        let cwd = cwd.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            crate::local_agents::discover_grok_build_agents(&runtime, &cwd)
+        })
+        .await
+        .map_err(|error| format!("Grok Build Agent discovery did not finish: {error}"))??
+    };
     if !discovered.iter().any(|agent| agent.agent_id == agent_id) {
         return Err(format!(
             "Grok Build Agent is not available for this project: {agent_id}"

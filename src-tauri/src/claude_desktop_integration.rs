@@ -280,7 +280,7 @@ pub fn default_claude_desktop_paths(home: &Path) -> ClaudeDesktopPaths {
 }
 
 #[tauri::command]
-pub async fn claude_desktop_status(
+pub fn claude_desktop_status(
     integration: State<'_, ClaudeDesktopIntegrationService>,
 ) -> Result<ClaudeDesktopIntegrationStatus, String> {
     integration.status()
@@ -331,7 +331,7 @@ pub fn disable_claude_desktop(
 }
 
 #[tauri::command]
-pub async fn restart_claude_client() -> Result<(), String> {
+pub fn restart_claude_client() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         restart_macos_application("com.anthropic.claudefordesktop", "Claude", "Claude Client")
@@ -343,7 +343,7 @@ pub async fn restart_claude_client() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn restart_codex_client() -> Result<(), String> {
+pub fn restart_codex_client() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         restart_macos_application("com.openai.codex", "ChatGPT", "Codex")

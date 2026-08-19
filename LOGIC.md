@@ -225,6 +225,25 @@ Native Slots and managed extension requests are resolved independently:
 - Unknown GrillForge aliases fail closed with a clear local error; they never
   fall through to an arbitrary Provider.
 
+## Bridge Request Acceptance
+
+A bridge receives requests written for one API and sends them to another, so
+what it accepts is a contract with real clients, not a matter of taste. Three
+rules decide every field:
+
+- A field the target can express is accepted and forwarded.
+- A field that exists only for the source API and is dropped on the way out is
+  accepted in any form its own specification allows.
+- A field that would change the meaning of the request or the shape of the
+  response, and that the target cannot express, is rejected by name.
+
+The third rule is why a request naming `stop_sequences` fails on a Responses
+target rather than losing it silently, and the second is why a thinking hint or
+a context-management edit is accepted in every documented form even though the
+bridge drops it. Rejecting a field the specification allows is a defect, not
+strictness: the client is not wrong, and the error arrives only once a delegated
+Agent is already running.
+
 ## Provider Protocol Logic
 
 Provider protocol mode is explicit and derived from cc-switch-compatible
