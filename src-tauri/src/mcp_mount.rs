@@ -18,6 +18,7 @@ pub enum McpClientFormat {
     OpenCodeJson,
     KimiJson,
     PiExtensionJson,
+    DshPatchYaml,
     Unsupported,
 }
 
@@ -228,6 +229,9 @@ impl McpMountManager {
                 token,
                 JsonMcpShape::PiExtension,
             )?,
+            McpClientFormat::DshPatchYaml => {
+                update_dsh_patch_yaml(current.as_deref(), &target.config_path, url, token)?
+            }
             McpClientFormat::Unsupported => unreachable!(),
         };
         let encoded = serde_json::to_vec_pretty(&snapshot)
@@ -367,7 +371,9 @@ impl McpMountManager {
         };
         let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
         let current = read_optional(&target.config_path)?;
-        let mounted = if target.format == McpClientFormat::CodexToml {
+        let mounted = if target.format == McpClientFormat::DshPatchYaml {
+            dsh_block_field(current.as_deref(), "url").as_deref() == Some(snapshot.mounted_url.as_str())
+        } else if target.format == McpClientFormat::CodexToml {
             parse_toml(current.as_deref(), &target.config_path)?
                 .get("mcp_servers")
                 .and_then(toml_edit::Item::as_table_like)
@@ -561,6 +567,10 @@ fn remove_optional_file(path: &Path, label: &str) -> Result<(), String> {
 fn mounted_credential(target: &McpMountTarget) -> Result<Option<String>, String> {
     let current = read_optional(&target.config_path)?;
     let name = server_name(&target.client_id);
+    if target.format == McpClientFormat::DshPatchYaml {
+        return Ok(dsh_block_field(current.as_deref(), "Authorization")
+            .and_then(|value| value.strip_prefix("Bearer ").map(str::to_string)));
+    }
     let token = if target.format == McpClientFormat::CodexToml {
         parse_toml(current.as_deref(), &target.config_path)?
             .get("mcp_servers")
@@ -849,12 +859,120 @@ fn remove_route_hook(
         .map_err(|error| format!("could not serialize {}: {error}", path.display()))
 }
 
+const DSH_BLOCK_START: &str = "# >>> grillforge mcp (managed)";
+const DSH_BLOCK_END: &str = "# <<< grillforge mcp";
+
+/// Rewrites the single GrillForge block in the harness user layer, leaving every
+/// entry the user wrote around it untouched.
+fn update_dsh_patch_yaml(
+    current: Option<&[u8]>,
+    path: &Path,
+    url: &str,
+    token: &str,
+) -> Result<Vec<u8>, String> {
+    let kept = strip_dsh_block(current)?;
+    let mut out = kept;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(DSH_BLOCK_START);
+    out.push('\n');
+    // The MCP client is not in the base profile, so it is inserted rather than
+    // patched: a patch entry can only target an id that already exists.
+    out.push_str("- insert:\n");
+    out.push_str("    - id: grillforge-mcp\n");
+    out.push_str("      name: '@deepseek-ai/dsh-mcp-client'\n");
+    out.push_str("      config:\n");
+    out.push_str("        transport: streamable-http\n");
+    out.push_str("        serverName: grillforge\n");
+    out.push_str(&format!("        url: {}\n", yaml_quote(url)));
+    out.push_str("        headers:\n");
+    out.push_str(&format!(
+        "          Authorization: {}\n",
+        yaml_quote(&format!("Bearer {token}"))
+    ));
+    out.push_str(DSH_BLOCK_END);
+    out.push('\n');
+    let _ = path;
+    Ok(out.into_bytes())
+}
+
+fn strip_dsh_block(current: Option<&[u8]>) -> Result<String, String> {
+    let Some(current) = current else {
+        return Ok(String::new());
+    };
+    let text = std::str::from_utf8(current)
+        .map_err(|_| "DeepSeek Harness patch layer is not UTF-8".to_string())?;
+    let mut kept = String::new();
+    let mut skipping = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with(DSH_BLOCK_START) {
+            skipping = true;
+            continue;
+        }
+        if line.trim_start().starts_with(DSH_BLOCK_END) {
+            skipping = false;
+            continue;
+        }
+        // The harness writes `[]` for an empty layer; a real entry replaces it.
+        if skipping || line.trim() == "[]" {
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    Ok(kept)
+}
+
+fn dsh_block_field(current: Option<&[u8]>, key: &str) -> Option<String> {
+    let text = std::str::from_utf8(current?).ok()?;
+    let mut inside = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with(DSH_BLOCK_START) {
+            inside = true;
+            continue;
+        }
+        if line.trim_start().starts_with(DSH_BLOCK_END) {
+            inside = false;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest.trim_start().trim_start_matches(':').trim();
+            return Some(rest.trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
+fn yaml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 fn capture_mount_snapshot(
     target: &McpMountTarget,
     current: Option<&[u8]>,
     mounted_url: &str,
 ) -> Result<MountSnapshot, String> {
     let name = server_name(&target.client_id);
+    // The harness layer is a YAML list, not a keyed object; the whole file is the
+    // only faithful record of what was there before.
+    if target.format == McpClientFormat::DshPatchYaml {
+        return Ok(MountSnapshot {
+            version: SNAPSHOT_VERSION,
+            mounted_url: mounted_url.to_string(),
+            entry: MountEntrySnapshot {
+                file_existed: current.is_some(),
+                section_existed: current.is_some(),
+                original_json: None,
+                original_toml: current.map(<[u8]>::to_vec),
+            },
+            pi_request_timeout: None,
+        });
+    }
     let entry = if target.format == McpClientFormat::CodexToml {
         let document = parse_toml(current, &target.config_path)?;
         let section = document.get("mcp_servers");
@@ -903,6 +1021,14 @@ fn remove_mount(
     current: Option<&[u8]>,
     snapshot: &MountSnapshot,
 ) -> Result<Option<Vec<u8>>, String> {
+    if target.format == McpClientFormat::DshPatchYaml {
+        let stripped = strip_dsh_block(current)?;
+        // Nothing of the user's remains and nothing was there before: leave no file.
+        if stripped.trim().is_empty() && !snapshot.entry.file_existed {
+            return Ok(None);
+        }
+        return Ok(Some(stripped.into_bytes()));
+    }
     if target.format == McpClientFormat::CodexToml {
         return remove_codex_mount(
             current,
@@ -1012,6 +1138,7 @@ fn mounted_json_url(format: McpClientFormat, entry: &Value) -> Option<&str> {
         McpClientFormat::ClaudeJson
         | McpClientFormat::ClaudeDesktopJson
         | McpClientFormat::CodexToml
+        | McpClientFormat::DshPatchYaml
         | McpClientFormat::Unsupported => return None,
     };
     entry.get(key).and_then(Value::as_str)
@@ -1031,7 +1158,9 @@ fn json_section(format: McpClientFormat) -> &'static str {
         | McpClientFormat::KimiJson
         | McpClientFormat::PiExtensionJson => "mcpServers",
         McpClientFormat::OpenCodeJson => "mcp",
-        McpClientFormat::CodexToml | McpClientFormat::Unsupported => unreachable!(),
+        McpClientFormat::CodexToml
+        | McpClientFormat::DshPatchYaml
+        | McpClientFormat::Unsupported => unreachable!(),
     }
 }
 

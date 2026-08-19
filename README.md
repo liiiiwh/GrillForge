@@ -27,7 +27,7 @@ GrillForge 是一个轻量、本地优先的多客户端模型与 SubAgent 控�
 
 ## 核心能力
 
-- **跨客户端调用原生 Agent**：同步本机 Claude Code、Codex、Pi、Kimi Code、OpenCode 等 Agent，通过客户端专属 MCP 授权给其他 Coding Agent 使用。
+- **跨客户端调用原生 Agent**：同步本机 Claude Code、Codex、Pi、Kimi Code、OpenCode、DeepSeek Harness 等 Agent，通过客户端专属 MCP 授权给其他 Coding Agent 使用。委派后立即拿到 runId，主 Agent 不必等待；子 Agent 的授权请求会回送给它，由主 Agent 决定放行或拒绝。
 - **按场景选择模型**：编码、调研、评审、测试等扩展 SubAgent 可分别绑定来源 Agent、Provider 与模型。
 - **灵活的模型槽位**：按客户端真实能力配置默认模型、角色模型、SubAgent 默认模型、自定义 Agent 和模型池；同一客户端的不同槽位可使用不同 Provider。
 - **复用原生 Runtime**：Agent Loop、工具和上下文仍由用户已安装的 CLI / Runtime 执行；GrillForge 不实现 Agent Runtime 或工作流引擎。
@@ -48,6 +48,7 @@ GrillForge 是一个轻量、本地优先的多客户端模型与 SubAgent 控�
 | Grok Build | 默认模型；可将 `inspect --json` 返回的本机 Agent 用作扩展 SubAgent | 已实现，并使用官方 CLI 1.0.3 验证精确 Agent 调用与隔离模型路由 |
 | OpenCode | 默认模型、模型池；内建与本机自定义 SubAgent 可作为扩展 SubAgent | 已实现，并完成官方 CLI 精确 SubAgent 调用与隔离模型路由测试 |
 | Hermes | 默认模型与模型池 | 已实现 |
+| DeepSeek Harness | 默认模型、可用模型池；通过 profile 的 patch 层挂载扩展 SubAgent | 已实现，并使用官方 `dsh` 0.1.0-rc.7 验证配置层组装与 MCP 挂载 |
 
 客户端检测覆盖 PATH、标准安装目录和常见 Node 版本管理器；存在多个同名 CLI 时逐个验证并使用第一个有效版本。进入“客户端”页面会在后台刷新状态。
 

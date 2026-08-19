@@ -151,10 +151,12 @@ entry around it survives Apply and Disable, and Disable restores the file it
 found. The credential is a reference the harness resolves from its own
 credential file, so no secret enters the layer.
 
-Because one file has one owner, that adapter also declares the harness's MCP
-entry rather than the shared mount manager writing the same file. Mounting
-extension SubAgents into the harness is not driven by the client MCP lifecycle
-yet; the model route is.
+The harness reads a second user layer at `$DSH_HOME/cordis.patch.yml`, after the
+profile one. That is where its MCP entry lives, so each file keeps a single
+owner: the adapter writes the model route into the profile layer, and the shared
+mount manager writes the MCP entry into the home layer. Extension SubAgents
+therefore mount, unmount, and reconcile for the harness exactly as for every
+other client.
 
 ### Native Route Hook Scope
 

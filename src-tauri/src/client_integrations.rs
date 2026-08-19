@@ -1213,7 +1213,6 @@ impl DshIntegrationService {
                     &token,
                     models,
                     Some(format!("grillforge/{}", selection.main_model.id)),
-                    None,
                 )
                 .map_err(|error| error.to_string())?,
             )

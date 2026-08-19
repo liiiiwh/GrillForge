@@ -48,6 +48,7 @@ GrillForge is a lightweight, local-first model and SubAgent control plane for mu
 | Grok Build | Default model; Agents returned by local `inspect --json` can be used as Extension SubAgents | Implemented and verified with official CLI 1.0.3, exact Agent selection, and isolated model routing |
 | OpenCode | Default model and model pool; built-in and local custom SubAgents can be used as Extension SubAgents | Implemented with official CLI exact-SubAgent and isolated-model-route verification |
 | Hermes | Default model and model pool | Implemented |
+| DeepSeek Harness | Default model, model pool, and extension SubAgents mounted through its patch layer | Implemented, with the official `dsh` 0.1.0-rc.7 composing the generated layer and MCP mount |
 
 Client discovery covers PATH, standard installation locations, and common Node version managers. When duplicate CLIs exist, GrillForge validates each candidate and uses the first working version. Opening Clients refreshes status in the background.
 

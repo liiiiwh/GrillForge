@@ -4,6 +4,25 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.26] - 2026-08-18
+
+### Added
+
+- DeepSeek Harness can carry extension SubAgents. The harness reads a second user
+  layer above the profile one, so its MCP entry lives there while the model route
+  keeps the profile layer, and each file still has a single owner. Mounting,
+  unmounting, and startup reconciliation now behave as they do for every other
+  client, which 0.2.20 could not offer.
+
+### Verification
+
+- The block the mount manager writes was composed by a real `dsh` 0.1.0-rc.7,
+  which reported the GrillForge MCP server from the home layer without error.
+- A mount test covers the whole lifecycle: the managed block appears beside a
+  user's own entry, remounting replaces it instead of stacking a second one, and
+  unmounting restores the file exactly as it was found.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.25] - 2026-08-18
 
 ### Fixed

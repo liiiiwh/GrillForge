@@ -1,5 +1,5 @@
 use grillforge_lib::adapters::dsh::{
-    DshAdapter, DshMcpMount, DshModelSpec, DshPaths, DshRequest, DshTakeoverStatus,
+    DshAdapter, DshModelSpec, DshPaths, DshRequest, DshTakeoverStatus,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -8,13 +8,12 @@ fn model(id: &str) -> DshModelSpec {
     DshModelSpec::new(id, "Coder", Some(128_000)).unwrap()
 }
 
-fn request(mcp: Option<DshMcpMount>) -> DshRequest {
+fn request() -> DshRequest {
     DshRequest::new(
         "http://127.0.0.1:15721/chat/dsh/v1",
         "gateway-secret",
         vec![model("grillforge/coder")],
         Some("grillforge/coder".into()),
-        mcp,
     )
     .unwrap()
 }
@@ -37,7 +36,7 @@ fn apply_owns_one_block_and_keeps_every_user_entry() {
     )
     .unwrap();
     let adapter = DshAdapter::new(paths.clone(), temp.path().join("grillforge"));
-    adapter.apply(request(None)).unwrap();
+    adapter.apply(request()).unwrap();
 
     let patch = fs::read_to_string(&paths.patch_path).unwrap();
     assert!(patch.contains("- id: timer"), "{patch}");
@@ -59,7 +58,7 @@ fn apply_owns_one_block_and_keeps_every_user_entry() {
     );
 
     // Applying twice leaves one managed block, not two.
-    adapter.apply(request(None)).unwrap();
+    adapter.apply(request()).unwrap();
     let patch = fs::read_to_string(&paths.patch_path).unwrap();
     assert_eq!(patch.matches("# >>> grillforge").count(), 1, "{patch}");
     assert_eq!(patch.matches("- id: timer").count(), 1, "{patch}");
@@ -67,27 +66,6 @@ fn apply_owns_one_block_and_keeps_every_user_entry() {
         adapter.status().unwrap().takeover,
         DshTakeoverStatus::Active
     );
-}
-
-#[test]
-fn an_mcp_mount_is_declared_only_when_asked_for() {
-    let temp = tempdir().unwrap();
-    let paths = paths(temp.path());
-    let adapter = DshAdapter::new(paths.clone(), temp.path().join("grillforge"));
-    adapter
-        .apply(request(Some(DshMcpMount {
-            url: "http://127.0.0.1:15721/mcp/dsh".into(),
-            token: "mount-token".into(),
-        })))
-        .unwrap();
-    let patch = fs::read_to_string(&paths.patch_path).unwrap();
-    assert!(patch.contains("@deepseek-ai/dsh-mcp-client"), "{patch}");
-    assert!(patch.contains("transport: streamable-http"), "{patch}");
-    assert!(patch.contains("Bearer mount-token"), "{patch}");
-
-    adapter.apply(request(None)).unwrap();
-    let patch = fs::read_to_string(&paths.patch_path).unwrap();
-    assert!(!patch.contains("dsh-mcp-client"), "{patch}");
 }
 
 #[test]
@@ -101,7 +79,7 @@ fn disable_restores_the_user_layer_exactly() {
     fs::write(&paths.credentials_path, "OTHER_KEY=keep-me\n").unwrap();
 
     let adapter = DshAdapter::new(paths.clone(), temp.path().join("grillforge"));
-    adapter.apply(request(None)).unwrap();
+    adapter.apply(request()).unwrap();
     adapter.disable().unwrap();
 
     assert_eq!(fs::read_to_string(&paths.patch_path).unwrap(), original);
@@ -120,7 +98,7 @@ fn an_edit_outside_grillforge_is_reported_as_drift() {
     let temp = tempdir().unwrap();
     let paths = paths(temp.path());
     let adapter = DshAdapter::new(paths.clone(), temp.path().join("grillforge"));
-    adapter.apply(request(None)).unwrap();
+    adapter.apply(request()).unwrap();
     fs::write(&paths.patch_path, "- id: timer\n").unwrap();
     assert_eq!(
         adapter.status().unwrap().takeover,
@@ -137,7 +115,6 @@ fn a_request_must_be_loopback_and_name_a_configured_default() {
             "secret",
             vec![model("grillforge/coder")],
             None,
-            None,
         )
         .is_err()
     );
@@ -147,7 +124,6 @@ fn a_request_must_be_loopback_and_name_a_configured_default() {
             "secret",
             vec![model("grillforge/coder")],
             Some("grillforge/other".into()),
-            None,
         )
         .is_err()
     );

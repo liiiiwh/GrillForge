@@ -726,3 +726,48 @@ fn pi_unmount_preserves_a_request_timeout_changed_by_the_user_while_mounted() {
     assert_eq!(restored["settings"]["requestTimeoutMs"], 7_200_000);
     assert!(restored["mcpServers"].get("grillforge-pi").is_none());
 }
+
+#[test]
+fn the_harness_layer_carries_one_managed_block_and_restores_what_it_found() {
+    let temp = tempfile::tempdir().unwrap();
+    let layer = temp.path().join(".dsh/cordis.patch.yml");
+    std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
+    // The harness ships an empty layer; a user entry may sit beside it.
+    std::fs::write(&layer, "- id: timer\n  disabled: true\n").unwrap();
+
+    let manager = McpMountManager::new(
+        temp.path().join("snapshots"),
+        [McpMountTarget::new(
+            "dsh",
+            layer.clone(),
+            McpClientFormat::DshPatchYaml,
+        )],
+    )
+    .expect("manager");
+
+    manager
+        .mount("dsh", "http://127.0.0.1:15721/mcp/dsh", "mount-token")
+        .unwrap();
+    let written = std::fs::read_to_string(&layer).unwrap();
+    assert!(written.contains("- id: timer"), "{written}");
+    assert!(written.contains("@deepseek-ai/dsh-mcp-client"), "{written}");
+    assert!(written.contains("transport: streamable-http"), "{written}");
+    assert!(written.contains("Bearer mount-token"), "{written}");
+    assert!(manager.is_mounted("dsh").unwrap());
+    assert_eq!(manager.credential("dsh").unwrap(), "mount-token");
+
+    // Mounting again replaces the block rather than stacking a second one.
+    manager
+        .mount("dsh", "http://127.0.0.1:15721/mcp/dsh", "second-token")
+        .unwrap();
+    let written = std::fs::read_to_string(&layer).unwrap();
+    assert_eq!(written.matches("grillforge-mcp").count(), 1, "{written}");
+    assert_eq!(written.matches("- id: timer").count(), 1, "{written}");
+
+    manager.unmount("dsh").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&layer).unwrap(),
+        "- id: timer\n  disabled: true\n"
+    );
+    assert!(!manager.is_mounted("dsh").unwrap());
+}

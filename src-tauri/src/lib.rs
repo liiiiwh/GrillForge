@@ -100,6 +100,13 @@ pub fn run() {
                         mcp_mount::McpClientFormat::ClaudeDesktopJson,
                     )
                     .with_stdio_command(&executable),
+                    // The harness reads a home-level layer in addition to the
+                    // profile one the model route owns, so each file has one owner.
+                    mcp_mount::McpMountTarget::new(
+                        "dsh",
+                        home.join(".dsh/cordis.patch.yml"),
+                        mcp_mount::McpClientFormat::DshPatchYaml,
+                    ),
                     mcp_mount::McpMountTarget::new(
                         "codex",
                         adapters::codex::paths_from_home(&home).config_path,

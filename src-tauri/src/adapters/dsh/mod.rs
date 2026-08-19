@@ -18,10 +18,8 @@ const CLI_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The one plugin id GrillForge declares for its own model route.
 const LLM_PLUGIN: &str = "@deepseek-ai/dsh-llm-pi-ai";
-const MCP_PLUGIN: &str = "@deepseek-ai/dsh-mcp-client";
 const PROVIDER_ROUTE: &str = "grillforge";
 const CREDENTIAL_ENV: &str = "GRILLFORGE_DSH_API_KEY";
-const MANAGED_MARKER: &str = "grillforge";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DshAdapterError {
@@ -212,13 +210,6 @@ pub struct DshRequest {
     api_key: String,
     models: Vec<DshModelSpec>,
     default_model: Option<String>,
-    mcp: Option<DshMcpMount>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DshMcpMount {
-    pub url: String,
-    pub token: String,
 }
 
 impl Debug for DshRequest {
@@ -239,7 +230,6 @@ impl DshRequest {
         api_key: impl Into<String>,
         models: Vec<DshModelSpec>,
         default_model: Option<String>,
-        mcp: Option<DshMcpMount>,
     ) -> Result<Self, DshAdapterError> {
         let base_url = base_url.into();
         let api_key = api_key.into();
@@ -270,20 +260,11 @@ impl DshRequest {
                 )));
             }
         }
-        if let Some(mcp) = &mcp {
-            validate_loopback(&mcp.url, "DeepSeek Harness MCP URL")?;
-            if mcp.token.trim().is_empty() || mcp.token.chars().any(char::is_control) {
-                return Err(DshAdapterError::Invalid(
-                    "DeepSeek Harness MCP token is invalid".into(),
-                ));
-            }
-        }
         Ok(Self {
             base_url,
             api_key,
             models,
             default_model,
-            mcp,
         })
     }
 }
@@ -471,21 +452,6 @@ fn render_patch(request: &DshRequest, current: Option<&str>) -> Result<String, D
         block.push_str("- id: agent-default-model\n  config:\n");
         block.push_str(&format!("    provider: {PROVIDER_ROUTE}\n"));
         block.push_str(&format!("    model: {}\n", yaml_scalar(default_model)));
-    }
-    if let Some(mcp) = &request.mcp {
-        // The MCP client is not in the base profile, so it is inserted rather
-        // than patched; a patch entry can only target an id that already exists.
-        block.push_str("- insert:\n");
-        block.push_str("    - id: grillforge-mcp\n");
-        block.push_str(&format!("      name: {}\n", yaml_scalar(MCP_PLUGIN)));
-        block.push_str("      config:\n        transport: streamable-http\n");
-        block.push_str(&format!("        serverName: {MANAGED_MARKER}\n"));
-        block.push_str(&format!("        url: {}\n", yaml_scalar(&mcp.url)));
-        block.push_str("        headers:\n");
-        block.push_str(&format!(
-            "          Authorization: {}\n",
-            yaml_scalar(&format!("Bearer {}", mcp.token))
-        ));
     }
     block.push_str("# <<< grillforge\n");
     Ok(format!("{}{block}", kept.trim_start_matches('\n')))
