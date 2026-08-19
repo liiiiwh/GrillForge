@@ -142,6 +142,20 @@ A delegated Agent reaches the network by default. Withholding it is a deliberate
 request, and it fails on a runtime with no switch that can honour it rather than
 silently granting what was refused.
 
+### DeepSeek Harness Layer Ownership
+
+The harness composes plugin layers beneath one user layer per profile, so a file
+GrillForge writes there is shared with whatever the user put in it. GrillForge
+owns exactly one marked block in that layer and rewrites only that block; every
+entry around it survives Apply and Disable, and Disable restores the file it
+found. The credential is a reference the harness resolves from its own
+credential file, so no secret enters the layer.
+
+Because one file has one owner, that adapter also declares the harness's MCP
+entry rather than the shared mount manager writing the same file. Mounting
+extension SubAgents into the harness is not driven by the client MCP lifecycle
+yet; the model route is.
+
 ### Native Route Hook Scope
 
 Claude Code and Claude Client share one user settings file, so the hook installed

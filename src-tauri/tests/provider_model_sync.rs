@@ -484,7 +484,7 @@ async fn sync_records_observed_chat_reasoning_before_the_model_is_routed() {
             provider_id: "reasoning-vendor".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("existing model without protocol capability");
@@ -675,7 +675,7 @@ fn manually_added_models_require_explicit_verified_native_protocols() {
         provider_id: "provider".into(),
         capabilities: vec![],
         protocol_capabilities: vec![],
-            context_window: None,
+        context_window: None,
         max_output_tokens: None,
     };
 
@@ -731,7 +731,7 @@ fn saving_or_updating_a_provider_does_not_claim_unprobed_protocol_support() {
                 provider_id: "provider".into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             },
             native_protocols: vec![NativeProtocol::OpenAiChat],
@@ -805,7 +805,7 @@ async fn model_connection_uses_the_models_verified_protocol_not_the_provider_def
             provider_id: "deepseek".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");
@@ -900,7 +900,7 @@ async fn stale_model_protocol_facts_are_not_silently_overridden() {
             provider_id: "deepseek".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -1001,7 +1001,14 @@ async fn sync_records_a_reported_context_window_and_never_overwrites_an_edited_o
         .expect("operator supplied window");
     assert_eq!(window(&state, "silent"), Some(64000));
 
-    let state = service.sync_provider_models("vendor").await.expect("resync");
-    assert_eq!(window(&state, "silent"), Some(64000), "a re-sync must not discard it");
+    let state = service
+        .sync_provider_models("vendor")
+        .await
+        .expect("resync");
+    assert_eq!(
+        window(&state, "silent"),
+        Some(64000),
+        "a re-sync must not discard it"
+    );
     assert_eq!(window(&state, "reports"), Some(262144));
 }

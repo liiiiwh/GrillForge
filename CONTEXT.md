@@ -62,7 +62,7 @@ deterministic upstream. GrillForge did not implement that loop or execute the
 tool.
 
 The first release implements Claude Code, Claude Client, Codex, Pi, Gemini CLI,
-Grok Build, OpenCode, Hermes, and Kimi Code adapters. Kimi Code uses its current
+Grok Build, OpenCode, Hermes, Kimi Code, and DeepSeek Harness adapters. Kimi Code uses its current
 official `~/.kimi-code/config.toml` default-model and model-pool configuration
 and exposes its current built-in and scoped custom Agents.
 

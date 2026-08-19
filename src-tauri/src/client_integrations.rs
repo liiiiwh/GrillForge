@@ -1,3 +1,6 @@
+use crate::adapters::dsh::{
+    DshAdapter, DshModelSpec, DshPaths, DshRequest, DshTakeoverStatus, detect_dsh_cli,
+};
 use crate::adapters::gemini::{
     GeminiAdapter, GeminiPaths, GeminiRequest, GeminiTakeoverStatus, detect_gemini_cli,
 };
@@ -987,7 +990,7 @@ mod tests {
                 provider_id: "local".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             })
             .unwrap();
@@ -1024,7 +1027,9 @@ mod tests {
         let grok_paths = GrokBuildPaths::new(temp.path().join("home/.grok/config.toml"));
         let grok = GrokBuildIntegrationService::new(grok_paths, &root);
         grok.adapter
-            .apply(GrokBuildRequest::new("http://127.0.0.1:9", "token", "grok", "Grok", None).unwrap())
+            .apply(
+                GrokBuildRequest::new("http://127.0.0.1:9", "token", "grok", "Grok", None).unwrap(),
+            )
             .unwrap();
 
         let control = gateway_control(&root);
@@ -1130,4 +1135,167 @@ mod tests {
         assert_eq!(config["default_model"].as_str(), Some("grillforge/coder"));
         assert!(service.activated.load(Ordering::Acquire));
     }
+}
+
+pub struct DshIntegrationService {
+    adapter: DshAdapter,
+    activated: AtomicBool,
+}
+
+impl DshIntegrationService {
+    pub fn new(paths: DshPaths, root: impl Into<PathBuf>) -> Self {
+        Self {
+            adapter: DshAdapter::new(paths, root.into()),
+            activated: AtomicBool::new(false),
+        }
+    }
+
+    pub fn status(&self, control: &ControlPlaneService) -> Result<ClientIntegrationStatus, String> {
+        let detection = detect_dsh_cli().map_err(|error| error.to_string())?;
+        let adapter = self.adapter.status().map_err(|error| error.to_string())?;
+        let (main_model_id, configured_model_ids) = configured(control, "dsh")?;
+        let active = adapter.takeover == DshTakeoverStatus::Active;
+        Ok(ClientIntegrationStatus {
+            installed: detection.is_some(),
+            executable_path: detection
+                .as_ref()
+                .map(|value| value.path.display().to_string()),
+            version: detection.map(|value| value.version),
+            snapshot_present: adapter.snapshot_present,
+            takeover: takeover_label(
+                active,
+                !self.activated.load(Ordering::Acquire),
+                adapter.takeover == DshTakeoverStatus::Drifted,
+            ),
+            configured_model_ids,
+            main_model_id,
+        })
+    }
+
+    pub fn apply_with_gateway(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<ClientIntegrationStatus, String> {
+        if detect_dsh_cli()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Err("未检测到 DeepSeek Harness CLI；安装后才能应用配置".into());
+        }
+        self.activate(control, gateway)?;
+        self.status(control)
+    }
+
+    fn activate(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<(), String> {
+        let selection = control.client_selection("dsh")?;
+        let token = uuid::Uuid::new_v4().to_string();
+        let models = selection
+            .enabled_models
+            .iter()
+            .map(|model| {
+                DshModelSpec::new(
+                    format!("grillforge/{}", model.id),
+                    &model.display_name,
+                    model.context_window,
+                )
+                .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.adapter
+            .apply(
+                DshRequest::new(
+                    format!("{}/chat/dsh/v1", gateway.base_url.trim_end_matches('/')),
+                    &token,
+                    models,
+                    Some(format!("grillforge/{}", selection.main_model.id)),
+                    None,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        let ids = selection
+            .enabled_models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
+        if let Err(error) = gateway.activate_client("dsh", ids, &token) {
+            let restore = self
+                .adapter
+                .disable()
+                .map_err(|restore| restore.to_string());
+            return Err(match restore {
+                Ok(_) => error,
+                Err(restore) => format!("{error}; DeepSeek Harness 配置回滚也失败: {restore}"),
+            });
+        }
+        self.activated.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn disable(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<ClientIntegrationStatus, String> {
+        self.adapter.disable().map_err(|error| error.to_string())?;
+        gateway.deactivate_client("dsh");
+        self.activated.store(false, Ordering::Release);
+        self.status(control)
+    }
+
+    pub fn recovery_pending(&self) -> bool {
+        self.adapter
+            .status()
+            .is_ok_and(|status| status.snapshot_present)
+    }
+
+    pub fn resume_if_applied(
+        &self,
+        control: &ControlPlaneService,
+        gateway: &GatewayStatus,
+    ) -> Result<bool, String> {
+        match self
+            .adapter
+            .status()
+            .map_err(|error| error.to_string())?
+            .takeover
+        {
+            DshTakeoverStatus::Inactive | DshTakeoverStatus::Drifted => Ok(false),
+            DshTakeoverStatus::Active => {
+                self.activate(control, gateway)?;
+                Ok(true)
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn dsh_status(
+    service: State<'_, DshIntegrationService>,
+    control: State<'_, ControlPlaneService>,
+) -> Result<ClientIntegrationStatus, String> {
+    service.status(&control)
+}
+
+#[tauri::command]
+pub fn apply_dsh(
+    service: State<'_, DshIntegrationService>,
+    control: State<'_, ControlPlaneService>,
+    gateway: State<'_, GatewayStatus>,
+) -> Result<ClientIntegrationStatus, String> {
+    service.apply_with_gateway(&control, &gateway)
+}
+
+#[tauri::command]
+pub fn disable_dsh(
+    service: State<'_, DshIntegrationService>,
+    control: State<'_, ControlPlaneService>,
+    gateway: State<'_, GatewayStatus>,
+) -> Result<ClientIntegrationStatus, String> {
+    service.disable(&control, &gateway)
 }

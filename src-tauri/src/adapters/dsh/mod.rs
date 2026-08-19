@@ -8,8 +8,13 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::env;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+const CLI_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The one plugin id GrillForge declares for its own model route.
 const LLM_PLUGIN: &str = "@deepseek-ai/dsh-llm-pi-ai";
@@ -39,6 +44,100 @@ impl Display for DshAdapterError {
 }
 
 impl std::error::Error for DshAdapterError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DshCliDetection {
+    pub path: PathBuf,
+    pub version: String,
+}
+
+pub fn detect_dsh_cli() -> Result<Option<DshCliDetection>, DshAdapterError> {
+    let executable = if cfg!(windows) { "dsh.exe" } else { "dsh" };
+    let mut candidates = env::var_os("PATH")
+        .map(|path| {
+            env::split_paths(&path)
+                .map(|directory| directory.join(executable))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".dsh/bin").join(executable));
+    }
+    #[cfg(target_os = "macos")]
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin").join(executable),
+        PathBuf::from("/usr/local/bin").join(executable),
+    ]);
+    crate::cli_discovery::first_valid_candidate_across_sources(
+        candidates,
+        || {
+            crate::cli_discovery::login_shell_candidates(executable).map_err(|error| {
+                DshAdapterError::Invalid(format!(
+                    "discover DeepSeek Harness CLI through the login shell: {error}"
+                ))
+            })
+        },
+        |path| inspect_dsh_cli(path),
+    )
+}
+
+pub fn detect_dsh_cli_in(
+    candidates: impl IntoIterator<Item = PathBuf>,
+) -> Result<Option<DshCliDetection>, DshAdapterError> {
+    crate::cli_discovery::first_valid_candidate(candidates, |path| inspect_dsh_cli(path))
+}
+
+pub fn inspect_dsh_cli(path: impl AsRef<Path>) -> Result<DshCliDetection, DshAdapterError> {
+    let path = path.as_ref().to_path_buf();
+    let mut command = crate::cli_discovery::version_command(&path).map_err(|error| {
+        DshAdapterError::Io(format!(
+            "could not prepare DeepSeek Harness CLI inspection: {error}"
+        ))
+    })?;
+    let mut child = command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            DshAdapterError::Io(format!("could not inspect DeepSeek Harness CLI: {error}"))
+        })?;
+    let deadline = Instant::now() + CLI_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DshAdapterError::Io(
+                    "DeepSeek Harness CLI inspection timed out".into(),
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                return Err(DshAdapterError::Io(format!(
+                    "could not inspect DeepSeek Harness CLI: {error}"
+                )));
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|error| {
+        DshAdapterError::Io(format!("could not inspect DeepSeek Harness CLI: {error}"))
+    })?;
+    if !output.status.success() {
+        return Err(DshAdapterError::Invalid(
+            "DeepSeek Harness CLI did not report a version".into(),
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version.is_empty() {
+        return Err(DshAdapterError::Invalid(
+            "DeepSeek Harness CLI reported an empty version".into(),
+        ));
+    }
+    Ok(DshCliDetection { path, version })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DshPaths {
@@ -212,6 +311,7 @@ pub enum DshTakeoverStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DshStatus {
     pub installed: bool,
+    pub snapshot_present: bool,
     pub takeover: DshTakeoverStatus,
 }
 
@@ -246,7 +346,8 @@ impl DshAdapter {
         let takeover = if !self.snapshot_path.exists() {
             DshTakeoverStatus::Inactive
         } else {
-            let snapshot = parse_snapshot(&read_optional(&self.snapshot_path)?.unwrap_or_default())?;
+            let snapshot =
+                parse_snapshot(&read_optional(&self.snapshot_path)?.unwrap_or_default())?;
             if self.capture()? == snapshot.expected {
                 DshTakeoverStatus::Active
             } else {
@@ -255,6 +356,7 @@ impl DshAdapter {
         };
         Ok(DshStatus {
             installed,
+            snapshot_present: self.snapshot_path.exists(),
             takeover,
         })
     }
@@ -267,10 +369,7 @@ impl DshAdapter {
         };
         let desired = ManagedFiles {
             patch: Some(render_patch(&request, current.patch.as_deref())?),
-            credentials: Some(render_credentials(
-                &request,
-                current.credentials.as_deref(),
-            )),
+            credentials: Some(render_credentials(&request, current.credentials.as_deref())),
         };
         self.write_files(&desired)?;
         let snapshot = Snapshot {
@@ -335,8 +434,14 @@ fn render_patch(request: &DshRequest, current: Option<&str>) -> Result<String, D
             }
         }
     }
-    // An empty list is the harness default; a managed block replaces it.
-    let kept = kept.replace("[]", "");
+    // The harness writes `[]` as its empty layer; a managed block replaces that
+    // placeholder line, and nothing else.
+    let mut without_placeholder = String::new();
+    for line in kept.lines().filter(|line| line.trim() != "[]") {
+        without_placeholder.push_str(line);
+        without_placeholder.push('\n');
+    }
+    let kept = without_placeholder;
     let mut models = String::new();
     for model in &request.models {
         models.push_str(&format!(
@@ -355,7 +460,10 @@ fn render_patch(request: &DshRequest, current: Option<&str>) -> Result<String, D
     block.push_str(&format!("      {PROVIDER_ROUTE}:\n"));
     block.push_str("        displayName: GrillForge\n");
     block.push_str("        api: openai-completions\n");
-    block.push_str(&format!("        baseURL: {}\n", yaml_scalar(&request.base_url)));
+    block.push_str(&format!(
+        "        baseURL: {}\n",
+        yaml_scalar(&request.base_url)
+    ));
     block.push_str(&format!("        apiKeyEnv: {CREDENTIAL_ENV}\n"));
     block.push_str("        models:\n");
     block.push_str(&models);

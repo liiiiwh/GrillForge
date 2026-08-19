@@ -80,7 +80,7 @@ async fn routing_uses_the_selected_protocols_own_endpoint() {
                 provider_id: "vendor".into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             })
             .unwrap();
@@ -185,7 +185,7 @@ async fn codex_route_requires_its_token_and_forwards_responses_without_client_au
             provider_id: "deepseek".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -316,7 +316,7 @@ async fn same_provider_routes_flash_to_responses_and_pro_to_its_verified_chat_pr
                 provider_id: "deepseek".into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             })
             .unwrap();
@@ -415,7 +415,7 @@ async fn codex_route_converts_responses_to_chat_and_back() {
             provider_id: "chat".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -509,7 +509,7 @@ async fn codex_chat_route_restores_the_previous_tool_call_for_the_tool_result_tu
             provider_id: "chat".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -607,7 +607,7 @@ async fn codex_chat_route_streams_responses_events() {
             provider_id: "chat".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -688,7 +688,7 @@ async fn codex_route_converts_responses_text_to_anthropic_and_back() {
             provider_id: "anthropic".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -777,7 +777,7 @@ async fn codex_route_converts_responses_through_gemini_native_and_back() {
             provider_id: "gemini".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -860,7 +860,7 @@ async fn codex_route_streams_anthropic_text_as_responses_events() {
             provider_id: "anthropic".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -942,7 +942,7 @@ async fn codex_anthropic_route_surfaces_the_first_upstream_error_without_retry()
             provider_id: "anthropic".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();

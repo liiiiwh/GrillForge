@@ -34,7 +34,7 @@ fn valid_documents() -> (ConfigDocument, ModelsDocument, AgentsDocument) {
                 protocol_capabilities: vec![],
                 native_protocols: Some(vec![NativeProtocol::OpenAiChat]),
                 unsupported_native_protocols: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             }],
         },

@@ -18,7 +18,7 @@ Status: Canonical architecture
                              |
               +--------------+--------------+
               |              |              |
-       Claude adapters   Codex adapter   Pi / Kimi adapters
+       Claude adapters   Codex adapter   Pi / Kimi / DSH adapters
               |              |              |
        Gemini / Grok / OpenCode / Hermes adapters
                              |
@@ -157,6 +157,7 @@ src-tauri/src/
     claude_code/
     claude_desktop/
     codex/
+    dsh/
     pi/
     kimi_code/
     gemini/

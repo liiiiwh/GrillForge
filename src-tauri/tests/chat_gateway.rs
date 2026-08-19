@@ -202,7 +202,7 @@ async fn chat_ingress_routes_text_and_tools_to_every_verified_native_protocol() 
                 provider_id: id.into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             })
             .unwrap();

@@ -34,12 +34,14 @@ const GROK_BUILD_AGENT: &str = "grok_build";
 const OPENCODE_AGENT: &str = "opencode";
 const HERMES_AGENT: &str = "hermes";
 const KIMI_CODE_AGENT: &str = "kimi_code";
+const DSH_AGENT: &str = "dsh";
 const GENERIC_CLIENTS: &[&str] = &[
     GEMINI_AGENT,
     GROK_BUILD_AGENT,
     OPENCODE_AGENT,
     HERMES_AGENT,
     KIMI_CODE_AGENT,
+    DSH_AGENT,
 ];
 const CLAUDE_DESKTOP_MODEL_SLOT_IDS: &[&str] = &["sonnet", "opus", "fable", "haiku"];
 

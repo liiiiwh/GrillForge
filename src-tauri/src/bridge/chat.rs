@@ -378,7 +378,13 @@ fn convert_message(
                 }
                 reject_unknown(
                     block,
-                    &["type", "tool_use_id", "content", "is_error", "cache_control"],
+                    &[
+                        "type",
+                        "tool_use_id",
+                        "content",
+                        "is_error",
+                        "cache_control",
+                    ],
                     Some(&block_field),
                 )?;
                 validate_cache_control(block.get("cache_control"), &block_field)?;

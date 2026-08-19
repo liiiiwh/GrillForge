@@ -9,7 +9,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use tokio::net::TcpListener;
 
-
 /// A completed run reports {runId, status, result}; tests assert the result.
 fn agent_result(response: &Value) -> String {
     let text = response["result"]["content"][0]["text"]
@@ -102,7 +101,10 @@ async fn a_running_agent_reports_progress_without_leaking_the_prompt() {
     assert_eq!(agent_result(&collected), "final-only-result");
 
     // The prompt never travels back as progress or result.
-    assert!(!collected.to_string().contains("SECRET PROMPT"), "{collected}");
+    assert!(
+        !collected.to_string().contains("SECRET PROMPT"),
+        "{collected}"
+    );
 
     // A collected run is gone; collecting twice is an error, not a second result.
     let again: Value = call(9, "get_agent_result", json!({"runId":run_id}))
@@ -139,7 +141,7 @@ async fn client_scoped_mcp_broker_resolves_the_extension_and_launches_child_only
             provider_id: "local".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");
@@ -294,10 +296,7 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = response.json().await.expect("MCP JSON");
     assert_eq!(body["result"]["isError"], false);
-    assert_eq!(
-        agent_result(&body),
-        "child runtime completed"
-    );
+    assert_eq!(agent_result(&body), "child runtime completed");
 }
 
 #[tokio::test]
@@ -372,10 +371,7 @@ printf '%s' '{{"type":"result","result":"parallel child completed"}}'
     for response in [first.unwrap(), second.unwrap()] {
         let response: Value = response.json().await.unwrap();
         assert_eq!(response["result"]["isError"], false, "{response}");
-        assert_eq!(
-            agent_result(&response),
-            "parallel child completed"
-        );
+        assert_eq!(agent_result(&response), "parallel child completed");
     }
 }
 
@@ -596,10 +592,7 @@ printf '%s' '{"type":"result","result":"native runtime completed"}'
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "native runtime completed"
-    );
+    assert_eq!(agent_result(&response), "native runtime completed");
 
     let override_attempt: Value = reqwest::Client::new()
         .post(format!("{base_url}/mcp/claude_code"))
@@ -816,7 +809,7 @@ printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -927,7 +920,7 @@ printf '%s\n' '{{"text":"grok child completed","stopReason":"end_turn","num_turn
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -962,10 +955,7 @@ printf '%s\n' '{{"text":"grok child completed","stopReason":"end_turn","num_turn
         .send().await.unwrap().json().await.unwrap();
 
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "grok child completed"
-    );
+    assert_eq!(agent_result(&response), "grok child completed");
     assert_eq!(
         fs::read_to_string(original_config).unwrap(),
         "[user]\nmarker = true\n"
@@ -1044,7 +1034,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -1098,10 +1088,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "codex child completed"
-    );
+    assert_eq!(agent_result(&response), "codex child completed");
     let argv = fs::read_to_string(&argv_log).unwrap();
     assert!(
         argv.starts_with("-s\nworkspace-write\n-a\nnever\n--search\nexec\n"),
@@ -1215,10 +1202,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "native codex child completed"
-    );
+    assert_eq!(agent_result(&response), "native codex child completed");
     let argv = fs::read_to_string(argv_log).unwrap();
     assert!(argv.contains("--enable\nmulti_agent"), "{argv}");
     assert!(!argv.contains("grillforge_agent"), "{argv}");
@@ -1250,7 +1234,7 @@ async fn client_agent_lists_update_independently_without_remounting_mcp() {
                 provider_id: "local".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             })
             .unwrap();
@@ -1414,7 +1398,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -1459,10 +1443,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"OpenCode child com
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "OpenCode child completed"
-    );
+    assert_eq!(agent_result(&response), "OpenCode child completed");
     let argv = fs::read_to_string(argv_log).unwrap();
     assert!(argv.contains("run\n"));
     assert!(argv.contains("--format\njson\n"));
@@ -1552,10 +1533,7 @@ printf '%s\n' '{{"type":"text","part":{{"type":"text","text":"native build compl
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "native build completed"
-    );
+    assert_eq!(agent_result(&response), "native build completed");
     let argv = fs::read_to_string(argv_log).unwrap();
     assert!(argv.contains("--agent\ngeneral\n"));
     assert!(argv.ends_with("Research this\n"));
@@ -1630,7 +1608,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -1675,10 +1653,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi managed child completed"}}'
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "Kimi managed child completed"
-    );
+    assert_eq!(agent_result(&response), "Kimi managed child completed");
     let argv = fs::read_to_string(argv_log).unwrap();
     assert!(argv.contains("--agent\ncoder\n"));
     assert!(argv.contains("--model\ngrillforge/worker\n"));
@@ -1769,10 +1744,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi native child completed"}}'
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "Kimi native child completed"
-    );
+    assert_eq!(agent_result(&response), "Kimi native child completed");
     let argv = fs::read_to_string(argv_log).unwrap();
     assert!(argv.contains("--agent\nexplore\n"));
     assert!(argv.contains("--output-format\nstream-json\n"));
@@ -1840,7 +1812,7 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
             provider_id: "local".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -1885,10 +1857,7 @@ printf '%s' '{{"response":"Gemini child completed","stats":{{}}}}'
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "Gemini child completed"
-    );
+    assert_eq!(agent_result(&response), "Gemini child completed");
     assert_eq!(
         fs::read_to_string(argv_log).unwrap(),
         "--approval-mode\nauto_edit\n--skip-trust\n--output-format\njson\n-p\n@reviewer Review this\n"
@@ -1993,10 +1962,7 @@ printf '%s\n' '{{"role":"assistant","content":"Kimi custom child completed"}}'
         .await
         .unwrap();
     assert_eq!(response["result"]["isError"], false, "{response}");
-    assert_eq!(
-        agent_result(&response),
-        "Kimi custom child completed"
-    );
+    assert_eq!(agent_result(&response), "Kimi custom child completed");
     let argv = fs::read_to_string(argv_log).unwrap();
     assert!(argv.contains("--agent-file\n"));
     assert!(argv.contains(&format!("{}\n", custom_agent.display())));
@@ -2159,10 +2125,7 @@ printf '%s' '{"type":"result","result":"child saw the real window"}'
         .expect("MCP JSON");
 
     assert_eq!(body["result"]["isError"], false, "{body}");
-    assert_eq!(
-        agent_result(&body),
-        "child saw the real window"
-    );
+    assert_eq!(agent_result(&body), "child saw the real window");
 }
 
 #[tokio::test]
@@ -2503,15 +2466,18 @@ print(json.dumps({{"type": "result", "result": "child saw " + decision["behavior
     assert_eq!(answered["result"]["isError"], false, "{answered}");
 
     // The decision reached the child, which acted on it.
-    let collected: Value = call(4, "get_agent_result", json!({"runId":run_id,"waitSeconds":60}))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let collected: Value = call(
+        4,
+        "get_agent_result",
+        json!({"runId":run_id,"waitSeconds":60}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     assert_eq!(collected["result"]["isError"], false, "{collected}");
     assert_eq!(agent_result(&collected), "child saw allow");
-    let logged: Value =
-        serde_json::from_str(&fs::read_to_string(&decision_log).unwrap()).unwrap();
+    let logged: Value = serde_json::from_str(&fs::read_to_string(&decision_log).unwrap()).unwrap();
     assert_eq!(logged["behavior"], "allow");
 }

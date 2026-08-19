@@ -254,7 +254,7 @@ mod tests {
                 provider_id: "provider".into(),
                 capabilities: vec!["coding".into()],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             })
             .unwrap();

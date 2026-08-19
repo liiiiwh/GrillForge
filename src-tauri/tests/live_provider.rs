@@ -74,7 +74,7 @@ async fn configured_real_provider_streams_text_and_tool_use_through_the_gateway(
             provider_id: "live".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities,
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("live model configuration");

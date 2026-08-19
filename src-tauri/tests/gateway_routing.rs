@@ -44,7 +44,7 @@ async fn a_saved_but_not_applied_model_route_fails_closed() {
             provider_id: "local".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");
@@ -135,7 +135,7 @@ async fn route_alias_reaches_exact_responses_provider_and_upstream_model() {
             provider_id: "openai".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");
@@ -157,7 +157,7 @@ async fn route_alias_reaches_exact_responses_provider_and_upstream_model() {
             provider_id: "openai".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("edit inactive draft");
@@ -266,7 +266,7 @@ async fn chat_route_reaches_local_no_auth_provider_without_leaking_claude_auth()
             provider_id: "local-chat".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");
@@ -457,7 +457,7 @@ async fn anthropic_provider_replaces_inbound_auth_with_its_own_key() {
             provider_id: "anthropic".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");
@@ -552,7 +552,7 @@ async fn anthropic_sse_is_forwarded_as_a_stream_without_buffer_conversion() {
             provider_id: "anthropic".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");
@@ -669,7 +669,7 @@ async fn responses_sse_is_converted_to_anthropic_events_through_the_gateway() {
             provider_id: "openai".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .expect("model");

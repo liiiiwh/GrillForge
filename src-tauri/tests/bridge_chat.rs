@@ -645,7 +645,9 @@ async fn adaptive_thinking_with_a_returned_display_is_rejected() {
         .unwrap_err();
 
     assert!(
-        error.to_string().contains("thinking.display must be omitted"),
+        error
+            .to_string()
+            .contains("thinking.display must be omitted"),
         "{error}"
     );
 }
@@ -713,7 +715,10 @@ async fn a_failed_tool_result_is_forwarded_with_its_error_marker() {
         .find(|message| message["role"] == "tool")
         .expect("tool message");
     let content = tool_message["content"].as_str().expect("tool content");
-    assert!(content.contains("[grillforge:tool-result-error]"), "{content}");
+    assert!(
+        content.contains("[grillforge:tool-result-error]"),
+        "{content}"
+    );
     assert!(content.contains("ENOENT: no such file"), "{content}");
 }
 

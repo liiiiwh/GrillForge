@@ -4,6 +4,32 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.20] - 2026-08-18
+
+### Added
+
+- DeepSeek Harness is a selectable client. It is detected from its installed CLI,
+  its model pool is routed through the local gateway's Chat Completions ingress,
+  and Apply, Disable, drift reporting, and startup recovery behave as they do for
+  every other client.
+
+### Fixed
+
+- The harness layer keeps its `[]` placeholder handling to the placeholder line
+  itself, so an inline empty list a user wrote elsewhere in that file survives.
+- A child that cannot be given its permission relay now fails with that reason
+  instead of launching silently without one.
+
+### Verification
+
+- A real `dsh` 0.1.0-rc.7 composed the layer GrillForge writes on a first Apply
+  over the harness default, reporting the GrillForge model route without error,
+  and the same installation was detected by version through the adapter.
+- The gateway route the harness uses is covered by a test that its own token
+  opens it, another client's token does not, and a model outside its pool is
+  refused.
+- Full Rust tests, strict Clippy, and frontend tests pass.
+
 ## [0.2.19] - 2026-08-18
 
 ### Added

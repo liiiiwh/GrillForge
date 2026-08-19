@@ -44,20 +44,29 @@ fn apply_owns_one_block_and_keeps_every_user_entry() {
     assert!(patch.contains("# my own layer"), "{patch}");
     assert!(patch.contains("@deepseek-ai/dsh-llm-pi-ai"), "{patch}");
     assert!(patch.contains("api: openai-completions"), "{patch}");
-    assert!(patch.contains("apiKeyEnv: GRILLFORGE_DSH_API_KEY"), "{patch}");
+    assert!(
+        patch.contains("apiKeyEnv: GRILLFORGE_DSH_API_KEY"),
+        "{patch}"
+    );
     assert!(patch.contains("contextWindow: 128000"), "{patch}");
 
     // The credential is a reference here and a value only in the env file.
     assert!(!patch.contains("gateway-secret"), "{patch}");
     let env = fs::read_to_string(&paths.credentials_path).unwrap();
-    assert!(env.contains("GRILLFORGE_DSH_API_KEY=gateway-secret"), "{env}");
+    assert!(
+        env.contains("GRILLFORGE_DSH_API_KEY=gateway-secret"),
+        "{env}"
+    );
 
     // Applying twice leaves one managed block, not two.
     adapter.apply(request(None)).unwrap();
     let patch = fs::read_to_string(&paths.patch_path).unwrap();
     assert_eq!(patch.matches("# >>> grillforge").count(), 1, "{patch}");
     assert_eq!(patch.matches("- id: timer").count(), 1, "{patch}");
-    assert_eq!(adapter.status().unwrap().takeover, DshTakeoverStatus::Active);
+    assert_eq!(
+        adapter.status().unwrap().takeover,
+        DshTakeoverStatus::Active
+    );
 }
 
 #[test]

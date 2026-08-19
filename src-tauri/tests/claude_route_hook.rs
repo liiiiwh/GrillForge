@@ -45,7 +45,8 @@ fn mounted_extensions_deny_native_workflow_and_agent_tools() {
             "tool_name": tool_name,
             "tool_input": {"description": "Inspect the repository"}
         });
-        let decision = decide(&documents(true, true), &input, false, "claude_code").expect("decision");
+        let decision =
+            decide(&documents(true, true), &input, false, "claude_code").expect("decision");
         let HookDecision::Deny { reason } = decision else {
             panic!("native agent tool must be denied");
         };
@@ -85,8 +86,13 @@ fn unrelated_tools_and_clients_without_live_extensions_are_allowed() {
 
 #[test]
 fn malformed_hook_payload_fails_fast() {
-    let error = decide(&documents(true, true), &serde_json::json!({"tool_name": 3}), false, "claude_code")
-        .expect_err("malformed hook payload");
+    let error = decide(
+        &documents(true, true),
+        &serde_json::json!({"tool_name": 3}),
+        false,
+        "claude_code",
+    )
+    .expect_err("malformed hook payload");
     assert_eq!(error, "Claude route hook tool_name must be a string");
 }
 

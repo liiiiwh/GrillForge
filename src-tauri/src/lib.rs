@@ -67,6 +67,10 @@ pub fn run() {
                 adapters::grok_build::paths_from_home(&home),
                 &root,
             ));
+            app.manage(client_integrations::DshIntegrationService::new(
+                adapters::dsh::paths_from_home(&home),
+                &root,
+            ));
             app.manage(client_integrations::OpenCodeIntegrationService::new(
                 adapters::opencode::paths_from_home(&home),
                 &root,
@@ -221,6 +225,9 @@ pub fn run() {
             client_integrations::grok_build_status,
             client_integrations::apply_grok_build,
             client_integrations::disable_grok_build,
+            client_integrations::dsh_status,
+            client_integrations::apply_dsh,
+            client_integrations::disable_dsh,
             client_integrations::opencode_status,
             client_integrations::apply_opencode,
             client_integrations::disable_opencode,
@@ -390,6 +397,20 @@ fn restore_enabled_model_clients(
         ),
     );
 
+    let dsh = app.state::<client_integrations::DshIntegrationService>();
+    remember_restore(
+        &mut failures,
+        "DeepSeek Harness",
+        restore_one(
+            "DeepSeek Harness",
+            control.client_integration_enabled("dsh")?,
+            control.client_has_managed_configuration("dsh")?,
+            dsh.recovery_pending(),
+            || dsh.resume_if_applied(control, gateway),
+            || dsh.apply_with_gateway(control, gateway),
+        ),
+    );
+
     let opencode = app.state::<client_integrations::OpenCodeIntegrationService>();
     remember_restore(
         &mut failures,
@@ -477,6 +498,10 @@ fn restore_live_configs_before_exit(app: &tauri::AppHandle) -> Result<(), String
     let grok = app.state::<client_integrations::GrokBuildIntegrationService>();
     if grok.recovery_pending() {
         grok.disable(&control, &gateway)?;
+    }
+    let dsh = app.state::<client_integrations::DshIntegrationService>();
+    if dsh.recovery_pending() {
+        dsh.disable(&control, &gateway)?;
     }
     let opencode = app.state::<client_integrations::OpenCodeIntegrationService>();
     if opencode.recovery_pending() {

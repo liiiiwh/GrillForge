@@ -562,7 +562,10 @@ impl GatewayStatus {
         model_ids: Vec<String>,
         token: &str,
     ) -> Result<(), String> {
-        if !matches!(client_id, "gemini" | "opencode" | "hermes" | "kimi-code") {
+        if !matches!(
+            client_id,
+            "gemini" | "opencode" | "hermes" | "kimi-code" | "dsh"
+        ) {
             return Err(format!("unsupported gateway client: {client_id}"));
         }
         if token.is_empty() || token.trim() != token || token.chars().any(char::is_control) {
@@ -828,10 +831,7 @@ impl Gateway {
             )
             .route("/clients/{client}/v1/messages", post(client_messages))
             .route("/mcp/{client}", post(agent_broker_mcp))
-            .route(
-                "/mcp/agent-permission/{run}",
-                post(agent_permission_mcp),
-            )
+            .route("/mcp/agent-permission/{run}", post(agent_permission_mcp))
             .route("/agent-runtime/v1/messages", post(agent_runtime_messages))
             .route("/agent-runtime/v1/responses", post(agent_runtime_responses))
             .route(
@@ -2933,7 +2933,12 @@ async fn start_agent(active: ActiveAgentBroker, arguments: Value) -> Result<Stri
         return serde_json::to_string(&json!({"runId": run_id, "status": "running"}))
             .map_err(|_| "could not serialize the Agent run handle".to_string());
     }
-    collect_run(&active_for_wait, &run_id, Instant::now() + Duration::from_secs(wait)).await
+    collect_run(
+        &active_for_wait,
+        &run_id,
+        Instant::now() + Duration::from_secs(wait),
+    )
+    .await
 }
 
 /// Collects a run, optionally waiting. The wait is bounded so a caller never
@@ -3039,10 +3044,7 @@ fn stop_agent(active: &ActiveAgentBroker, arguments: Value) -> Result<String, St
 }
 
 /// Relays the delegating Agent's decision to the child that is waiting on it.
-fn answer_agent_permission(
-    active: &ActiveAgentBroker,
-    arguments: Value,
-) -> Result<String, String> {
+fn answer_agent_permission(active: &ActiveAgentBroker, arguments: Value) -> Result<String, String> {
     let object = arguments
         .as_object()
         .ok_or_else(|| "answer_agent_permission arguments must be an object".to_string())?;
@@ -3063,7 +3065,9 @@ fn answer_agent_permission(
         .get_mut(&request_id)
         .ok_or_else(|| format!("unknown permission request: {request_id}"))?;
     if entry.decision.is_some() {
-        return Err(format!("permission request was already answered: {request_id}"));
+        return Err(format!(
+            "permission request was already answered: {request_id}"
+        ));
     }
     entry.decision = Some(if behavior == "allow" {
         json!({
@@ -3367,27 +3371,26 @@ async fn run_claude_agent_runtime(
     // A prompt the child raises is relayed to the delegating Agent instead of
     // being answered here; GrillForge only carries the question and the answer.
     if let Some(permission) = &options.permission_endpoint {
-        if let Ok(executable) = std::env::current_exe() {
-            let config = json!({
-                "mcpServers": {
-                    "grillforge_permission": {
-                        "type": "stdio",
-                        "command": executable,
-                        "args": ["mcp-stdio"],
-                        "env": {
-                            "GRILLFORGE_MCP_URL": permission.url,
-                            "GRILLFORGE_MCP_TOKEN": permission.token
-                        }
+        let executable = std::env::current_exe().map_err(|error| {
+            format!("could not resolve the GrillForge executable for the permission relay: {error}")
+        })?;
+        let config = json!({
+            "mcpServers": {
+                "grillforge_permission": {
+                    "type": "stdio",
+                    "command": executable,
+                    "args": ["mcp-stdio"],
+                    "env": {
+                        "GRILLFORGE_MCP_URL": permission.url,
+                        "GRILLFORGE_MCP_TOKEN": permission.token
                     }
                 }
-            });
-            command
-                .args(["--mcp-config", &config.to_string()])
-                .args([
-                    "--permission-prompt-tool",
-                    "mcp__grillforge_permission__approve",
-                ]);
-        }
+            }
+        });
+        command.args(["--mcp-config", &config.to_string()]).args([
+            "--permission-prompt-tool",
+            "mcp__grillforge_permission__approve",
+        ]);
     }
     // Claude Code assumes a fixed window for a model it does not recognize.
     if let Some(context_window) = managed_route.and_then(|route| route.context_window) {

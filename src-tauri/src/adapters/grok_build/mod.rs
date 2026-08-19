@@ -350,8 +350,7 @@ fn project(
     profile["name"] = value(&request.name);
     profile["api_key"] = value(&request.api_key);
     profile["api_backend"] = value("responses");
-    profile["context_window"] =
-        value(i64::try_from(request.context_window).unwrap_or(i64::MAX));
+    profile["context_window"] = value(i64::try_from(request.context_window).unwrap_or(i64::MAX));
     model_table[PROFILE] = Item::Table(profile);
     Ok(document.to_string().into_bytes())
 }

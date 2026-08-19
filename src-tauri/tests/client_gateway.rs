@@ -53,7 +53,7 @@ async fn named_client_route_is_isolated_by_client_token_and_model_pool() {
             provider_id: "provider".into(),
             capabilities: vec!["coding".into()],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -141,7 +141,7 @@ fn anthropic_ingress_clients_accept_gemini_native_models_for_local_bridging() {
             provider_id: "gemini".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -195,7 +195,7 @@ async fn responses_ingress_client_routes_a_chat_only_model_through_the_bridge() 
             provider_id: "chat".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -221,4 +221,109 @@ async fn responses_ingress_client_routes_a_chat_only_model_through_the_bridge() 
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["output"][0]["content"][0]["text"], "bridged");
     assert_eq!(calls.lock().unwrap()[0]["model"], "chat-upstream");
+}
+
+#[tokio::test]
+async fn the_dsh_chat_route_serves_its_own_client_token_and_pool() {
+    let upstream = Router::new().route(
+        "/v1/chat/completions",
+        post(|Json(_): Json<Value>| async move {
+            Json(json!({
+                "id": "chatcmpl-dsh",
+                "object": "chat.completion",
+                "model": "coder-upstream",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1}
+            }))
+        }),
+    );
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+
+    let temp = tempfile::tempdir().unwrap();
+    let service = ControlPlaneService::new(temp.path());
+    service
+        .save_provider(ProviderInput {
+            id: "provider".into(),
+            name: "Provider".into(),
+            protocol: Protocol::OpenAiChatCompletions,
+            endpoint: format!("http://{upstream_address}"),
+            endpoint_mode: EndpointMode::BaseUrl,
+            api_key_placement: ApiKeyPlacement::None,
+            api_key: None,
+            enabled: true,
+            models_url: None,
+        })
+        .unwrap();
+    service
+        .save_model(ModelInput {
+            id: "coder".into(),
+            name: "Coder".into(),
+            upstream_id: "coder-upstream".into(),
+            provider_id: "provider".into(),
+            capabilities: vec!["coding".into()],
+            protocol_capabilities: vec![],
+            context_window: Some(128_000),
+            max_output_tokens: None,
+        })
+        .unwrap();
+
+    let gateway = Gateway::new(temp.path());
+    let status = gateway.status("http://127.0.0.1:1".into());
+    status
+        .activate_client("dsh", vec!["coder".into()], "dsh-token")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let body = json!({
+        "model": "grillforge/coder",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "ping"}]
+    });
+    let client = reqwest::Client::new();
+
+    // The harness reaches its own route with its own token.
+    let response = client
+        .post(format!("http://{address}/chat/dsh/v1/chat/completions"))
+        .bearer_auth("dsh-token")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(response["choices"][0]["message"]["content"], "ok");
+
+    // Another client's token does not open it.
+    assert_eq!(
+        client
+            .post(format!("http://{address}/chat/dsh/v1/chat/completions"))
+            .bearer_auth("someone-else")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A model outside the pool is refused rather than forwarded.
+    assert_ne!(
+        client
+            .post(format!("http://{address}/chat/dsh/v1/chat/completions"))
+            .bearer_auth("dsh-token")
+            .json(&json!({
+                "model": "grillforge/not-in-pool",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "ping"}]
+            }))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
 }

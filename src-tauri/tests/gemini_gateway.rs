@@ -58,7 +58,7 @@ async fn gemini_generate_content_routes_through_openai_chat() {
             provider_id: "chat".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();
@@ -166,7 +166,7 @@ async fn gemini_ingress_routes_through_native_responses_and_anthropic_protocols(
                 provider_id: id.into(),
                 capabilities: vec![],
                 protocol_capabilities: vec![],
-                            context_window: None,
+                context_window: None,
                 max_output_tokens: None,
             })
             .unwrap();
@@ -256,7 +256,7 @@ async fn gemini_stream_generate_content_returns_data_only_sse() {
             provider_id: "anthropic".into(),
             capabilities: vec![],
             protocol_capabilities: vec![],
-                    context_window: None,
+            context_window: None,
             max_output_tokens: None,
         })
         .unwrap();

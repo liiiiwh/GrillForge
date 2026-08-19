@@ -223,6 +223,16 @@ const additionalClients = [
     protocol: "responses",
   },
   {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    mark: "DH",
+    status: "dsh_status",
+    apply: "apply_dsh",
+    disable: "disable_dsh",
+    pool: true,
+    protocol: "gateway",
+  },
+  {
     id: "opencode",
     name: "OpenCode",
     mark: "OC",
