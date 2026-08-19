@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "grillforge"
-version = "0.2.30"
+version = "0.2.31"
 dependencies = [
  "async-stream",
  "axum",
