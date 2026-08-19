@@ -4,6 +4,22 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.25] - 2026-08-18
+
+### Fixed
+
+- The window no longer opens blank. The routing overview added in 0.2.24 derived
+  its rows through a hook placed after the loading early-return, so the hook ran
+  on some renders and not others; React stops rendering when the hook count
+  changes, leaving an empty window. The derivation is plain code, which is what
+  it always was.
+
+### Verification
+
+- Both views are now mounted by a test that renders the whole application and
+  switches to them. Reintroducing the hook makes those tests fail, so the check
+  catches this class of regression rather than only this instance of it.
+
 ## [0.2.24] - 2026-08-18
 
 ### Fixed

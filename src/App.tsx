@@ -202,7 +202,7 @@ type ClientIntegrationStatus = {
   agents?: KimiCodeAgent[];
 };
 
-const additionalClients = [
+export const additionalClients = [
   {
     id: "gemini",
     name: "Gemini CLI",
@@ -2415,7 +2415,7 @@ function App() {
 
   // One row per route that is actually configured. A client following its native
   // model has no edge, so the table never implies a mapping that does not exist.
-  const routeEdges: RouteEdge[] = useMemo(() => {
+  const routeEdges: RouteEdge[] = ((): RouteEdge[] => {
     if (!state) return [];
     const named = (modelId: string | null | undefined) => {
       const model = models.find((item) => item.id === modelId);
@@ -2510,7 +2510,7 @@ function App() {
       }
     }
     return edges;
-  }, [state, models, providers]);
+  })();
 
   return (
     <div className="app-shell">
