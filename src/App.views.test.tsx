@@ -1,10 +1,20 @@
 // @vitest-environment jsdom
 
-import { render, waitFor, fireEvent, within, cleanup } from "@testing-library/react";
+import {
+  render,
+  waitFor,
+  fireEvent,
+  within,
+  cleanup,
+} from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+// jsdom has no Element.scrollTo, which switching views calls to return to the
+// top of the page.
+Element.prototype.scrollTo = () => {};
 
 import App, { additionalClients } from "./App";
 
@@ -33,6 +43,24 @@ const emptyState = {
   mcpMountedClientIds: [],
 };
 
+const mountedState = {
+  ...emptyState,
+  extensionSubagents: [
+    {
+      id: "ext-native",
+      name: "Coding",
+      sourceClientId: "claude_code",
+      sourceAgentId: "claude",
+      // Follows its source runtime's own model: it used to vanish from the
+      // diagram even though it is mounted.
+      modelId: null,
+      capabilities: [],
+    },
+  ],
+  clientExtensionSubagentIds: { dsh: ["ext-native"] },
+  mcpMountedClientIds: ["dsh"],
+};
+
 describe("every view mounts", () => {
   beforeEach(() => {
     // Without this a previous test's tree stays in the document and queries pick
@@ -51,7 +79,9 @@ describe("every view mounts", () => {
   it("renders the routing view without breaking the render", async () => {
     const { container } = render(<App />);
     await waitFor(() =>
-      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(0),
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(
+        0,
+      ),
     );
 
     // A hook placed after the loading early-return changes the hook count once
@@ -60,7 +90,9 @@ describe("every view mounts", () => {
       .getAllByRole("button")
       .find((button) => button.textContent?.trim().endsWith("路由策略"));
     fireEvent.click(routesNav!);
-    await waitFor(() => expect(within(container).getByText("路由概览")).toBeTruthy());
+    await waitFor(() =>
+      expect(within(container).getByText("路由概览")).toBeTruthy(),
+    );
   });
 
   it("draws each client's routes as one branching node", async () => {
@@ -98,52 +130,41 @@ describe("every view mounts", () => {
     };
     vi.mocked(invoke).mockImplementation(async (command: string) => {
       if (command === "load_state") return routedState;
-      if (command === "provider_presets") return { schema_version: 1, presets: [] };
+      if (command === "provider_presets")
+        return { schema_version: 1, presets: [] };
       throw new Error("unavailable");
     });
 
     const { container } = render(<App />);
     await waitFor(() =>
-      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(0),
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(
+        0,
+      ),
     );
     const routesNav = within(container)
       .getAllByRole("button")
       .find((button) => button.textContent?.trim().endsWith("路由策略"));
     fireEvent.click(routesNav!);
     await waitFor(() =>
-      expect(container.querySelectorAll(".route-branch").length).toBeGreaterThan(0),
+      expect(
+        container.querySelectorAll(".route-branch").length,
+      ).toBeGreaterThan(0),
     );
     const branches = container.querySelectorAll(".route-branch");
     expect(branches).toHaveLength(1);
-    expect(branches[0].querySelector(".route-branch-client")?.textContent).toContain(
-      "Claude Code",
-    );
+    expect(
+      branches[0].querySelector(".route-branch-client")?.textContent,
+    ).toContain("Claude Code");
     // Both slots hang off that one node rather than repeating the client per row.
     expect(branches[0].querySelectorAll(".route-forks > li")).toHaveLength(2);
     expect(branches[0].textContent).toContain("Claude Opus 5");
   });
 
   it("says whether a client's SubAgents are mounted, and shows native ones", async () => {
-    const mountedState = {
-      ...emptyState,
-      extensionSubagents: [
-        {
-          id: "ext-native",
-          name: "Coding",
-          sourceClientId: "claude_code",
-          sourceAgentId: "claude",
-          // Follows its source runtime's own model: it used to vanish from the
-          // diagram even though it is mounted.
-          modelId: null,
-          capabilities: [],
-        },
-      ],
-      clientExtensionSubagentIds: { dsh: ["ext-native"] },
-      mcpMountedClientIds: ["dsh"],
-    };
     vi.mocked(invoke).mockImplementation(async (command: string) => {
       if (command === "load_state") return mountedState;
-      if (command === "provider_presets") return { schema_version: 1, presets: [] };
+      if (command === "provider_presets")
+        return { schema_version: 1, presets: [] };
       if (command === "client_mcp_statuses")
         return [
           {
@@ -158,14 +179,18 @@ describe("every view mounts", () => {
 
     const { container } = render(<App />);
     await waitFor(() =>
-      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(0),
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(
+        0,
+      ),
     );
     const routesNav = within(container)
       .getAllByRole("button")
       .find((button) => button.textContent?.trim().endsWith("路由策略"));
     fireEvent.click(routesNav!);
     await waitFor(() =>
-      expect(container.querySelectorAll(".route-branch").length).toBeGreaterThan(0),
+      expect(
+        container.querySelectorAll(".route-branch").length,
+      ).toBeGreaterThan(0),
     );
 
     const branch = container.querySelector(".route-branch")!;
@@ -176,12 +201,103 @@ describe("every view mounts", () => {
     expect(branch.textContent).toContain("跟随原生模型");
   });
 
+  it("re-reads mount state when the routing page is opened", async () => {
+    // The written configuration changes outside this page, so the page cannot
+    // keep showing whatever was true when the app started.
+    let mounted = false;
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "load_state") return mountedState;
+      if (command === "provider_presets")
+        return { schema_version: 1, presets: [] };
+      if (command === "client_mcp_statuses")
+        return [
+          {
+            clientId: "dsh",
+            desiredMounted: true,
+            mounted,
+            configurationChanged: false,
+          },
+        ];
+      throw new Error("unavailable");
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() =>
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(
+        0,
+      ),
+    );
+    mounted = true;
+    const routesNav = within(container)
+      .getAllByRole("button")
+      .find((button) => button.textContent?.trim().endsWith("路由策略"));
+    fireEvent.click(routesNav!);
+    await waitFor(() =>
+      expect(container.querySelector(".route-branch")?.textContent).toContain(
+        "已挂载 1 个 SubAgent",
+      ),
+    );
+  });
+
+  it("re-reads mount state after a binding is saved", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "load_state") return mountedState;
+      if (command === "provider_presets")
+        return { schema_version: 1, presets: [] };
+      if (command === "set_client_extension_binding") return mountedState;
+      if (command === "client_mcp_statuses")
+        return [
+          {
+            clientId: "dsh",
+            desiredMounted: true,
+            mounted: true,
+            configurationChanged: false,
+          },
+        ];
+      throw new Error("unavailable");
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() =>
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(
+        0,
+      ),
+    );
+    const clientsNav = within(container)
+      .getAllByRole("button")
+      .find((button) => button.textContent?.trim().endsWith("客户端"));
+    fireEvent.click(clientsNav!);
+    await waitFor(() =>
+      expect(
+        within(container).getAllByText("DeepSeek Harness").length,
+      ).toBeGreaterThan(0),
+    );
+    fireEvent.click(within(container).getAllByText("DeepSeek Harness")[0]);
+    await waitFor(() =>
+      expect(
+        container.querySelector('.subagent-card [role="switch"]'),
+      ).toBeTruthy(),
+    );
+
+    const reads = () =>
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "client_mcp_statuses")
+        .length;
+    const before = reads();
+    fireEvent.click(container.querySelector('.subagent-card [role="switch"]')!);
+    // A saved binding changes what the mount should contain, so the page must
+    // read the mount again instead of waiting for the next visit to this view.
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  });
+
   it("offers extension SubAgents to any client the backend can mount", async () => {
     // The backend reports a status per MCP-capable client; the page must follow
     // that rather than a hardcoded list that drifts when support is added.
     vi.mocked(invoke).mockImplementation(async (command: string) => {
       if (command === "load_state") return emptyState;
-      if (command === "provider_presets") return { schema_version: 1, presets: [] };
+      if (command === "provider_presets")
+        return { schema_version: 1, presets: [] };
       if (command === "client_mcp_statuses")
         return [
           {
@@ -196,14 +312,18 @@ describe("every view mounts", () => {
 
     const { container } = render(<App />);
     await waitFor(() =>
-      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(0),
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(
+        0,
+      ),
     );
     const clientsNav = within(container)
       .getAllByRole("button")
       .find((button) => button.textContent?.trim().endsWith("客户端"));
     fireEvent.click(clientsNav!);
     await waitFor(() =>
-      expect(within(container).getAllByText("DeepSeek Harness").length).toBeGreaterThan(0),
+      expect(
+        within(container).getAllByText("DeepSeek Harness").length,
+      ).toBeGreaterThan(0),
     );
     fireEvent.click(within(container).getAllByText("DeepSeek Harness")[0]);
     await waitFor(() =>
@@ -214,11 +334,17 @@ describe("every view mounts", () => {
 
     // The count tile sits with the status tiles at the top, so the feature is
     // visible without scrolling past the model pool at all.
-    expect(within(container).getAllByText("扩展 SubAgent").length).toBeGreaterThan(1);
+    expect(
+      within(container).getAllByText("扩展 SubAgent").length,
+    ).toBeGreaterThan(1);
 
     // It must precede the model pool: a list of every model pushed it off-screen.
-    const headings = within(container).getAllByRole("heading").map((node) => node.textContent ?? "");
-    const bindings = headings.findIndex((text) => text.includes("可用的扩展 SubAgent"));
+    const headings = within(container)
+      .getAllByRole("heading")
+      .map((node) => node.textContent ?? "");
+    const bindings = headings.findIndex((text) =>
+      text.includes("可用的扩展 SubAgent"),
+    );
     const pool = headings.findIndex((text) => text.includes("可用模型"));
     expect(bindings).toBeGreaterThanOrEqual(0);
     expect(pool).toBeGreaterThanOrEqual(0);
@@ -228,14 +354,18 @@ describe("every view mounts", () => {
   it("renders the client view without breaking the render", async () => {
     const { container } = render(<App />);
     await waitFor(() =>
-      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(0),
+      expect(within(container).getAllByText("控制中心").length).toBeGreaterThan(
+        0,
+      ),
     );
     const nav = within(container)
       .getAllByRole("button")
       .find((button) => button.textContent?.trim().endsWith("客户端"));
     fireEvent.click(nav!);
     await waitFor(() =>
-      expect(within(container).getAllByText("Claude Code").length).toBeGreaterThan(0),
+      expect(
+        within(container).getAllByText("Claude Code").length,
+      ).toBeGreaterThan(0),
     );
   });
 });

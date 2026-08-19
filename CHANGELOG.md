@@ -4,6 +4,16 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.31] - 2026-08-19
+
+### Fixed
+
+- The routing overview showed stale SubAgent mount state until the client page
+  was opened and left again. Mount state is derived from what was last saved, so
+  it is now re-read after every save and when the routing page is opened.
+- `pnpm test` reported five unhandled errors and exited non-zero: jsdom has no
+  `Element.scrollTo`, which switching views calls.
+
 ## [0.2.30] - 2026-08-19
 
 ### Added
