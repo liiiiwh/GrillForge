@@ -379,12 +379,15 @@ fn a_codex_tool_list_from_an_older_build_reads_as_a_configuration_change() {
 
     // What an older build wrote: the url is right, so only the tool list can
     // reveal that this client can start runs it has no tool to collect.
+    let current = format!(
+        "enabled_tools = [{}]",
+        grillforge_lib::gateway::AGENT_MCP_TOOLS
+            .map(|tool| format!("\"{tool}\""))
+            .join(", ")
+    );
     let stale = fs::read_to_string(&config)
         .expect("active config")
-        .replace(
-            r#"enabled_tools = ["list_agents", "run_agent", "get_agent_result", "answer_agent_permission", "stop_agent"]"#,
-            r#"enabled_tools = ["list_agents", "run_agent"]"#,
-        );
+        .replace(&current, r#"enabled_tools = ["list_agents", "run_agent"]"#);
     assert!(stale.contains(r#"enabled_tools = ["list_agents", "run_agent"]"#));
     fs::write(&config, stale).expect("stale tool list");
     let status = manager.status("codex").expect("status");

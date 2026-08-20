@@ -4,6 +4,23 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.34] - 2026-08-19
+
+### Added
+
+- `continue_agent` sends more work to a run started with `keepOpen`, in the
+  conversation it already has, so the Agent keeps what it read and decided
+  instead of starting over. `stop_agent` closes it. Claude Code and Pi hold a
+  conversation open; a runtime that cannot says so when the run is requested
+  rather than running a one-shot the caller believes it can continue.
+
+### Fixed
+
+- Every tool result now names the runs this client started and has not collected.
+  Starting a run and then answering the user loses its result, and the place that
+  is decided is the result of whatever the caller did next — not the instructions
+  it read once at the start of the session.
+
 ## [0.2.33] - 2026-08-19
 
 ### Fixed

@@ -125,6 +125,282 @@ async fn a_running_agent_reports_progress_without_leaking_the_prompt() {
 }
 
 #[tokio::test]
+async fn a_kept_open_run_continues_in_the_conversation_it_already_has() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    let log = directory.path().join("args.log");
+    // Records how the runtime was told which conversation to use.
+    fs::write(
+        &runtime,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> {}; done\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"turn done\"}}'\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    gateway
+        .status(format!("http://{address}"))
+        .activate_client_agent_broker_with_sources(
+            "codex",
+            &service.state().unwrap(),
+            "session-token",
+            vec![
+                AgentSourceRuntime {
+                    source_client_id: "claude_code".into(),
+                    runtime: runtime.clone(),
+                    config_root: directory.path().to_path_buf(),
+                },
+                AgentSourceRuntime {
+                    source_client_id: "opencode".into(),
+                    runtime: runtime.clone(),
+                    config_root: directory.path().to_path_buf(),
+                },
+            ],
+            vec![
+                AgentRuntimeRoute {
+                    extension_id: "reviewer".into(),
+                    source_client_id: "claude_code".into(),
+                    source_agent_id: "general-purpose".into(),
+                    model_id: None,
+                },
+                AgentRuntimeRoute {
+                    extension_id: "one-shot-only".into(),
+                    source_client_id: "opencode".into(),
+                    source_agent_id: "general".into(),
+                    model_id: None,
+                },
+            ],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("http://{address}/mcp/codex"))
+            .bearer_auth("session-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    // A runtime that cannot hold a conversation says so instead of quietly
+    // running a one-shot the caller believes it can continue.
+    let refused: Value = call(
+        1,
+        "run_agent",
+        json!({
+            "extensionId":"one-shot-only",
+            "cwd":directory.path(),
+            "prompt":"look around",
+            "keepOpen":true
+        }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert!(
+        refused["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("cannot keep an Agent conversation open")
+    );
+
+    let started: Value = call(
+        2,
+        "run_agent",
+        json!({
+            "extensionId":"reviewer",
+            "cwd":directory.path(),
+            "prompt":"read the project",
+            "keepOpen":true,
+            "waitSeconds":60
+        }),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(started["result"]["isError"], false, "{started}");
+    let run_id = serde_json::from_str::<Value>(
+        started["result"]["content"][0]["text"].as_str().unwrap(),
+    )
+    .unwrap()["runId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let continued: Value = call(
+        3,
+        "continue_agent",
+        json!({"runId":run_id,"prompt":"now summarise it","waitSeconds":60}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(continued["result"]["isError"], false, "{continued}");
+    // The same runId, because it is the same conversation.
+    let payload: Value =
+        serde_json::from_str(continued["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["runId"], run_id.as_str());
+    assert_eq!(payload["result"], "turn done");
+
+    let recorded = fs::read_to_string(&log).unwrap();
+    let args = recorded.lines().collect::<Vec<_>>();
+    // Opened under an identifier GrillForge chose, then reopened under the same
+    // one, so the second turn keeps what the first turn read.
+    let opened = args[args.iter().position(|a| *a == "--session-id").unwrap() + 1];
+    let reopened = args[args.iter().position(|a| *a == "--resume").unwrap() + 1];
+    assert_eq!(opened, reopened);
+    // A conversation that is kept has to be persisted.
+    assert!(!args.contains(&"--no-session-persistence"));
+
+    // Closing it ends the conversation, so further work needs a new run.
+    call(4, "stop_agent", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let gone: Value = call(
+        5,
+        "continue_agent",
+        json!({"runId":run_id,"prompt":"anything"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(gone["result"]["isError"], true, "{gone}");
+    assert!(
+        gone["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("no open Agent conversation")
+    );
+}
+
+#[tokio::test]
+async fn every_tool_result_names_the_runs_this_client_has_not_collected() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    fs::write(&runtime, "#!/bin/sh\nsleep 30\n").unwrap();
+    let mut permissions = fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runtime, permissions).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    gateway
+        .status(format!("http://{address}"))
+        .activate_client_agent_broker(
+            "codex",
+            &service.state().unwrap(),
+            "outstanding-token",
+            &runtime,
+            directory.path(),
+            vec![AgentRuntimeRoute {
+                extension_id: "slow".into(),
+                source_client_id: "claude_code".into(),
+                source_agent_id: "general-purpose".into(),
+                model_id: None,
+            }],
+        )
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("http://{address}/mcp/codex"))
+            .bearer_auth("outstanding-token")
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    // Nothing started yet, so nothing is owed and no note is attached.
+    let listed: Value = call(1, "list_agents", json!({}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["content"].as_array().unwrap().len(), 1);
+
+    let started: Value = call(
+        2,
+        "run_agent",
+        json!({"extensionId":"slow","cwd":directory.path(),"prompt":"take your time"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let run_id = serde_json::from_str::<Value>(
+        started["result"]["content"][0]["text"].as_str().unwrap(),
+    )
+    .unwrap()["runId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Whatever the caller does next carries the run it still owes, so ending the
+    // turn is a choice made in front of the evidence rather than by default.
+    let listed: Value = call(3, "list_agents", json!({}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let note: Value =
+        serde_json::from_str(listed["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(note["uncollectedRuns"][0]["runId"], run_id.as_str());
+    assert_eq!(note["uncollectedRuns"][0]["status"], "running");
+    assert!(
+        note["next"]
+            .as_str()
+            .unwrap()
+            .contains("call get_agent_result")
+    );
+
+    // Cancelling settles the debt, so the note stops following the caller.
+    call(4, "stop_agent", json!({"runId":run_id}))
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let listed: Value = call(5, "list_agents", json!({}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["content"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn collecting_waits_for_a_run_the_caller_has_only_just_started() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = directory.path().join("claude");

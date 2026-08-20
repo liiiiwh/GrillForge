@@ -127,6 +127,28 @@ waiting.
 A wait also ends the moment the child asks for permission, because that request
 is the caller's to answer and the child is blocked until it is.
 
+Every tool result names the runs this client started and has not collected. A
+caller only loses a result by believing it has none left, and the place it
+decides that is the result of whatever it did next.
+
+### Kept-open Runs
+
+A run is one-shot unless the caller asks to keep it open, because an open
+conversation is state the runtime stores on the user's disk. A kept-open run is
+opened under an identifier GrillForge chooses and reopened under the same one for
+each further turn, so the Agent keeps what it read and decided. `stop_agent`
+closes it, and a client that is unmounted leaves none open.
+
+GrillForge holds the identifier and nothing else. The runtime stores the
+conversation and reopens it, exactly as it does for a person running the same CLI
+by hand, which is why a runtime appears in that table only once its own CLI has
+been seen to accept a caller-chosen identifier and reopen it. A runtime that
+cannot says so when the run is requested rather than running a one-shot the
+caller believes it can continue.
+
+One conversation runs one turn at a time: the previous turn is collected before
+the next is sent.
+
 A result is delivered once and then dropped. An uncollected result is dropped
 after an hour, and unmounting a client cancels every run still active for it.
 

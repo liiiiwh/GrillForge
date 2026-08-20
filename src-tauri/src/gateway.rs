@@ -88,6 +88,8 @@ pub struct GatewayStatus {
     #[serde(skip)]
     active_agent_runs: Arc<Mutex<HashMap<String, AgentRun>>>,
     #[serde(skip)]
+    active_agent_sessions: Arc<Mutex<HashMap<String, ContinuableRun>>>,
+    #[serde(skip)]
     active_agent_permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
     #[serde(skip)]
     connection_tests: Arc<Mutex<HashSet<String>>>,
@@ -108,6 +110,7 @@ impl GatewayStatus {
             active_agent_brokers: Arc::clone(&gateway.active_agent_brokers),
             active_agent_runtime_routes: Arc::clone(&gateway.active_agent_runtime_routes),
             active_agent_runs: Arc::clone(&gateway.active_agent_runs),
+            active_agent_sessions: Arc::clone(&gateway.active_agent_sessions),
             active_agent_permissions: Arc::clone(&gateway.active_agent_permissions),
             connection_tests: Arc::clone(&gateway.connection_tests),
         }
@@ -285,6 +288,7 @@ impl GatewayStatus {
                     base_url: self.base_url.clone(),
                     runtime_routes: Arc::clone(&self.active_agent_runtime_routes),
                     runs: Arc::clone(&self.active_agent_runs),
+                    sessions: Arc::clone(&self.active_agent_sessions),
                     permissions: Arc::clone(&self.active_agent_permissions),
                 },
             );
@@ -297,6 +301,10 @@ impl GatewayStatus {
         }
         if let Ok(mut routes) = self.active_agent_runtime_routes.lock() {
             routes.retain(|_, route| route.target_client_id != client_id);
+        }
+        // An unmounted client leaves no conversation open behind it either.
+        if let Ok(mut sessions) = self.active_agent_sessions.lock() {
+            sessions.retain(|_, session| session.client_id != client_id);
         }
         // An unmounted client must not leave a child running.
         if let Ok(mut runs) = self.active_agent_runs.lock() {
@@ -712,6 +720,7 @@ struct ActiveAgentBroker {
     base_url: String,
     runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
     runs: Arc<Mutex<HashMap<String, AgentRun>>>,
+    sessions: Arc<Mutex<HashMap<String, ContinuableRun>>>,
     permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
 }
 
@@ -739,6 +748,40 @@ struct AgentRun {
     notify: Arc<tokio::sync::Notify>,
 }
 
+/// A conversation a delegated Agent keeps open between calls. GrillForge owns
+/// the identifier and nothing else: the runtime stores the conversation and
+/// reopens it, exactly as it does for a person running the same CLI by hand.
+#[derive(Clone)]
+enum AgentSession {
+    /// Start the conversation under this identifier.
+    Open(String),
+    /// Reopen the conversation already stored under it.
+    Resume(String),
+}
+
+/// How a runtime is told which conversation to use, and by omission which
+/// runtimes cannot hold one open. A runtime is listed only once its own CLI has
+/// been seen to accept a caller-chosen identifier and to reopen it.
+fn agent_session_args(source_client_id: &str, session: &AgentSession) -> Option<[String; 2]> {
+    let (flag, id) = match (source_client_id, session) {
+        ("claude_code", AgentSession::Open(id)) => ("--session-id", id),
+        ("claude_code", AgentSession::Resume(id)) => ("--resume", id),
+        // Pi creates the session when the identifier is new and reopens it when
+        // it is not, so one flag covers both.
+        ("pi", AgentSession::Open(id) | AgentSession::Resume(id)) => ("--session-id", id),
+        _ => return None,
+    };
+    Some([flag.to_string(), id.clone()])
+}
+
+/// A run the caller may send more work to until it closes it.
+struct ContinuableRun {
+    client_id: String,
+    session_id: String,
+    invocation: AgentInvocation,
+    touched_at: Instant,
+}
+
 /// A result nobody collects is dropped rather than retained forever.
 const AGENT_RUN_RETENTION: Duration = Duration::from_secs(3600);
 const AGENT_RUN_MAX_WAIT_SECONDS: u64 = 300;
@@ -762,10 +805,11 @@ const AGENT_RUN_COLLECT_OBLIGATION: &str =
 /// Every tool the broker offers. A client that is only allowed to call some of
 /// these cannot honour the run contract: `run_agent` hands back a handle, so a
 /// client without `get_agent_result` starts runs it can never collect.
-pub const AGENT_MCP_TOOLS: [&str; 5] = [
+pub const AGENT_MCP_TOOLS: [&str; 6] = [
     "list_agents",
     "run_agent",
     "get_agent_result",
+    "continue_agent",
     "answer_agent_permission",
     "stop_agent",
 ];
@@ -791,6 +835,7 @@ pub struct Gateway {
     active_agent_brokers: Arc<RwLock<HashMap<String, ActiveAgentBroker>>>,
     active_agent_runtime_routes: Arc<Mutex<HashMap<String, ActiveAgentRuntimeRoute>>>,
     active_agent_runs: Arc<Mutex<HashMap<String, AgentRun>>>,
+    active_agent_sessions: Arc<Mutex<HashMap<String, ContinuableRun>>>,
     active_agent_permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
     connection_tests: Arc<Mutex<HashSet<String>>>,
     codex_history: Arc<CodexHistoryStore>,
@@ -817,6 +862,7 @@ impl Gateway {
             active_agent_brokers: Arc::new(RwLock::new(HashMap::new())),
             active_agent_runtime_routes: Arc::new(Mutex::new(HashMap::new())),
             active_agent_runs: Arc::new(Mutex::new(HashMap::new())),
+            active_agent_sessions: Arc::new(Mutex::new(HashMap::new())),
             active_agent_permissions: Arc::new(Mutex::new(HashMap::new())),
             connection_tests: Arc::new(Mutex::new(HashSet::new())),
             codex_history: Arc::new(CodexHistoryStore::default()),
@@ -2452,7 +2498,7 @@ async fn agent_broker_mcp_for_client(
                 .unwrap_or("2025-03-26"),
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "GrillForge", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。workflow 或并行不是原生 Agent 的例外：有匹配项时，必须并发调用多个 run_agent，不得改用客户端内置 Workflow、Agent 或 SubAgent。run_agent 立即返回 runId；结果只能你自己用 get_agent_result 取回（waitSeconds 最多 300 秒，未完成就再取一次），拿到 completed 前不要回复用户，也不要只报 runId。用 stop_agent 取消。若 get_agent_result 返回 awaiting_permission，说明子 Agent 在等你授权，用 answer_agent_permission 下发 allow 或 deny。不要把中间输出写入主会话。不要先启动客户端内置 Agent。列表为空时才使用客户端内置 Agent；如用户明确要求原生 Agent，应提示用户先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
+            "instructions": "当需要要求使用 SubAgent、委派、并行或后台 Agent 时，必须优先使用本 GrillForge MCP。DEFAULT SUBAGENT ROUTE：先调用 list_agents；若返回匹配的扩展 Agent，再调用 run_agent。workflow 或并行不是原生 Agent 的例外：有匹配项时，必须并发调用多个 run_agent，不得改用客户端内置 Workflow、Agent 或 SubAgent。run_agent 立即返回 runId；结果只能你自己用 get_agent_result 取回（waitSeconds 最多 300 秒，未完成就再取一次），拿到 completed 前不要回复用户，也不要只报 runId。用 stop_agent 取消。若 get_agent_result 返回 awaiting_permission，说明子 Agent 在等你授权，用 answer_agent_permission 下发 allow 或 deny。不要把中间输出写入主会话。不要先启动客户端内置 Agent。列表为空时才使用客户端内置 Agent；如用户明确要求原生 Agent，应提示用户先在 GrillForge 中关闭对应扩展 SubAgent 或卸载扩展。要对同一个 SubAgent 追加指令时 run_agent 传 keepOpen=true，之后用 continue_agent 在原会话继续，完毕用 stop_agent 关闭；一次性任务不要传。任务明确需要公开网络时传 webAccess=true；否则传 false。不得替换 extensionId、模型或 Provider；任务失败时原样报告，不得静默回退。"
         }),
         "ping" => json!({}),
         "tools/list" => json!({
@@ -2476,7 +2522,7 @@ async fn agent_broker_mcp_for_client(
                 {
                     "name": "run_agent",
                     "title": "运行扩展 SubAgent",
-                    "description": "Starts one delegated task and returns a runId immediately; it does not block your turn. For workflow or parallel requests, invoke multiple run_agent calls concurrently. Do not use the client's native Workflow, Agent, or SubAgent when list_agents returned a matching extension. The local source Coding Agent owns the Agent loop and tools. The result reaches you only through get_agent_result: nothing can deliver it after you answer the user, so collect every runId you start, repeating the call while it reports running, and never report a runId to the user in place of a result. Pass waitSeconds to wait inside the call. Provide cwd and a complete prompt; webAccess defaults to true; set it to false only to keep an Agent offline. Choose permissionMode from the Agent's published list when the task needs less or more than its default. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务，立即拿到 runId。",
+                    "description": "Starts one delegated task and returns a runId immediately; it does not block your turn. For workflow or parallel requests, invoke multiple run_agent calls concurrently. Do not use the client's native Workflow, Agent, or SubAgent when list_agents returned a matching extension. The local source Coding Agent owns the Agent loop and tools. The result reaches you only through get_agent_result: nothing can deliver it after you answer the user, so collect every runId you start, repeating the call while it reports running, and never report a runId to the user in place of a result. Pass waitSeconds to wait inside the call. Set keepOpen when you will send the same Agent more work: the conversation stays open for continue_agent until you close it with stop_agent, and the Agent keeps what it read and decided instead of starting over. Leave it off for a one-shot task. Provide cwd and a complete prompt; webAccess defaults to true; set it to false only to keep an Agent offline. Choose permissionMode from the Agent's published list when the task needs less or more than its default. Never submit runtime, model, Provider, or native CLI arguments or silently switch Agent. 使用 extensionId 委派任务，立即拿到 runId。",
                     "_meta": {"anthropic/alwaysLoad": true},
                     "annotations": {
                         "readOnlyHint": false,
@@ -2516,6 +2562,27 @@ async fn agent_broker_mcp_for_client(
                     }
                 },
                 {
+                    "name": "continue_agent",
+                    "title": "继续扩展 SubAgent 的会话",
+                    "description": "Sends more work to a run started with keepOpen, in the conversation it already has: the Agent keeps everything it read and decided, so say only what changed. Returns a handle under the same runId, collected with get_agent_result exactly like the first turn. One turn at a time, so collect the previous one first. Close it with stop_agent when the work is done; an open conversation is state the runtime keeps. 用同一个 runId 追加指令。",
+                    "_meta": {"anthropic/alwaysLoad": true},
+                    "annotations": {
+                        "readOnlyHint": false,
+                        "destructiveHint": false,
+                        "openWorldHint": true
+                    },
+                    "inputSchema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["runId", "prompt"],
+                        "properties": {
+                            "runId": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "waitSeconds": {"type": "integer", "minimum": 0, "maximum": 300}
+                        }
+                    }
+                },
+                {
                     "name": "answer_agent_permission",
                     "title": "答复扩展 SubAgent 的授权请求",
                     "description": "Answers a permission request raised by a delegated Agent, reported as pendingPermissions by get_agent_result. behavior is allow or deny; deny may carry a message explaining why. 由你决定子 Agent 能否执行该工具调用。",
@@ -2546,7 +2613,9 @@ async fn agent_broker_mcp_for_client(
                 }
             ]
         }),
-        "tools/call" => match request.pointer("/params/name").and_then(Value::as_str) {
+        "tools/call" => {
+            let outstanding = active.clone();
+            let result = match request.pointer("/params/name").and_then(Value::as_str) {
             Some("list_agents") => match list_agents(&active, request.pointer("/params/arguments"))
             {
                 Ok(text) => mcp_tool_result(text, false),
@@ -2572,6 +2641,16 @@ async fn agent_broker_mcp_for_client(
                     Err(message) => mcp_tool_result(message, true),
                 }
             }
+            Some("continue_agent") => {
+                let arguments = request
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                match continue_agent(active, arguments).await {
+                    Ok(text) => mcp_tool_result(text, false),
+                    Err(message) => mcp_tool_result(message, true),
+                }
+            }
             Some("answer_agent_permission") => {
                 let arguments = request
                     .pointer("/params/arguments")
@@ -2592,8 +2671,10 @@ async fn agent_broker_mcp_for_client(
                     Err(message) => mcp_tool_result(message, true),
                 }
             }
-            _ => return mcp_error(id, -32602, "unknown MCP tool"),
-        },
+                _ => return mcp_error(id, -32602, "unknown MCP tool"),
+            };
+            with_outstanding_runs(result, &outstanding)
+        }
         "notifications/initialized" => return StatusCode::ACCEPTED.into_response(),
         _ => return mcp_error(id, -32601, "JSON-RPC method is not supported"),
     };
@@ -2602,6 +2683,37 @@ async fn agent_broker_mcp_for_client(
         Json(json!({"jsonrpc": "2.0", "id": id, "result": result})),
     )
         .into_response()
+}
+
+/// Names the runs this client started and has not collected, on every tool
+/// result. A caller only loses a result by believing it has none left, and the
+/// place it decides that is the result of whatever it did next.
+fn with_outstanding_runs(mut result: Value, active: &ActiveAgentBroker) -> Value {
+    let Ok(runs) = active.runs.lock() else {
+        return result;
+    };
+    let mut outstanding = runs
+        .iter()
+        .filter(|(_, run)| run.client_id == active.target_client_id)
+        .map(|(run_id, run)| {
+            json!({
+                "runId": run_id,
+                "status": if run.outcome.is_some() { "completed" } else { "running" },
+            })
+        })
+        .collect::<Vec<_>>();
+    if outstanding.is_empty() {
+        return result;
+    }
+    outstanding.sort_by_key(|entry| entry["runId"].as_str().unwrap_or_default().to_string());
+    let note = json!({
+        "uncollectedRuns": outstanding,
+        "next": AGENT_RUN_COLLECT_OBLIGATION,
+    });
+    if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+        content.push(json!({"type": "text", "text": note.to_string()}));
+    }
+    result
 }
 
 fn mcp_tool_result(text: String, is_error: bool) -> Value {
@@ -2775,6 +2887,7 @@ fn mcp_error(id: Value, code: i64, message: &str) -> Response {
         .into_response()
 }
 
+#[derive(Clone)]
 struct AgentInvocation {
     cwd: PathBuf,
     prompt: String,
@@ -2782,6 +2895,7 @@ struct AgentInvocation {
     permission_args: &'static [&'static str],
     route: AgentRuntimeRoute,
     source_runtime: AgentSourceRuntime,
+    session: Option<AgentSession>,
 }
 
 /// Everything a child needs to reach one managed model, kept together so a
@@ -2797,6 +2911,8 @@ struct ManagedRoute {
 struct AgentRunOptions {
     web_access: bool,
     permission_args: &'static [&'static str],
+    /// Which conversation the child continues, when its runtime keeps one.
+    session: Option<AgentSession>,
     /// Where the child sends a permission prompt, when its runtime can route one.
     permission_endpoint: Option<PermissionEndpoint>,
     progress: Option<mpsc::UnboundedSender<String>>,
@@ -2823,6 +2939,7 @@ fn prepare_agent_invocation(
         "webAccess",
         "permissionMode",
         "waitSeconds",
+        "keepOpen",
     ];
     if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
         return Err(format!("run_agent does not accept {key}"));
@@ -2880,6 +2997,21 @@ fn prepare_agent_invocation(
     }
     let permission_args =
         crate::agent_permissions::resolve(&route.source_client_id, permission_mode)?;
+    // A run is one-shot unless the caller says it will send more work, because a
+    // conversation left open is state the runtime keeps on the user's disk.
+    let session = if optional_mcp_opt_bool(object, "keepOpen")?.unwrap_or(false) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let session = AgentSession::Open(id);
+        if agent_session_args(&route.source_client_id, &session).is_none() {
+            return Err(format!(
+                "{} cannot keep an Agent conversation open; run it without keepOpen",
+                route.source_client_id
+            ));
+        }
+        Some(session)
+    } else {
+        None
+    };
     Ok(AgentInvocation {
         cwd,
         prompt,
@@ -2887,6 +3019,7 @@ fn prepare_agent_invocation(
         permission_args,
         route,
         source_runtime,
+        session,
     })
 }
 
@@ -2904,11 +3037,40 @@ async fn start_agent(active: ActiveAgentBroker, arguments: Value) -> Result<Stri
     };
     let invocation = prepare_agent_invocation(&active, arguments)?;
     let run_id = uuid::Uuid::new_v4().to_string();
+    launch_run(active, invocation, run_id, wait).await
+}
+
+/// Launches one run under an identifier the caller already holds, and records it
+/// when the caller means to send more work to the same conversation.
+async fn launch_run(
+    active: ActiveAgentBroker,
+    invocation: AgentInvocation,
+    run_id: String,
+    wait: u64,
+) -> Result<String, String> {
     let permission_secret = uuid::Uuid::new_v4().to_string();
     let client_id = active.target_client_id.clone();
     let notify = Arc::new(tokio::sync::Notify::new());
     let runs = Arc::clone(&active.runs);
     evict_finished_runs(&runs)?;
+    if let Some(AgentSession::Open(session_id) | AgentSession::Resume(session_id)) =
+        invocation.session.clone()
+    {
+        let mut sessions = active
+            .sessions
+            .lock()
+            .map_err(|_| "Agent session registry lock is poisoned".to_string())?;
+        sessions.retain(|_, session| session.touched_at.elapsed() < AGENT_RUN_RETENTION);
+        sessions.insert(
+            run_id.clone(),
+            ContinuableRun {
+                client_id: client_id.clone(),
+                session_id,
+                invocation: invocation.clone(),
+                touched_at: Instant::now(),
+            },
+        );
+    }
 
     let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
     let progress_runs = Arc::clone(&runs);
@@ -3074,17 +3236,79 @@ fn stop_agent(active: &ActiveAgentBroker, arguments: Value) -> Result<String, St
         return Err(format!("stop_agent does not accept {key}"));
     }
     let run_id = required_mcp_string(object, "runId")?;
+    let closed = active
+        .sessions
+        .lock()
+        .map_err(|_| "Agent session registry lock is poisoned".to_string())?
+        .remove(&run_id)
+        .is_some();
     let mut runs = active
         .runs
         .lock()
         .map_err(|_| "Agent run registry lock is poisoned".to_string())?;
-    let mut run = runs
-        .remove(&run_id)
-        .ok_or_else(|| format!("unknown Agent run: {run_id}"))?;
+    // A kept-open run is still stoppable once its last turn has been collected,
+    // because closing the conversation is the whole point of stopping it.
+    let Some(mut run) = runs.remove(&run_id) else {
+        return if closed {
+            Ok(format!("stopped {run_id}"))
+        } else {
+            Err(format!("unknown Agent run: {run_id}"))
+        };
+    };
     if let Some(task) = run.task.take() {
         task.abort();
     }
     Ok(format!("stopped {run_id}"))
+}
+
+/// Sends more work to a conversation an earlier run left open. The runtime holds
+/// the conversation; GrillForge only reopens it under the same identifier.
+async fn continue_agent(active: ActiveAgentBroker, arguments: Value) -> Result<String, String> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "continue_agent arguments must be an object".to_string())?;
+    let allowed = ["runId", "prompt", "waitSeconds"];
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("continue_agent does not accept {key}"));
+    }
+    let run_id = required_mcp_string(object, "runId")?;
+    let prompt = required_mcp_string(object, "prompt")?;
+    let wait = match object.get("waitSeconds") {
+        None => 0,
+        Some(value) => value
+            .as_u64()
+            .filter(|seconds| *seconds <= AGENT_RUN_MAX_WAIT_SECONDS)
+            .ok_or_else(|| {
+                format!("continue_agent waitSeconds must be 0..={AGENT_RUN_MAX_WAIT_SECONDS}")
+            })?,
+    };
+    if active
+        .runs
+        .lock()
+        .map_err(|_| "Agent run registry lock is poisoned".to_string())?
+        .contains_key(&run_id)
+    {
+        return Err(format!(
+            "collect {run_id} before sending it more work; one conversation runs one turn at a time"
+        ));
+    }
+    let mut invocation = {
+        let sessions = active
+            .sessions
+            .lock()
+            .map_err(|_| "Agent session registry lock is poisoned".to_string())?;
+        let session = sessions.get(&run_id).filter(|session| {
+            session.client_id == active.target_client_id
+        });
+        let session = session.ok_or_else(|| {
+            format!("no open Agent conversation for {run_id}; start one with run_agent keepOpen")
+        })?;
+        let mut invocation = session.invocation.clone();
+        invocation.session = Some(AgentSession::Resume(session.session_id.clone()));
+        invocation
+    };
+    invocation.prompt = prompt;
+    launch_run(active, invocation, run_id, wait).await
 }
 
 /// Relays the delegating Agent's decision to the child that is waiting on it.
@@ -3154,6 +3378,7 @@ async fn execute_agent(
         permission_args,
         route,
         source_runtime,
+        session,
     } = invocation;
     let managed_route = route.model_id.as_ref().map(|model_id| ManagedRoute {
         alias: format!("grillforge/{model_id}"),
@@ -3195,6 +3420,7 @@ async fn execute_agent(
     let options = AgentRunOptions {
         web_access,
         permission_args,
+        session,
         permission_endpoint,
         progress,
     };
@@ -3378,14 +3604,17 @@ async fn run_claude_agent_runtime(
     if let Some(route) = managed_route {
         command.args(["--model", &route.alias]);
     }
-    command.args([
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--no-session-persistence",
-        &prompt,
-    ]);
+    command.args(["-p", "--output-format", "stream-json", "--verbose"]);
+    match options
+        .session
+        .as_ref()
+        .and_then(|session| agent_session_args("claude_code", session))
+    {
+        Some(args) => command.args(args),
+        // Nothing to reopen later, so the run leaves no session behind.
+        None => command.arg("--no-session-persistence"),
+    };
+    command.arg(&prompt);
     for key in [
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -3608,7 +3837,15 @@ async fn run_pi_agent_runtime(
                 .map(PiManagedConfigScratch::root)
                 .unwrap_or(&source.config_root),
         )
-        .args(["--mode", "json", "-p", "--no-session"]);
+        .args(["--mode", "json", "-p"]);
+    match options
+        .session
+        .as_ref()
+        .and_then(|session| agent_session_args("pi", session))
+    {
+        Some(args) => command.args(args),
+        None => command.arg("--no-session"),
+    };
     if let Some(route) = managed_route {
         command.args(["--model", &format!("grillforge_agent/{}", route.alias)]);
         command.env("GRILLFORGE_AGENT_CHILD", "1");
