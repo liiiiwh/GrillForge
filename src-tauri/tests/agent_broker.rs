@@ -114,14 +114,16 @@ async fn a_running_agent_reports_progress_without_leaking_the_prompt() {
         "{collected}"
     );
 
-    // A collected run is gone; collecting twice is an error, not a second result.
+    // A lost HTTP response must not lose the child result. Repeating the collect
+    // returns the same completed payload during the retention window.
     let again: Value = call(9, "get_agent_result", json!({"runId":run_id}))
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(again["result"]["isError"], true, "{again}");
+    assert_eq!(again["result"]["isError"], false, "{again}");
+    assert_eq!(agent_result(&again), "final-only-result");
 }
 
 #[tokio::test]
@@ -235,13 +237,12 @@ async fn a_kept_open_run_continues_in_the_conversation_it_already_has() {
     .await
     .unwrap();
     assert_eq!(started["result"]["isError"], false, "{started}");
-    let run_id = serde_json::from_str::<Value>(
-        started["result"]["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap()["runId"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let run_id =
+        serde_json::from_str::<Value>(started["result"]["content"][0]["text"].as_str().unwrap())
+            .unwrap()["runId"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
     let continued: Value = call(
         3,
@@ -357,13 +358,12 @@ async fn every_tool_result_names_the_runs_this_client_has_not_collected() {
     .json()
     .await
     .unwrap();
-    let run_id = serde_json::from_str::<Value>(
-        started["result"]["content"][0]["text"].as_str().unwrap(),
-    )
-    .unwrap()["runId"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let run_id =
+        serde_json::from_str::<Value>(started["result"]["content"][0]["text"].as_str().unwrap())
+            .unwrap()["runId"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
     // Whatever the caller does next carries the run it still owes, so ending the
     // turn is a choice made in front of the evidence rather than by default.
@@ -612,6 +612,18 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
         tools["result"]["tools"][1]["inputSchema"]["properties"]["webAccess"]["type"],
         "boolean"
     );
+    assert_eq!(
+        tools["result"]["tools"][1]["inputSchema"]["properties"]["keepOpen"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        tools["result"]["tools"][1]["inputSchema"]["properties"]["waitSeconds"]["maximum"],
+        240
+    );
+    assert_eq!(
+        tools["result"]["tools"][2]["inputSchema"]["properties"]["waitSeconds"]["maximum"],
+        240
+    );
     // What a client is allowed to mount has to be exactly what is advertised,
     // or it starts runs it has no tool to collect.
     assert_eq!(
@@ -625,6 +637,31 @@ printf '%s' '{"type":"result","result":"child runtime completed"}'
     );
     // The result only arrives if the caller comes back for it.
     assert!(run_description.contains("The result reaches you only through get_agent_result"));
+
+    let oversized_wait: Value = client
+        .post(format!("{base_url}/mcp/claude_code"))
+        .bearer_auth("broker-secret")
+        .json(&json!({
+            "jsonrpc":"2.0","id":21,"method":"tools/call",
+            "params":{"name":"get_agent_result","arguments":{"runId":"missing","waitSeconds":241}}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        oversized_wait["result"]["isError"], true,
+        "{oversized_wait}"
+    );
+    assert!(
+        oversized_wait["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("waitSeconds must be 0..=240"),
+        "{oversized_wait}"
+    );
 
     let listed: Value = client
         .post(format!("{base_url}/mcp/claude_code"))
@@ -1719,6 +1756,105 @@ async fn client_agent_lists_update_independently_without_remounting_mcp() {
 }
 
 #[tokio::test]
+async fn one_client_cannot_collect_or_stop_another_clients_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("claude");
+    fs::write(&runtime, "#!/bin/sh\nsleep 120\n").unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let service = ControlPlaneService::new(directory.path());
+    let gateway = Gateway::new(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    let status = gateway.status(base_url.clone());
+    let route = AgentRuntimeRoute {
+        extension_id: "shared-worker".into(),
+        source_client_id: "claude_code".into(),
+        source_agent_id: "general-purpose".into(),
+        model_id: None,
+    };
+    for (client_id, token) in [("codex", "codex-token"), ("claude_code", "claude-token")] {
+        status
+            .activate_client_agent_broker(
+                client_id,
+                &service.state().unwrap(),
+                token,
+                &runtime,
+                directory.path(),
+                vec![route.clone()],
+            )
+            .unwrap();
+    }
+    tokio::spawn(async move { axum::serve(listener, gateway.router()).await.unwrap() });
+
+    let call = |client_id: &str, token: &str, id: i32, name: &str, arguments: Value| {
+        reqwest::Client::new()
+            .post(format!("{base_url}/mcp/{client_id}"))
+            .bearer_auth(token)
+            .json(&json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }))
+            .send()
+    };
+
+    let started: Value = call(
+        "codex",
+        "codex-token",
+        1,
+        "run_agent",
+        json!({"extensionId":"shared-worker","cwd":directory.path(),"prompt":"wait"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let handle: Value =
+        serde_json::from_str(started["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let run_id = handle["runId"].as_str().unwrap().to_string();
+
+    for (id, tool, arguments) in [
+        (
+            2,
+            "get_agent_result",
+            json!({"runId":run_id,"waitSeconds":0}),
+        ),
+        (3, "stop_agent", json!({"runId":run_id})),
+    ] {
+        let response: Value = call("claude_code", "claude-token", id, tool, arguments)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(response["result"]["isError"], true, "{tool}: {response}");
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("unknown Agent run"),
+            "{tool}: {response}"
+        );
+    }
+
+    let stopped: Value = call(
+        "codex",
+        "codex-token",
+        4,
+        "stop_agent",
+        json!({"runId":run_id}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(stopped["result"]["isError"], false, "{stopped}");
+}
+
+#[tokio::test]
 async fn opencode_subagent_source_is_selected_exactly_with_an_isolated_managed_model() {
     let directory = tempfile::tempdir().unwrap();
     let opencode_root = directory.path().join("opencode-config");
@@ -2672,12 +2808,16 @@ async fn a_stopped_run_is_cancelled_and_forgotten() {
     let run_id = handle["runId"].as_str().unwrap().to_string();
 
     // A caller that asks for no wait is not held by a long run.
-    let pending: Value = call(2, "get_agent_result", json!({"runId":run_id,"waitSeconds":0}))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let pending: Value = call(
+        2,
+        "get_agent_result",
+        json!({"runId":run_id,"waitSeconds":0}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let pending: Value =
         serde_json::from_str(pending["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(pending["status"], "running");

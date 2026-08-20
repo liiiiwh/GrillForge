@@ -214,8 +214,8 @@ conversation/Cowork 3P profile and Claude-safe role routes.
 The broker is an MCP control boundary, not an Agent Runtime. It owns:
 
 - Per-destination-client bearer authentication and allowed extension IDs
-- `list_agents`, `run_agent`, `get_agent_result`, `answer_agent_permission`, and
-  `stop_agent` request validation
+- `list_agents`, `run_agent`, `get_agent_result`, `continue_agent`,
+  `answer_agent_permission`, and `stop_agent` request validation
 - Resolution from an extension ID to a discovered local Agent and optional model
 - Launching the already-installed source Coding Agent runtime
 - A short-lived child-only gateway credential for managed models
@@ -230,8 +230,9 @@ Agent loop and never executes Agent tools.
 A delegated run outlives the request that started it, so the delegating Agent
 keeps its turn. `run_agent` returns a run handle; `get_agent_result` collects the
 run, waiting only for a bounded interval it is given; `stop_agent` cancels the
-run and its child process. The registry holds one entry per run and drops a
-result once collected, or after an hour if nobody collects it.
+run and its child process. The registry holds one entry per run; a completed
+result remains idempotently collectable for one hour so a lost MCP response can
+be retried.
 
 This registry is not a scheduler. GrillForge never decides when a run starts,
 never queues work, and never retries. The delegating Agent decides everything;

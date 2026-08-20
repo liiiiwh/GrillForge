@@ -372,7 +372,8 @@ impl McpMountManager {
         let snapshot = parse_snapshot(&snapshot_path, &bytes)?;
         let current = read_optional(&target.config_path)?;
         let mounted = if target.format == McpClientFormat::DshPatchYaml {
-            dsh_block_field(current.as_deref(), "url").as_deref() == Some(snapshot.mounted_url.as_str())
+            dsh_block_field(current.as_deref(), "url").as_deref()
+                == Some(snapshot.mounted_url.as_str())
         } else if target.format == McpClientFormat::CodexToml {
             let document = parse_toml(current.as_deref(), &target.config_path)?;
             let server = document

@@ -845,5 +845,8 @@ async fn a_tool_result_still_cannot_share_a_turn_with_assistant_content() {
         }))
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("require assistant role"), "{error}");
+    assert!(
+        error.to_string().contains("require assistant role"),
+        "{error}"
+    );
 }

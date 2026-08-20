@@ -60,7 +60,13 @@ fn validate_context_management(value: &Value) -> Result<(), BridgeError> {
             .ok_or_else(|| invalid(&format!("{field} must be an object")))?;
         reject_unknown(
             edit,
-            &["type", "keep", "clear_at_least", "clear_tool_inputs", "exclude_tools"],
+            &[
+                "type",
+                "keep",
+                "clear_at_least",
+                "clear_tool_inputs",
+                "exclude_tools",
+            ],
             &field,
         )?;
         match edit.get("type").and_then(Value::as_str) {

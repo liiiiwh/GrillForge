@@ -122,7 +122,8 @@ running to a caller that then treats its turn as finished. The default interval
 has to hold for every mounted client, so it stays under the shortest tool-call
 budget any of them applies rather than the longest one any of them allows. A
 caller that knows its own client passes `waitSeconds`, and `0` looks without
-waiting.
+waiting. A requested wait is capped at 240 seconds, leaving transport overhead
+below clients whose outer MCP call deadline is 300 seconds.
 
 A wait also ends the moment the child asks for permission, because that request
 is the caller's to answer and the child is blocked until it is.
@@ -149,10 +150,14 @@ caller believes it can continue.
 One conversation runs one turn at a time: the previous turn is collected before
 the next is sent.
 
-A result is delivered once and then dropped. An uncollected result is dropped
-after an hour, and unmounting a client cancels every run still active for it.
+A completed result remains collectable with the same run ID for one hour, so a
+lost MCP response can be retried without losing the child output. A successful
+collect removes it from the caller's outstanding list but does not make an
+immediate retry fail. Unmounting a client cancels every run still active for it.
+The registry is process-local: restarting GrillForge makes existing handles
+invalid and terminates the children it owned; it does not claim crash recovery.
 
-Only the caller can collect a result. MCP answers a tool call and nothing more:
+Only the owning client can collect a result. MCP answers a tool call and nothing more:
 there is no way to deliver a result into a turn that has already ended, so a
 delegating Agent that reports a runId and stops has thrown the work away. The
 tools therefore state the obligation, and every unfinished payload repeats it.

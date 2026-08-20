@@ -4,6 +4,29 @@ All notable changes to GrillForge are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.35] - 2026-08-20
+
+### Fixed
+
+- Broker tool schemas now expose the already-supported `waitSeconds` and
+  `keepOpen` arguments, so strict MCP clients can use bounded waits and the
+  0.2.34 kept-open conversation flow.
+- Bounded collection waits now stop at 240 seconds, leaving transport overhead
+  below clients with a 300-second outer MCP deadline instead of racing that
+  deadline and returning a transport timeout.
+- A delegated run is registered before its task can finish, preventing an
+  immediate child from losing its outcome and remaining `running` forever.
+- Completed results remain idempotently collectable for one hour, so losing the
+  first MCP response no longer loses the SubAgent output.
+- Kept-open conversations claim their next turn atomically, preventing two
+  concurrent `continue_agent` calls from running against the same session.
+- Run collection, cancellation, kept-open sessions, and permission decisions
+  re-check the destination client that owns them; possession of another
+  client's run or request identifier is no longer sufficient.
+- Completion and permission notifications retain a wake-up permit across the
+  check/wait boundary, and cancelling a run removes its permission and managed
+  model-route state immediately.
+
 ## [0.2.34] - 2026-08-19
 
 ### Added
